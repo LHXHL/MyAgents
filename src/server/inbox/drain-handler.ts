@@ -15,6 +15,7 @@
 //   - 注入时统一走 session-event renderer,避免 prompt injection
 //     (`</myagents-session-event>` 闭合标签注入等)。
 
+import { channelHandoffSchema, type ChannelHandoff } from '../../shared/channelHandoff';
 import { renderSessionEventPrompt } from './session-event';
 import { buildInReplyToSnippet } from './types';
 import type { PendingInboxMessage, DrainResponse, InboxTurnMeta } from './types';
@@ -136,6 +137,7 @@ export type InboxInjector = (
     scenario?: InteractionScenario;
     queueId?: string;
     beforeDispatch?: DispatchGuard;
+    channelHandoff?: { eventId: string; targetSessionId: string; handoff: ChannelHandoff };
   },
 ) => Promise<InboxAdmissionResult>;
 
@@ -172,13 +174,20 @@ export async function handleInboxDrain(
 
   for (const msg of messages) {
     try {
+      const handoff = msg.sessionEvent?.type === 'send.request' ? msg.sessionEvent.channelHandoff : undefined;
+      if (handoff && (msg.replyBack || msg.networkReturn || msg.fromSessionId !== msg.sessionEvent?.sourceSessionId
+        || msg.toSessionId !== msg.sessionEvent?.targetSessionId || msg.messageId !== msg.sessionEvent?.eventId
+        || msg.sourceKind !== 'internal-session' || msg.kind !== 'request')) {
+        throw new Error('Invalid Channel handoff transport identity');
+      }
+      const channelHandoff = handoff ? { eventId: msg.messageId, targetSessionId: msg.toSessionId, handoff: channelHandoffSchema.parse(handoff) } : undefined;
       const prompt = buildSessionEventPrompt(msg);
       const meta = buildTurnMeta(msg);
       const allowLazySessionMaterialization =
         msg.kind === 'event'
         && (msg.sessionEvent?.type === 'space.issue_delivery' || msg.sessionEvent?.type === 'task.comment');
       const scenario = scenarioForInboxMessage(msg);
-      const result = await injector(prompt, meta, { allowLazySessionMaterialization, scenario });
+      const result = await injector(prompt, meta, { allowLazySessionMaterialization, scenario, channelHandoff });
       // PRD 0.2.18 cross-review fix (Codex):
       // enqueueUserMessage's `queued` flag is "queued behind other turns" not
       // "accepted vs rejected". On the idle direct-send path it returns

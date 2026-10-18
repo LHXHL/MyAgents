@@ -56,6 +56,8 @@ DSH 使用应用内置的单一 Node，不回退系统 Node。Node/npm 组合由
 
 进程状态与 turn activity 分开。pre-warm 可建立真实 idle Runtime，但不能制造 running turn。transport/process failure 必须通过 `session_complete` 交给共享 lifecycle owner 释放该 generation；仅发 error status 会留下无法恢复的 running/process 状态。
 
+原生 RPC 的结构化 `session_recovery_required` 表示当前 generation 已被持久化 owner 隔离，不能作为普通单次请求失败继续复用。ProcessHost 与 transport failure 一样退休该 generation，并通过既有 `session_complete` 交回共享 lifecycle；原请求保留失败，不在 Host 重试。后续输入仍恢复同一个 native Session，经现有 mutation / turn receipts 对账准入，不自动换绑或清空历史。普通 RPC 校验错误不退休进程；错误文本不能代替结构化 code。
+
 进程诊断不受 Product history/reconciliation 准入控制。DSH adapter 使用捕获的 Product Session 日志 scope，将脱敏 stderr、transport failure 和每次子进程退出事实直接交给现有 UnifiedLogger；旧 generation 的业务接收器退休后，仍可记录其尾部诊断。stderr 在流结束/关闭时排出无换行尾段；单行超过 16,384 字符时只记录省略提示，避免截断凭据表示后脱敏失效。退出记录分别保留原始 code/signal 与 Host 最近尝试的终止 signal/reason；优雅 shutdown 的 signal 为 null，Host 终止尝试不是原生自退出原因的证明，EOF 也不能证明原生恢复已损坏。业务事件仍必须等待原生绑定与历史对账成功。
 
 ## 4. 数据与持久化
@@ -100,6 +102,8 @@ Provider credential 由 Host 的既有配置或认证 owner 管理，每个模�
 Host 以结构化 `systemContext` 提供 global/root contributions；DSH 的 literal-context seam 保留文本语义，不将产品提示词改写成组件摘要。主项目指令由 DSH 原生 instruction plugin 加载，每层目录按 `CLAUDE.md`、`AGENTS.override.md`、`AGENTS.md` 的优先级选择。Host 只补充其拥有的 companion/rules 内容，不重复读取原生主指令。
 
 Skills、Commands、MCP 与 Host tools 等组件由同一次 Product capability inventory 编译。DSH 与 Managed Codex 共用 runtime-neutral `product-extensions` discovery/dispatcher；执行仍属于各自 Runtime。Host 也会生成 Agent descriptor，但当前 DSH 没有对应的角色编译器，这类组件返回 `unsupported/implementation_batch_pending`，不会据此创建子 Agent。子 Agent 由 DSH 原生工具创建并管理，Host 不运行第二套 Agent loop。
+
+DSH wire revision 在最终编译边界根据实际声明内容（含 Host tool 清单、资源、Skill roots、MCP launch profiles）计算；前置 Product discovery revision 不能独立标识后续发现的工具或凭据投影。完整编译和浏览器局部刷新复用同一计算入口。缓存的 in-process MCP server 只有一条 transport，新旧扩展 dispatcher 在 replacement 期间共同持有连接，最后一个 owner 释放时才关闭；失败候选不关闭未取得的旧 transport。
 
 组件身份以 `(kind, id)` 为作用域；不同类型同名合法，Skill 引用只在 Skill 类型内解析。组件损坏或不支持时，只淘汰该组件并产生结构化诊断；基础 Runtime 仍可用。缺省命令描述由 DSH 注册适配处补为命令名，公开名称与模板正文不变。MCP prepare 失败通过现有 Runtime stderr 记录组件和失败阶段，不记录原始远端错误文本、凭据或子进程输出。明确依赖 required system Skill 的 turn 才必须核对该 exact capability。扩展 replacement 在原生事务边界执行，并由 catalog/read-back 确认实际结果；SSE 仅投影状态，不成为配置 authority。
 

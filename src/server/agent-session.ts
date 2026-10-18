@@ -1,8 +1,10 @@
+import { captureChannelTurn, effectiveChannelDelivery, channelContextForInput, decorateChannelQuery, channelInputSource } from './session-core/channel-context';
+import { readChannelPromptOptions } from './tools/channel-messaging';
 import { desktopContextOf } from '../shared/agentMentions';
 import { buildTurnProviderAnalytics } from './session-core/turn-analytics';
 import { selectBuiltinRewindBoundary } from './session-core/builtin-rewind-boundary';
 import { createBuiltinInterruptController } from './builtin-session/interrupt';
-import { configureBuiltinTranscriptBinding } from './builtin-session/transcript';
+import { configureBuiltinTranscriptBinding, confirmBuiltinUserContent } from './builtin-session/transcript';
 import { randomUUID } from 'crypto';
 import { OPENCODE_GO_PROVIDER_ID } from '../shared/opencode-go';
 import { assertQueryModelRoutesCompatible } from '../shared/provider-model-routing';
@@ -148,7 +150,7 @@ import {
 import type { OfficialToolId } from '../shared/official-tools';
 import { prepareSessionTranscriptMutation, activateSessionTranscript, claimPreparedSessionForTurnAdmission, commitPreparedSessionForFirstUserTurn, migratePendingSessionIdentity, resolvePendingConversationMutation, saveSessionMetadata, publishForkSession, assertCompleteSessionForkSource, updateSessionTitleFromMessage, updateSessionMetadata, updateSessionMetadataForBinding, getSessionMetadata, loadSessionTranscript } from './SessionStore';
 import { TranscriptPresentation } from './session-transcript/presentation';
-import { projectTranscriptToolInput, type TranscriptObject } from '../shared/sessionTranscript';
+import { projectTranscriptToolInput, toStoredTranscriptMessage, type TranscriptObject } from '../shared/sessionTranscript';
 import { firePostTurnTitleHook } from './turn-hooks';
 import { createSessionMetadata, type SessionMetadata, type SessionMessage, type MessageAttachment, type SessionSource, type TurnAnalyticsSource } from './types/session';
 import { originFromTurnAttribution } from '../shared/session-origin';
@@ -1076,9 +1078,7 @@ async function surfaceBuiltinUserMessage(
     phase,
     lastActiveAt,
   );
-  if (surface.channelDelivery.user === 'session-binding') {
-    deliverSessionBoundDesktopUser(messageText, surface.mirrorImages);
-  }
+
   return activityMerged;
 }
 
@@ -1148,9 +1148,7 @@ async function surfaceInFlightQueueItem(
       .catch(err => console.error('[agent] persistMessagesToStorage failed:', err));
   }
 
-  if (meta?.channelDelivery.user === 'session-binding') {
-    deliverSessionBoundDesktopUser(userMessage.content as string, meta?.mirrorImages);
-  }
+
 
   console.log(`[agent] In-flight queue item ${queueId} surfaced via queue:started (${options.reason})`);
   broadcast('queue:started', {
@@ -1477,7 +1475,7 @@ function completeOutputOwnerAfterPersistence(
     () => deliverSessionBoundAssistant,
     () => false,
   );
-  if (owner.assistantChannelDelivery === 'session-binding') {
+  if (owner.assistantChannelDelivery === 'session-binding' && owner.sourceItem?.channelDelivery.mode !== 'tool_only') {
     // Reserve each block on the session-wide transport tail at the SDK result
     // boundary. The work waits for durability without leaving this owner at
     // the FIFO head where a later realtime yield could inherit it.
@@ -7807,7 +7805,10 @@ export function getMessages(): MessageWire[] {
   return getBuiltinMessages();
 }
 
-export function getBuiltinLiveSessionSnapshot(targetSessionId: string): {
+export function getBuiltinLiveSessionSnapshot(
+  targetSessionId: string,
+  options?: { includeHistory?: boolean },
+): {
   snapshotRevision: number;
   inMemoryMessages: SessionMessage[];
   liveStreamingMessage: SessionMessage | null;
@@ -7817,10 +7818,23 @@ export function getBuiltinLiveSessionSnapshot(targetSessionId: string): {
   if (targetSessionId !== sessionId) return null;
   flushPendingLiveEvents();
   const streamingAssistantId = getStreamingAssistantId();
-  const messages = getBuiltinMessages().map(messageWireToSessionMessage);
-  const liveStreamingMessage = streamingAssistantId
+  // getBuiltinMessages() projects every V2 row. A stream attachment must
+  // select the live row before that projection, not filter a full copy later.
+  const messages = options?.includeHistory === false
+    ? [] : getBuiltinMessages().map(messageWireToSessionMessage);
+  let liveStreamingMessage = streamingAssistantId
     ? messages.find(message => message.id === streamingAssistantId) ?? null
     : null;
+  if (options?.includeHistory === false && streamingAssistantId) {
+    const product = getBuiltinProductContent();
+    if (product) {
+      const message = product.writer.projection.messages.get(streamingAssistantId);
+      liveStreamingMessage = message ? toStoredTranscriptMessage(message) : null;
+    } else {
+      const message = getBuiltinMessages().find(message => message.id === streamingAssistantId);
+      liveStreamingMessage = message ? messageWireToSessionMessage(message) : null;
+    }
+  }
   return structuredClone({
     snapshotRevision: getBuiltinLiveRevision(),
     inMemoryMessages: messages.filter(message => message.id !== streamingAssistantId),
@@ -8962,6 +8976,7 @@ export async function enqueueUserMessage(
     beforeUserPersistence?: import('./session-core/turn-queue').DispatchGuard;
     beforeDispatch?: import('./session-core/turn-queue').DispatchGuard;
     channelDelivery: TurnChannelDelivery;
+    channelPrimaryReminder?: boolean;
   },
 ): Promise<EnqueueResult> {
   const trimmed = text.trim();
@@ -9705,6 +9720,8 @@ export async function enqueueUserMessage(
       turnOwner: options?.turnOwner,
       onTerminal: admissionCallbacks.onTerminal,
       beforeDispatch: options?.beforeDispatch,
+      channelPrimaryReminder: options?.channelPrimaryReminder,
+      mirrorImages: resolvedImagesToMirrorImages(resolvedImages),
       channelDelivery,
       deferredSessionMetadata,
       deferVisibleAdmission,
@@ -9898,9 +9915,12 @@ export async function enqueueUserMessage(
     turnOwner: options?.turnOwner,
     onTerminal: admissionCallbacks.onTerminal,
     beforeDispatch: options?.beforeDispatch,
+    channelPrimaryReminder: options?.channelPrimaryReminder,
+    mirrorImages: resolvedImagesToMirrorImages(resolvedImages),
     channelDelivery,
     deferredSessionMetadata,
     deferredUserSurface: options?.beforeDispatch ? directUserSurface : undefined,
+    surfacedUserMessageId: options?.beforeDispatch ? undefined : userMessage.id,
     deferVisibleAdmission,
     settleDispatchAcceptance: admissionCallbacks.settleDispatchAcceptance,
   };
@@ -11453,6 +11473,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           // those got dropped in favour of `myagents` CLI calls so builtin needs the
           // same prompt now. Single CLI, single source of truth across all runtimes.
           cliToolsEnabled: true,
+          ...await readChannelPromptOptions(),
           userCliToolsEnabled: cliToolRegistryEnabled,
           enabledOfficialToolIds,
         }),
@@ -14319,6 +14340,38 @@ async function* messageGenerator(
       });
       continue;
     }
+    try {
+      if (item.channelSnapshot === undefined) {
+        const activeSnapshot = item.deliveryMode === 'realtime' ? peekPendingOutputOwner()?.sourceItem?.channelSnapshot : undefined;
+        item.channelSnapshot = activeSnapshot !== undefined ? activeSnapshot : await captureChannelTurn(
+          currentScenario.type === 'im' || currentScenario.type === 'agent-channel'
+            ? currentScenario.hostInteraction?.askUserQuestion === 'native-card' ? 'native-card' : 'none' : 'none',
+        );
+        item.channelDelivery = effectiveChannelDelivery(item.channelSnapshot, item.channelDelivery);
+        if (item.channelSnapshot) {
+          const source = channelInputSource(item.analyticsSource, item.requestId, item.analyticsOrigin, item.turnOwner, item.inputSource === 'inbox');
+          const inbound = item.requestId ? imRequestRegistry.get(item.requestId)?.channelInbound : undefined;
+          const context = channelContextForInput(item.channelSnapshot, item.channelDelivery, source, inbound);
+          const ownedEnvelope = !!(item.desktopQuery?.primaryContext || item.desktopQuery?.agentMentions?.length) || !!item.channelPrimaryReminder || item.inputSource === 'inbox';
+          item.messageText = decorateChannelQuery(item.messageText, context, ownedEnvelope);
+          if (Array.isArray(item.message.content)) {
+            const textBlock = item.message.content.findLast(block => block.type === 'text');
+            if (textBlock?.type === 'text') textBlock.text = decorateChannelQuery(textBlock.text, context, ownedEnvelope);
+            else item.message.content.push({ type: 'text', text: decorateChannelQuery('', context, false) });
+          }
+          const inFlight = getInFlightMetadata();
+          if (getInFlightQueueId() === item.id && inFlight) {
+            inFlight.messageText = item.messageText;
+            inFlight.channelDelivery = item.channelDelivery;
+          }
+          if (item.deferredUserSurface) item.deferredUserSurface.message.content = item.messageText;
+          if (item.surfacedUserMessageId) confirmBuiltinUserContent(item.surfacedUserMessageId, item.messageText);
+        }
+      }
+    } catch (error) {
+      await rejectPromotedMessageBeforeDispatch(item, { accepted: false, error: error instanceof Error ? error.message : String(error) });
+      continue;
+    }
     setCommittingTurnAdmissionQueueId(item.id);
     if (!await claimPreparedMaterializationForTurnAdmission(item.messageText, item.sessionBirthOrigin)) {
       setCommittingTurnAdmissionQueueId(null);
@@ -14543,6 +14596,14 @@ async function* messageGenerator(
     // Pattern B+G: every logical SDK yield gets one output-owner FIFO slot.
     // A transient provider-text retry re-yields the same logical turn and
     // therefore reuses the owner retained when the retry was selected.
+    if (item.requestId) {
+      const request = imRequestRegistry.get(item.requestId);
+      if (request) request.channelDeliveryMode = item.channelDelivery.mode ?? 'auto';
+      imEventBus.emit(item.requestId, 'delivery-policy');
+    }
+    if (item.channelDelivery.user === 'session-binding' && item.channelDelivery.mode !== 'tool_only') {
+      deliverSessionBoundDesktopUser(item.messageText, item.mirrorImages);
+    }
     pushPendingOutputOwner(item);
 
     // Queued Inbox inputs may join the running SDK turn. Bind them at the

@@ -93,6 +93,9 @@ export interface ChannelConfig {
   name?: string;           // Defaults to platform display name
   enabled: boolean;
 
+  /** Frozen at execution admission; missing persisted values retain auto. */
+  messageDeliveryMode?: import('../channelContext').ChannelDeliveryMode;
+
   // Platform credentials (vary by type)
   botToken?: string;
   telegramUseDraft?: boolean;
@@ -115,6 +118,8 @@ export interface ChannelConfig {
 
   // User management
   allowedUsers?: string[];
+  /** Display metadata only; authorization continues to use allowedUsers IDs. */
+  userDisplayNames?: Record<string, string>;
 
   // Group chat
   groupPermissions?: GroupPermission[];

@@ -32,8 +32,11 @@
  *     might dispatch a queued event between `unlisten()` and its own
  *     internal channel teardown.
  *  3. Post-await abort check — the critical one. After `await listen()`
- *     resolves, the listener IS installed. Re-check the abort flag and
- *     immediately unlisten if abort raced us. Without this, every
+ *     resolves, native registration succeeded, but its WebView installation
+ *     may still be queued. The paired Tauri dependency repair releases the
+ *     callback directly and prevents delayed installation after cancellation.
+ *     Re-check the abort flag and immediately unlisten if abort raced us.
+ *     Without this, every
  *     "Pattern B" callsite (cancelled flag without post-await unlisten,
  *     which is most of them in this codebase) leaks the listener even
  *     though the handler is gated.
@@ -141,7 +144,8 @@ export async function listenWithCleanup<T>(
         }, options);
 
         if (signal.aborted) {
-            // Lost the race — listener IS installed but caller has unmounted.
+            // Native registration succeeded but caller has unmounted. The
+            // dependency owns cancellation even if JS installation is queued.
             // Undo immediately so Tauri's dispatcher stops carrying a dead
             // closure. This is the single line that was missing across
             // ~25 Pattern-B callsites in this codebase before the migration.

@@ -1,3 +1,4 @@
+import { normalizeImInbound } from './session-core/channel-context';
 import type { AskUserQuestionAnswers } from '../shared/types/askUserQuestion';
 import {
   appendFileSync,
@@ -1711,11 +1712,9 @@ async function routeAdminApi(
       payload as Parameters<typeof api.handleGoalUpdate>[0],
     );
 
-  // IM runtime commands. send-media + wake are session-scoped (require an
-  // IM Bot / Agent Channel context — handlers reject otherwise). channels is
-  // not session-scoped: it discovers all configured IM bots and works in any
-  // session, including desktop, so the AI can reference targets when creating
-  // cron tasks that deliver to IM.
+  // Explicit channel sends require the attached Session authority. Channel
+  // discovery projects Agent scope for Sessions and configuration for the App.
+  if (route === 'im/send-message') return await api.handleImSendMessage(payload);
   if (route === 'im/send-media')
     return await api.handleImSendMedia(
       payload as Parameters<typeof api.handleImSendMedia>[0],
@@ -10338,6 +10337,8 @@ async function main() {
             // because the SSE+callback model was 1:1; the new bus model needs the
             // ID to route events.
             requestId: string;
+            receivedAt?: string;
+            sourceMetadata?: Record<string, unknown>;
             sourceType?: 'group';
             groupName?: string;
             groupPlatform?: string;
@@ -10556,81 +10557,10 @@ async function main() {
               surface: 'channel_message',
             };
 
-            // Build final message with group context (identical to /api/im/chat)
-            let finalMessage = payload.message || '';
-            if (payload.sourceType === 'group') {
-              const parts: string[] = [];
-              const isAlways = payload.groupActivation === 'always';
-              const sanitize = (s: string) =>
-                s
-                  .replace(/[<>[\]]/g, '')
-                  .replace(/\n/g, ' ')
-                  .trim();
-              const botName = sanitize(payload.botName ?? 'AI');
-              const platformLabel = sanitize(payload.groupPlatform ?? '');
-              const messageCount = payload.messageCount ?? 0;
-              const shouldInjectFullRules =
-                payload.isFirstGroupTurn ||
-                (messageCount > 0 && messageCount % 10 === 0);
-
-              if (shouldInjectFullRules) {
-                const safeGroupName = sanitize(payload.groupName ?? '未知群聊');
-                let reminder = `<system-reminder>\n[群聊信息]\n你正在「${safeGroupName}」${platformLabel}群聊中。你的名字是「${botName}」。`;
-                if (isAlways) {
-                  reminder +=
-                    '\n激活模式：全部消息（你会收到群里所有消息，包括不是发给你的）。';
-                } else {
-                  reminder +=
-                    '\n激活模式：仅 @提及（只有被 @、被回复或使用 /ask 时才会收到消息）。';
-                }
-                reminder +=
-                  '\n你的回复会自动发送到群里，直接回复即可。\n群内不同人的消息会以 [from: 名字 时间] 标注发送者。';
-                if (isAlways) {
-                  const mentionExample = payload.botName
-                    ? `（即 @${botName}）`
-                    : '';
-                  reminder += `\n\n[回复规则]\n你必须非常克制，大多数消息不需要你回复。仅在以下情况回复：\n1. 消息明确 @你${mentionExample}（即使消息同时也 @了其他人，只要 @了你就必须回复）\n2. 消息回复了你之前的消息\n3. 有人直接向你提问或请求帮助\n4. 你确信能提供明确价值的信息\n\n以下情况必须保持沉默：\n- 消息没有 @你，只 @了其他人或其他机器人\n- 普通闲聊、与你无关的讨论\n- 你不确定是否该回复时\n\n判断是否 @了你：看 [本条消息 @了你] 标记，而不是看消息正文中的 @用户名。\n不需要回复时，只回复 <NO_REPLY>，不要添加任何其他内容。`;
-                }
-                if (payload.groupSystemPrompt) {
-                  reminder += `\n\n[群聊指令]\n${payload.groupSystemPrompt}`;
-                }
-                reminder += '\n</system-reminder>';
-                parts.push(reminder);
-              } else if (isAlways) {
-                parts.push(
-                  `<system-reminder>\n你是「${botName}」，当前处于群聊的全部消息模式 — 你会收到群聊内的全部信息，你需要自主判断是否需要回复消息。与自己无关的消息不要回复，没有 @你、仅 @了其他人的消息不要回复。注意：[本条消息 @了你] 标记才是判断依据，消息正文中可能同时 @了多人。当你判断不需要回复消息时，只输出字符<NO_REPLY>\n</system-reminder>`,
-                );
-              }
-              if (payload.pendingHistory) parts.push(payload.pendingHistory);
-              if (payload.replyToBody)
-                parts.push(
-                  `[引用回复]\n> ${payload.replyToBody.split('\n').join('\n> ')}`,
-                );
-              const now = new Date();
-              const ts = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
-              let messageBlock = '';
-              if (isAlways) {
-                messageBlock += payload.isMention
-                  ? '[本条消息 @了你，你需要回复]\n'
-                  : '[本条消息未 @你]\n';
-              }
-              // Fall back to senderId when the plugin didn't provide a senderName
-              // (WeCom's aibot_msg_callback only carries `from.userid`, no name —
-              // unlike Feishu which enriches senderName via contacts API). The
-              // Rust group_history writer (im/mod.rs:2393/2419) already does the
-              // same fallback; without it here the live message has no [from:]
-              // tag while history entries do, breaking the system-reminder's
-              // promise that "群内不同人的消息会以 [from: 名字 时间] 标注".
-              const displaySender = payload.senderName || payload.senderId;
-              messageBlock += displaySender
-                ? `[from: ${sanitize(displaySender)} ${ts}]\n`
-                : '';
-              messageBlock += finalMessage;
-              parts.push(messageBlock);
-              finalMessage = parts.join('\n\n');
-            } else if (payload.replyToBody) {
-              finalMessage = `[引用回复]\n> ${payload.replyToBody.split('\n').join('\n> ')}\n\n${finalMessage}`;
-            }
+            // Source facts are stored per request; execution/mode is added by
+            // the Runtime owner at dispatch, after any queue wait.
+            requestEntry.channelInbound = normalizeImInbound(payload);
+            const finalMessage = payload.message || '';
 
             if (engine.kind === 'builtin') {
               setGroupToolsDeny(
@@ -11042,7 +10972,7 @@ async function main() {
           resp: { status: string; text?: string; reason?: string },
           code?: number,
         ): Response => {
-          if (cronEvents.length > 0 && resp.status !== 'content') {
+          if (cronEvents.length > 0 && resp.status !== 'content' && resp.status !== 'suppressed') {
             for (const e of cronEvents) pushSystemEvent(e);
             console.warn(
               `[im/heartbeat] Re-queued ${cronEvents.length} cron event(s) for retry (status=${resp.status}${resp.reason ? ` reason=${resp.reason}` : ''})`,
@@ -11321,6 +11251,9 @@ description: >
                   ? 'Heartbeat timeout'
                   : 'Heartbeat failed'),
             });
+          }
+          if (turnResult.channelDeliveryMode === 'tool_only') {
+            return respondAfterDrain({ status: 'suppressed', reason: 'tool_only' });
           }
           if (
             engine.kind === 'builtin' &&
@@ -11874,8 +11807,21 @@ description: >
                   return { queued: false, error: originBinding.error };
                 }
               }
+              let images: import('./runtimes/types').ImagePayload[] | undefined;
+              let beforeDispatch = options?.beforeDispatch;
+              if (options?.channelHandoff) {
+                const { channelHandoffGuard, channelHandoffImages } = await import('./inbox/channel-handoff');
+                const { handoff, targetSessionId, eventId } = options.channelHandoff;
+                beforeDispatch = channelHandoffGuard(handoff, targetSessionId, getRuntimeSessionIdForRequest);
+                const validation = await beforeDispatch();
+                if (!validation.accepted) return { queued: false, error: validation.error };
+                images = await channelHandoffImages(handoff, sessionMeta?.agentDir ?? currentAgentDir ?? process.cwd(), eventId);
+              }
               return engine.enqueueInboxMessage({
                 text,
+                images,
+                beforeDispatch,
+                queueId: options?.queueId,
                 sessionId,
                 workspacePath:
                   sessionMeta?.agentDir ?? currentAgentDir ?? process.cwd(),

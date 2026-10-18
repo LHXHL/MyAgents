@@ -3,6 +3,8 @@ import type { InboxTurnMeta } from '../../inbox/types';
 import { imEventBus, type ImEventType } from '../../utils/im-event-bus';
 import { imRequestRegistry } from '../../utils/im-request-registry';
 import type { ExternalPendingInteractiveRequest } from './types';
+import type { ChannelInbound } from '../../session-core/channel-context';
+import type { ChannelDeliveryMode } from '../../../shared/channelContext';
 
 let activeRequestId: string | null = null;
 const currentTurnInboxMetas: InboxTurnMeta[] = [];
@@ -23,6 +25,22 @@ export function resetExternalInteractiveState(): void {
 
 export function getExternalActiveRequestId(): string | null {
   return activeRequestId;
+}
+
+/** Admission uses the incoming request's identity, which may differ from the active turn. */
+export function getExternalChannelInbound(requestId: string | undefined): ChannelInbound | undefined {
+  return requestId ? imRequestRegistry.get(requestId)?.channelInbound : undefined;
+}
+
+export function publishExternalChannelDeliveryPolicy(
+  requestId: string | undefined,
+  mode: ChannelDeliveryMode | undefined,
+): void {
+  if (!requestId) return;
+  const request = imRequestRegistry.get(requestId);
+  if (request) request.channelDeliveryMode = mode ?? 'auto';
+  // Publish after the write: the bus stamps each event from this request's policy.
+  imEventBus.emit(requestId, 'delivery-policy');
 }
 
 export function getExternalImBridgeTurnContext(): import('../../session-core/im-bridge-types').ImBridgeTurnContext | null {

@@ -201,6 +201,11 @@ impl DingtalkAdapter {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_test_http_client(&mut self, client: Client) {
+        self.client = client;
+    }
+
     /// Load dedup cache from disk, filtering out expired entries.
     fn load_dedup_cache(path: Option<&std::path::Path>) -> HashMap<String, u64> {
         let path = match path {
@@ -1101,7 +1106,8 @@ impl DingtalkAdapter {
                     groups.insert(chat_id_full.clone());
                     let conversation_title = data["conversationTitle"]
                         .as_str()
-                        .unwrap_or("Unknown Group")
+                        .filter(|name| !name.trim().is_empty())
+                        .unwrap_or(&chat_id_full)
                         .to_string();
                     let added_by = sender_nick.map(String::from);
                     ulog_info!(
@@ -1136,6 +1142,7 @@ impl DingtalkAdapter {
         };
 
         let msg = ImMessage {
+            source_metadata: super::inbound_metadata::dingtalk(&data),
             chat_id,
             message_id: msg_id.to_string(),
             text: text_content,
@@ -1149,7 +1156,7 @@ impl DingtalkAdapter {
             media_group_id: None,
             is_mention,
             reply_to_bot: false,
-            hint_group_name: None,
+            hint_group_name: super::inbound_metadata::nonempty(&data["conversationTitle"]),
             reply_to_body: None,
             group_system_prompt: None,
             request_id: String::new(),
@@ -1229,8 +1236,8 @@ impl DingtalkAdapter {
                 if self
                     .group_event_tx
                     .send(GroupEvent::BotAdded {
+                        chat_title: chat_id.clone(),
                         chat_id,
-                        chat_title: "新群聊".to_string(),
                         platform: ImPlatform::Dingtalk,
                         added_by_name: added_by,
                     })
@@ -1443,5 +1450,39 @@ impl super::adapter::ImStreamAdapter for DingtalkAdapter {
     /// the existing inherent method `Self::post_stream_cleanup`.
     async fn post_stream_cleanup(&self, chat_id: &str) {
         DingtalkAdapter::post_stream_cleanup(self, chat_id).await;
+    }
+}
+
+#[cfg(test)]
+mod peer_name_tests {
+    use super::*;
+    #[tokio::test]
+    async fn every_group_callback_keeps_the_latest_name_without_rediscovery() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let (approval, _) = mpsc::channel(2);
+        let (groups, mut group_rx) = mpsc::channel(4);
+        let adapter = DingtalkAdapter::new(
+            &ImConfig::default(),
+            tx,
+            Arc::new(RwLock::new(vec!["u".into()])),
+            approval,
+            None,
+            groups,
+        );
+        for title in ["Team", "Renamed"] {
+            adapter
+                .handle_bot_message(&serde_json::json!({
+                    "msgId":title,"senderStaffId":"u","senderNick":"Alice","conversationType":"2",
+                    "conversationId":"g","conversationTitle":title,"isInAtList":true,
+                    "msgtype":"text","text":{"content":"hello"}
+                }))
+                .await;
+            let msg = rx.try_recv().unwrap();
+            assert_eq!(msg.hint_group_name.as_deref(), Some(title));
+            assert_eq!(msg.sender_name.as_deref(), Some("Alice"));
+            assert_eq!(msg.chat_id, "group:g");
+        }
+        assert!(group_rx.try_recv().is_ok());
+        assert!(group_rx.try_recv().is_err());
     }
 }

@@ -48,6 +48,8 @@ fn terminal_text(data: Option<&Value>) -> Option<&str> {
 /// top of `stream_to_im` / `stream_to_im_streaming`. One slot per in-flight
 /// IM user message.
 pub struct ReplySlot {
+    pub delivery_mode: super::types::ChannelDeliveryMode,
+    policy_admitted: bool,
     pub request_id: String,
     pub chat_id: String,
     /// Original IM message_id — used by adapter.ack_clear() on terminal.
@@ -89,6 +91,8 @@ impl ReplySlot {
         delivery_protocol: Option<ImDeliveryProtocol>,
     ) -> Self {
         Self {
+            delivery_mode: super::types::ChannelDeliveryMode::Auto,
+            policy_admitted: false,
             request_id,
             chat_id,
             message_id,
@@ -163,6 +167,18 @@ impl ReplyRouter {
         self.slots.insert(request_id, slot);
     }
 
+    pub(crate) fn set_pending_delivery_mode(
+        &mut self,
+        request_id: &str,
+        mode: super::types::ChannelDeliveryMode,
+    ) {
+        if let Some(slot) = self.slots.get_mut(request_id) {
+            if !slot.policy_admitted {
+                slot.delivery_mode = mode;
+            }
+        }
+    }
+
     /// Dispatch a single event from /api/im/events to the matching slot.
     ///
     /// Returns `Some(TerminalOutcome)` when the slot reaches a terminal state
@@ -203,6 +219,82 @@ impl ReplyRouter {
             (slot.chat_id.clone(), slot.message_id.clone(), slot.is_done)
         };
         if already_done {
+            return None;
+        }
+
+        if let Some(mode) = event
+            .get("channelDeliveryMode")
+            .and_then(|value| serde_json::from_value(value.clone()).ok())
+        {
+            let slot = self.slots.get_mut(&request_id)?;
+            slot.delivery_mode = mode;
+        }
+        if event_type == "delivery-policy" {
+            let slot = self.slots.get_mut(&request_id)?;
+            if !slot.policy_admitted {
+                slot.policy_admitted = true;
+                if matches!(
+                    slot.delivery_protocol,
+                    Some(ImDeliveryProtocol::OpenClawReply)
+                ) {
+                    if let Err(error) = adapter
+                        .set_reply_delivery_mode(&request_id, slot.delivery_mode)
+                        .await
+                    {
+                        ulog_error!(
+                            "[reply-router] delivery policy rejected requestId={}: {}",
+                            request_id,
+                            error
+                        );
+                    }
+                }
+                if slot.delivery_mode.allows_automatic() {
+                    adapter.ack_processing(&chat_id, &message_id).await;
+                    adapter.send_typing(&chat_id).await;
+                }
+            }
+            return None;
+        }
+        if !self
+            .slots
+            .get(&request_id)?
+            .delivery_mode
+            .allows_automatic()
+            && !matches!(
+                event_type,
+                "permission-request" | "ask-user-question-request" | "ask-user-question-expired"
+            )
+        {
+            if matches!(event_type, "complete" | "error" | "cancelled") {
+                let slot = self.slots.get_mut(&request_id)?;
+                if matches!(
+                    slot.delivery_protocol,
+                    Some(ImDeliveryProtocol::OpenClawReply)
+                ) {
+                    // An empty final is a lifecycle barrier, never a visible
+                    // placeholder. The plugin receives the same policy first.
+                    let _ = adapter
+                        .set_reply_delivery_mode(&request_id, slot.delivery_mode)
+                        .await;
+                    if event_type == "complete" {
+                        let _ = adapter
+                            .complete_reply_dispatch(&request_id, &json!([]))
+                            .await;
+                    } else {
+                        let _ = adapter
+                            .abort_reply_dispatch(&request_id, event_type, &json!({}))
+                            .await;
+                    }
+                }
+                slot.is_done = true;
+                return Some(TerminalOutcome {
+                    session_id: event
+                        .pointer("/data/sessionId")
+                        .and_then(Value::as_str)
+                        .map(String::from),
+                    silent: true,
+                });
+            }
             return None;
         }
 
@@ -1042,6 +1134,7 @@ impl ReplyRouter {
             .iter()
             .filter(|(request_id, slot)| {
                 !slot.is_done
+                    && slot.delivery_mode.allows_automatic()
                     && affected_request_ids
                         .as_ref()
                         .map_or(true, |ids| ids.contains(request_id.as_str()))
@@ -1121,6 +1214,7 @@ mod tests {
     struct RecordingAdapter {
         sent_messages: StdMutex<Vec<(String, String)>>,
         reply_operations: StdMutex<Vec<serde_json::Value>>,
+        ordinary_effects: StdMutex<Vec<&'static str>>,
     }
 
     impl RecordingAdapter {
@@ -1152,13 +1246,21 @@ mod tests {
             Ok(())
         }
 
-        async fn ack_received(&self, _chat_id: &str, _message_id: &str) {}
+        async fn ack_received(&self, _chat_id: &str, _message_id: &str) {
+            self.ordinary_effects.lock().unwrap().push("received");
+        }
 
-        async fn ack_processing(&self, _chat_id: &str, _message_id: &str) {}
+        async fn ack_processing(&self, _chat_id: &str, _message_id: &str) {
+            self.ordinary_effects.lock().unwrap().push("processing");
+        }
 
-        async fn ack_clear(&self, _chat_id: &str, _message_id: &str) {}
+        async fn ack_clear(&self, _chat_id: &str, _message_id: &str) {
+            self.ordinary_effects.lock().unwrap().push("clear");
+        }
 
-        async fn send_typing(&self, _chat_id: &str) {}
+        async fn send_typing(&self, _chat_id: &str) {
+            self.ordinary_effects.lock().unwrap().push("typing");
+        }
     }
 
     impl ImStreamAdapter for RecordingAdapter {
@@ -1331,6 +1433,58 @@ mod tests {
                 "terminalPayload": terminal_payload,
             }));
             Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn tool_only_discards_normal_events_and_settles_native_and_plugin_requests() {
+        for protocol in [None, Some(ImDeliveryProtocol::OpenClawReply)] {
+            for terminal in ["complete", "error", "cancelled"] {
+                let mut router = ReplyRouter::new(Default::default(), Default::default());
+                let adapter = RecordingAdapter::default();
+                router.register(
+                    "r".into(),
+                    "chat".into(),
+                    "message".into(),
+                    ImSourceType::Private,
+                    Some("user".into()),
+                    None,
+                    protocol.clone(),
+                );
+                router.set_pending_delivery_mode(
+                    "r",
+                    crate::im::types::ChannelDeliveryMode::ToolOnly,
+                );
+                for kind in [
+                    "delivery-policy",
+                    "delta",
+                    "thinking",
+                    "tool-start",
+                    "block-end",
+                    "gap",
+                ] {
+                    let request = if kind == "gap" {
+                        serde_json::Value::Null
+                    } else {
+                        json!("r")
+                    };
+                    router.dispatch(&json!({"requestId":request,"type":kind,"channelDeliveryMode":"tool_only","data":"must not send"}), &adapter, 1).await;
+                }
+                let outcome = router.dispatch(&json!({"requestId":"r","type":terminal,"channelDeliveryMode":"tool_only","data":{"sessionId":"s","text":"must not send"}}), &adapter, 1).await.unwrap();
+                assert!(outcome.silent);
+                assert_eq!(outcome.session_id.as_deref(), Some("s"));
+                assert!(adapter.sent_messages().is_empty());
+                assert!(adapter.ordinary_effects.lock().unwrap().is_empty());
+                let operations = adapter.reply_operations();
+                assert!(operations
+                    .iter()
+                    .all(|op| op["kind"] == "complete" || op["kind"] == "abort"));
+                if protocol.is_some() {
+                    assert_eq!(operations.len(), 1);
+                }
+                router.unregister("r");
+                assert_eq!(router.slot_count(), 0);
+            }
         }
     }
 

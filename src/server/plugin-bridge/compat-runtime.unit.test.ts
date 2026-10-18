@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import routingIdentities from '../../shared/__fixtures__/channel-context/routing-identities.json';
+
 import { createCompatRuntime } from './compat-runtime';
+import { normalizeImInbound } from '../session-core/channel-context';
 import {
   bindPendingStream,
   clearAllPendingDispatches,
@@ -32,6 +35,79 @@ describe('plugin bridge compat runtime dispatch ownership', () => {
     _setGeneralFetchTransportForTests();
     vi.unstubAllGlobals();
     clearAllPendingDispatches();
+  });
+
+  it.each(['protocol', 'buffered'] as const)('shares registered identity and inbound peer IDs with Rust handoffs (%s)', async path => {
+    for (const row of routingIdentities) {
+      const fetchMock = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => new Response('{}'));
+      vi.stubGlobal('fetch', fetchMock);
+      const runtime = createCompatRuntime(31_426, 'bot', row.configured);
+      runtime.setPluginId(row.registered);
+      const ctx = { To: row.to, SenderId: 'sender', SenderName: 'Alice', Body: 'hello', ChatType: row.kind === 'group' ? 'group' : 'direct' };
+      const pending = path === 'protocol'
+        ? runtime.channel.reply.dispatchReplyFromConfig({ ctx, dispatcher: { sendFinalReply: () => true, markComplete: () => {}, getQueuedCounts: () => ({}) } })
+        : runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({ ctx });
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+      const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+      expect(body).toMatchObject({ botId: 'bot', pluginId: row.registered, chatId: row.inbound, chatType: row.kind === 'group' ? 'group' : 'direct' });
+      if (body.requestId) completePendingDispatch(body.requestId, []);
+      await pending;
+    }
+  });
+
+  it.each(['protocol', 'buffered'] as const)('enriches sender before %s ingress while preserving body and route', async (path) => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const query = vi.fn(async () => ({ details: JSON.stringify({ sessions: [
+      { chat_id: 'sender-1', chat_type: 'single', chat_name: 'Alice' },
+      { chat_id: 'group-1', chat_type: 'group', chat_name: 'Team' },
+    ] }) }));
+    const runtime = createCompatRuntime(31_426, 'bot-1', 'wecom', query);
+    const ctx = { To: 'wecom:group-1', SenderId: 'sender-1', SenderName: 'sender-1',
+      AccountId: 'account-1', Body: 'original query', ChatType: 'group' };
+    const pending = path === 'protocol'
+      ? runtime.channel.reply.dispatchReplyFromConfig({ ctx, dispatcher: {
+        sendFinalReply: () => true, markComplete: () => {}, getQueuedCounts: () => ({}),
+      } })
+      : runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({ ctx });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body ?? '{}'));
+    expect(body).toMatchObject({ senderId: 'sender-1', senderName: 'Alice', groupName: 'Team', chatId: 'group-1', text: 'original query', accountId: 'account-1' });
+    expect(query).toHaveBeenCalledWith('account-1');
+    expect(normalizeImInbound({ ...body, requestId: body.requestId ?? 'event', receivedAt: '2026-10-18T00:00:00Z' }).sender.name).toBe('Alice');
+    if (body.requestId) completePendingDispatch(body.requestId, []);
+    await pending;
+  });
+
+  it.each(['protocol', 'buffered'] as const)('projects QQ @ events on %s ingress without overriding explicit false', async path => {
+    for (const explicit of [undefined, false]) {
+      const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response('{}'));
+      vi.stubGlobal('fetch', fetchMock);
+      const runtime = createCompatRuntime(31_426, 'bot', 'qqbot');
+      const ctx = { To: 'qqbot:g', SenderId: 'u', Body: 'hi', ChatType: 'group', IsMention: explicit };
+      const pending = path === 'protocol'
+        ? runtime.channel.reply.dispatchReplyFromConfig({ ctx, dispatcher: { sendFinalReply: () => true, markComplete: () => {}, getQueuedCounts: () => ({}) } })
+        : runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({ ctx });
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+      const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+      expect(body.isMention).toBe(explicit ?? true);
+      if (body.requestId) completePendingDispatch(body.requestId, []);
+      await pending;
+    }
+  });
+
+  it('resolves Lark transport group IDs through the plugin directory before ingress', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response('{}'));
+    vi.stubGlobal('fetch', fetchMock);
+    const directory = vi.fn(async (kind, id) => [{ kind, id, name: 'Team' }]);
+    const runtime = createCompatRuntime(31_426, 'bot', 'feishu', undefined, directory);
+    const pending = runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({ctx:{ To: 'feishu:g', SenderId: 'u', SenderName: 'Alice', GroupSubject: 'g', Body: 'hi', ChatType: 'group', AccountId: 'account' }});
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(body.groupName).toBe('Team');
+    expect(directory).toHaveBeenCalledWith('group', 'g', 'account');
+    if (body.requestId) completePendingDispatch(body.requestId, []);
+    await pending;
   });
 
   it('registers a request-scoped standard dispatcher before forwarding to Rust', async () => {

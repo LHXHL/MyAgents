@@ -1,0 +1,10 @@
+[
+  { "name": "06-MEMORY.md", "matches": true },
+  { "name": "custom-MeMoRy.MD", "matches": true },
+  { "name": "04-MEMORY.md", "matches": true },
+  { "name": "MEMORY.md", "matches": true },
+  { "name": "project-memory-notes.md", "matches": true },
+  { "name": "memory.md.txt", "matches": false },
+  { "name": "notes.md", "matches": false },
+  { "name": "memory", "matches": false }
+]

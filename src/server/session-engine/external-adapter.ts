@@ -313,23 +313,24 @@ export function createExternalSessionEngine(): SessionEngine {
       };
     },
 
-    getStreamReplaySnapshot() {
+    getStreamReplaySnapshot(options) {
       // The bound identity is promoted before the lifecycle id during startup.
       // Stream replay must follow the accepted Session, not the lagging runtime
       // lifecycle, or pending→real reconnects query an empty snapshot.
       const sessionId = getCurrentBoundSessionId() || getRuntimeSessionId();
-      const liveSnapshot = getExternalLiveSessionSnapshot(sessionId);
+      const liveSnapshot = getExternalLiveSessionSnapshot(sessionId, options);
       const systemInitPayload = getExternalSystemInitPayload();
       const productContext = getCurrentProductSessionContext();
       return {
         sessionId,
+        snapshotRevision: liveSnapshot?.snapshotRevision ?? null,
         initState: {
           agentDir: productContext.workspacePath,
           sessionState: getExternalSessionState(),
           hasInitialPrompt: productContext.hasInitialPrompt,
           queuedMessages: liveSnapshot?.queuedMessages ?? [],
         },
-        replayMessages: liveSnapshot?.inMemoryMessages.map(sessionMessageToReplayMessage) ?? [],
+        replayMessages: options?.includeHistory === false ? [] : liveSnapshot?.inMemoryMessages.map(sessionMessageToReplayMessage) ?? [],
         liveStreamingMessage: liveSnapshot?.liveStreamingMessage
           ? sessionMessageToReplayMessage(liveSnapshot.liveStreamingMessage)
           : null,
@@ -513,6 +514,7 @@ export function createExternalSessionEngine(): SessionEngine {
           onTerminal: request.onTerminal,
           beforeDispatch: request.beforeDispatch,
           channelDelivery: IM_CHANNEL_DELIVERY,
+          channelPrimaryReminder: request.channelPrimaryReminder,
         },
       );
       const dispatchAcceptance = observeExternalDispatch(
@@ -616,6 +618,7 @@ export function createExternalSessionEngine(): SessionEngine {
           beforeDispatch: request.beforeDispatch,
           channelDelivery: SESSION_BOUND_CHANNEL_DELIVERY,
         },
+        request.images,
       );
       const dispatchAcceptance = result.dispatch.then(
         dispatched => ({ accepted: dispatched.queued && !dispatched.error, error: dispatched.error }),
@@ -767,6 +770,7 @@ export function createExternalSessionEngine(): SessionEngine {
           beforeDispatch: request.beforeDispatch,
           requiredSystemSkill: request.requiredSystemSkill,
           channelDelivery: injectedTurnChannelDelivery(request.assistantChannelDelivery),
+          channelPrimaryReminder: true,
         },
       );
       const result = await waitForDeadline(sendPromise, deadline - Date.now());
@@ -822,7 +826,7 @@ export function createExternalSessionEngine(): SessionEngine {
             text: settledOutcome.status === 'complete' ? settledOutcome.text : undefined,
             error: settledOutcome.error,
           });
-          return { ...decision, enqueued: true };
+          return { ...decision, enqueued: true, channelDeliveryMode: settledOutcome.channelDeliveryMode };
         }
         const stopped = await stopExternalTarget();
         if (stopped) clearExternalTurnBinding(queueId);
@@ -841,7 +845,7 @@ export function createExternalSessionEngine(): SessionEngine {
         text: outcome.status === 'complete' ? outcome.text : undefined,
         error: outcome.error,
       });
-      return { ...decision, enqueued: true };
+      return { ...decision, enqueued: true, channelDeliveryMode: outcome.channelDeliveryMode };
     },
 
     async stopTurn(options) {

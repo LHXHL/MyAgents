@@ -50,7 +50,7 @@ type RuntimeExit = Readonly<{
 }>;
 
 type HostTermination = Readonly<{
-  reason: 'protocol_failure' | 'startup_failed' | 'host_shutdown';
+  reason: 'protocol_failure' | 'runtime_recovery_required' | 'startup_failed' | 'host_shutdown';
   signal: NodeJS.Signals | null;
 }>;
 
@@ -254,7 +254,11 @@ export class DshRuntimeProcessHost {
     if (this.stateValue !== 'protocol-ready' || !this.client) throw new Error('DSH Runtime protocol is not ready');
     const call = (this.client as unknown as Record<string, unknown>)[nativeSubagentClientMethods[method]];
     if (typeof call !== 'function') throw new Error('DSH Runtime has no native subagent Host method');
-    return await Reflect.apply(call, this.client, [params]) as NativeSubagentMethods[Name]['result'];
+    try {
+      return await Reflect.apply(call, this.client, [params]) as NativeSubagentMethods[Name]['result'];
+    } catch (error) {
+      this.handleRequestFailure(error);
+    }
   }
 
   get pid(): number | undefined {
@@ -440,7 +444,21 @@ export class DshRuntimeProcessHost {
     const clientMethod = DSH_CLIENT_METHOD_BY_PROTOCOL[method];
     // TypeScript cannot retain the mapped key relation through a generic indexed access.
     const call = this.client[clientMethod] as (input: MethodParams<Name>, options?: { signal?: AbortSignal }) => Promise<MethodResult<Name>>;
-    return await call.call(this.client, params, options);
+    try {
+      return await call.call(this.client, params, options);
+    } catch (error) {
+      this.handleRequestFailure(error);
+    }
+  }
+
+  private handleRequestFailure(error: unknown): never {
+    // Native durability fencing is terminal for this generation, even while
+    // its transport is alive. Retire through the existing failure owner; the
+    // next admission must reconcile native receipts, never replay this RPC.
+    if (error instanceof Error && 'code' in error && error.code === 'session_recovery_required') {
+      this.fail(error, 'runtime_recovery_required');
+    }
+    throw error;
   }
 
   stop(reason = "host_shutdown"): Promise<void> {
@@ -541,12 +559,12 @@ export class DshRuntimeProcessHost {
     child.stderr.once('close', flush);
   }
 
-  private fail(error: Error): void {
-    if (this.stateValue === "stopping" || this.stateValue === "stopped") return;
+  private fail(error: Error, reason: HostTermination['reason'] = 'protocol_failure'): void {
+    if (this.stateValue === "failed" || this.stateValue === "stopping" || this.stateValue === "stopped") return;
     this.stateValue = "failed";
     this.disposeProtocolHandlers();
     this.client?.peer.close(error);
-    this.terminateChild('protocol_failure', 'SIGTERM');
+    this.terminateChild(reason, 'SIGTERM');
     if (!this.failureReported) {
       this.failureReported = true;
       this.options.onFailure?.(error);

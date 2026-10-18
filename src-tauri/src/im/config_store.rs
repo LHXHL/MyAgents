@@ -1,6 +1,63 @@
 use super::*;
 use crate::mcp_selection::normalize_config_mcp_selections;
 
+/// Public discovery metadata only. Do not invoke startup migrations or persist
+/// read-time healing when merely listing connections.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ChannelDiscoveryConfig {
+    pub id: String,
+    #[serde(alias = "type")]
+    pub platform: ImPlatform,
+    pub openclaw_plugin_id: Option<String>,
+    pub name: Option<String>,
+    #[serde(skip)]
+    pub agent_name: Option<String>,
+}
+
+pub(crate) fn read_channel_discovery_configs(
+    path: &Path,
+) -> Result<Vec<ChannelDiscoveryConfig>, String> {
+    let value = crate::config_io::read_config_json(path)?;
+    let mut channels = Vec::new();
+    for agent in value
+        .get("agents")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        for channel in agent
+            .get("channels")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if let Ok(mut metadata) =
+                serde_json::from_value::<ChannelDiscoveryConfig>(channel.clone())
+            {
+                metadata.agent_name = agent
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned);
+                channels.push(metadata);
+            }
+        }
+    }
+    let legacy = value
+        .get("imBotConfigs")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_else(|| value.get("imBotConfig").cloned().into_iter().collect());
+    for channel in legacy {
+        if let Ok(metadata) = serde_json::from_value::<ChannelDiscoveryConfig>(channel) {
+            if !channels.iter().any(|existing| existing.id == metadata.id) {
+                channels.push(metadata);
+            }
+        }
+    }
+    Ok(channels)
+}
+
 // ===== Auto-start on app launch =====
 
 /// Config shape from ~/.myagents/config.json (only what we need)
@@ -123,6 +180,47 @@ pub(crate) fn agent_id_for_project(project_id: &str) -> Option<String> {
         .filter(|id| !id.is_empty());
     let agent_id = matches.next()?;
     matches.next().is_none().then_some(agent_id)
+}
+
+/// Resolve an unbound Session through the Project's explicit Agent identity.
+/// Resolved workspace paths also include legacy extras and are not authority.
+pub(super) fn project_agent_for_workspace(
+    workspace: &std::path::Path,
+) -> Result<Option<String>, String> {
+    project_agent_for_workspace_with(
+        &read_projects_for_agent_projection(),
+        &workspace.to_string_lossy(),
+    )
+}
+
+fn project_agent_for_workspace_with(
+    projects: &[PartialProjectEntry],
+    workspace: &str,
+) -> Result<Option<String>, String> {
+    let identity = crate::cron_task::normalize_path(workspace);
+    let mut matches = projects.iter().filter(|project| {
+        project
+            .path
+            .as_deref()
+            .is_some_and(|path| crate::cron_task::normalize_path(path) == identity)
+    });
+    let project = matches.next();
+    if matches.next().is_some() {
+        return Err("Workspace has duplicate Project identities.".into());
+    }
+    let Some(project) = project else {
+        return Ok(None);
+    };
+    if project.archived_at.is_some() {
+        return Ok(None);
+    }
+    let Some(agent_id) = project.agent_id.as_deref().filter(|id| !id.is_empty()) else {
+        return Ok(None);
+    };
+    if let Some(error) = agent_claim_conflict(projects, agent_id) {
+        return Err(error);
+    }
+    Ok(Some(agent_id.to_string()))
 }
 
 /// The only Rust compatibility reader for historical agents[].workspacePath.
@@ -660,6 +758,43 @@ fn find_missing_startable_agent_channels(
 mod workspace_projection_tests {
     use super::*;
     use crate::mcp_selection::normalize_mcp_selection_field;
+
+    #[test]
+    fn unbound_channel_scope_uses_project_agent_not_legacy_workspace_aliases() {
+        let projects: Vec<PartialProjectEntry> = serde_json::from_value(serde_json::json!([
+            {"id":"p", "agentId":"selected", "path":"/repo/current"}
+        ]))
+        .unwrap();
+        for selected_channels in [
+            serde_json::json!([]),
+            serde_json::json!([{"id":"selected-bot", "type":"telegram", "enabled":true}]),
+        ] {
+            let value = serde_json::json!({"agents":[
+                {"id":"selected", "name":"Selected", "enabled":true, "channels":selected_channels},
+                {"id":"extra", "name":"Extra", "enabled":true, "workspacePath":"/repo/current", "channels":[{"id":"extra-bot", "type":"telegram", "enabled":true}]}
+            ]});
+            let projected = project_agent_workspaces_with(&value, &projects, agents_from(&value));
+            assert_eq!(projected.len(), 2, "legacy extras remain readable");
+            let owner = project_agent_for_workspace_with(&projects, "/repo/current")
+                .unwrap()
+                .unwrap();
+            let selected = projected.iter().find(|agent| agent.id == owner).unwrap();
+            assert_eq!(selected.id, "selected");
+            assert!(selected
+                .channels
+                .iter()
+                .all(|channel| channel.id != "extra-bot"));
+        }
+        assert_eq!(
+            project_agent_for_workspace_with(&projects, "/repo/unassigned").unwrap(),
+            None
+        );
+        assert!(project_agent_for_workspace_with(
+            &[projects[0].clone(), projects[0].clone()],
+            "/repo/current"
+        )
+        .is_err());
+    }
 
     #[test]
     fn mcp_selection_compatibility_matches_typescript_fixtures() {
@@ -4149,5 +4284,42 @@ mod enabled_intent_tests {
         let actual: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(actual, expected);
+    }
+}
+
+#[cfg(test)]
+mod channel_discovery_tests {
+    use super::read_channel_discovery_configs;
+
+    #[test]
+    fn discovery_leaves_migratable_config_and_backups_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        let config = serde_json::json!({
+            "agents": [{"id": "agent", "name": "Mino", "providerEnvJson": {}, "channels": [
+                {"id": "lark", "type": "openclaw:openclaw-lark", "name": "Lark", "openclawPluginConfig": {"streaming": "true"}},
+                {"id": "wecom", "type": "openclaw:wecom", "openclawPluginId": "wecom-openclaw-plugin"}
+            ]}],
+            "imBotConfigs": [
+                {"id": "lark", "platform": "telegram"},
+                {"id": "legacy", "platform": "dingtalk", "enabled": false}
+            ]
+        });
+        let original = serde_json::to_string(&config).unwrap();
+        std::fs::write(&path, &original).unwrap();
+        let backup = path.with_file_name("config.json.bak");
+        std::fs::write(&backup, "original backup").unwrap();
+        let metadata = read_channel_discovery_configs(&path).unwrap();
+        assert_eq!(metadata.len(), 3);
+        assert_eq!(metadata[0].agent_name.as_deref(), Some("Mino"));
+        assert_eq!(metadata[0].platform.to_string(), "openclaw:openclaw-lark");
+        assert_eq!(
+            metadata[1].openclaw_plugin_id.as_deref(),
+            Some("wecom-openclaw-plugin")
+        );
+        assert_eq!(metadata[2].id, "legacy");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        assert_eq!(std::fs::read_to_string(&backup).unwrap(), "original backup");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
     }
 }

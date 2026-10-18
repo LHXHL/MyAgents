@@ -201,6 +201,8 @@ export interface ExternalAssistantSnapshotState {
 }
 
 export interface ExternalSendContext {
+  channelPrimaryReminder?: boolean;
+  channelSnapshot?: import('../../session-core/channel-context').ChannelTurnSnapshot | null;
   /** DSH uses the Product Provider picker; external CLIs own their Provider. */
   providerRoute?: import('../../../shared/providerRoute').ProviderRoute;
   desktopQuery?: import("../../../shared/agentMentions").DesktopQueryDraft;

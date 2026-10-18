@@ -254,7 +254,7 @@ V2 的 live projection 与异步 writer 同属 SessionStore。约 100 ms 的持�
 
 Rust 按 `(sidecar key, generation)` 把控制请求和 SSE 代理到当前进程。每次实际 replacement 都产生新 generation；旧 generation 的 response、terminal、activity 和 notification claim 必须丢弃。
 
-已恢复历史 Tab 以 REST 读取历史和当前状态，再按 revision 接收 SSE 增量，并拒绝 cold-history replay 覆盖该 baseline。尚未采用 REST baseline 的 SSE-native 新生会话，可在重连时采用有序 cold-history snapshot 修复遗漏的正文与创建事件；详见 [V2 transcript](./session_transcript_v2.md)。不能把断线期间缺失的 SSE 当成历史不存在。
+历史 Tab 以 REST 读取历史和当前状态，再按 revision 接收 SSE 增量。SSE 建连只发送状态/live row 与 snapshot revision，不全量重放冷历史；新会话首次实时输出保持即时，后续连接发现基线缺口时同样使用既有分页 REST restore。与已有基线一致的重连无需重读，idle 时的版本缺口也不能等下一条增量才发现；详见 [V2 transcript](./session_transcript_v2.md)。不能把断线期间缺失的 SSE 当成历史不存在。
 
 SSE transport 断开不代表用户取消，也不拥有 abort 权限。turn 继续执行并持久化；只有显式 Stop、Session lifecycle 命令、Runtime terminal 或 Sidecar termination 能改变执行状态。
 
@@ -271,6 +271,14 @@ Builtin 手动强制发送在旧 turn result 中把 in-flight 项从队列交给
 普通 Session 的系统完成通知由 Rust `notification.rs` 统一裁决。Tab SSE proxy 与无 Tab 的 `BackgroundCompletion` 只能向当前 Sidecar generation 申请一次性资格，再由通知 owner 判断 origin、窗口焦点、偏好、badge 与 deep-link。
 
 Task、Goal、Agent Channel、Memory、Heartbeat 等领域使用自己的通知/投递语义。transport 断线期间的 turn 仍可恢复历史，但普通通知没有 durable outbox，不能承诺断线窗口补发。
+
+### 主窗口 WebContent replacement
+
+原生主窗口的 `MainRendererState` 识别本次进程内的新 Renderer 实例。主入口在挂载 App / TabProvider 前完成 attach：冷启动维持“主动退出后 Launcher、异常退出/更新后提供恢复入口”的策略；同一 App 内的 Renderer replacement 自动走既有 Tab 恢复、Session ensure/reconcile 流程，保留原 Tab 与 Session identity。
+
+`myagents.openTabs.v1` 中的 live Tabs 与可选 `pendingRestore` 分别表示当前布局和尚未接受的上次会话候选；后者同样使用 v1 白名单 codec，直到接受或主动忽略才消费。候选不占 live Tab 槽位；自动恢复因并发导航达到容量上限或 attach 失败的剩余项合入候选，不以 live 数量上限裁掉待恢复项。启动判定/自动恢复结算前不允许初始 Launcher 覆盖快照；手动恢复部分受容量限制或 attach 失败时保留剩余候选。冷启动优先采用本地 live 布局，其次采用更新重启的 durable live handoff，二者均为空时保留原候选。
+
+Renderer replacement 只停止主窗口 Tab 的旧 SSE transport，不动 Companion 或任何 Session owner。Rust 从 SidecarManager 当前及 recovering 的 owner 集合提供旧 Tab token 清单；恢复完成后，未接回的 exact token 复用正常关闭的 BackgroundCompletion → stop SSE → release Tab 顺序交接。旧 token 交接完成后才能公布/接受原候选及新增剩余候选，避免同 ID 重新接入与旧 release 竞争；复用 App 的恢复结算边界，不增加 native owner generation。SSE 重新订阅获取新的初始状态，不能因稳定 connection key 相同而沿用旧 JS listener 的流。这个窗口恢复机制不诊断或修复导致 WebContent 终止的内存根因。
 
 ## 7. 配置写入方向
 
@@ -326,3 +334,9 @@ Sidecar ready 而 External/DSH Product Session 尚未绑定 workspace owner 时�
 - Task / Goal：[`task_center.md`](task_center.md)、[`task_provider_routing.md`](task_provider_routing.md)
 - Prompt envelope：[`system_reminder_protocol.md`](system_reminder_protocol.md)
 - 可执行护栏：[`pit_of_success.md`](pit_of_success.md)
+
+### Channel 跨会话交接
+
+`myagents im send-message` 的其他实际会话目标由 Rust Channel owner 解析为原 Router peer key；同会话继续直接发送。缺少目标 Session 时，复用 `ensure_peer_snapshot` 与 `ensure_sidecar` 建立正常绑定及其配置快照，不能伪造 ImMessage，也不修改入站授权。持有原 peer fence 和 model-work gate 完成 `prepare_existing_delivery` / Inbox ACK，无新增队列或重放记录。
+
+Inbox 的可选 `send.request.channelHandoff` 是宿主数据，目标 admission 与 beforeDispatch 都检查实际 Product Session、连接 UUID、peer ID/ID 类型及私聊/群聊归属；不是从 XML 推导路由。目标 Runtime 沿原 realtime Inbox 队列消费，图片经 SessionEngine.images 进入原图片输入及 transcript，文件沿目标工作区引用持久保留。发送模式由目标本轮冻结；accepted 只表示队列 ACK。不为交接创建 replyBack 元数据，不自动返回整个私聊结果。

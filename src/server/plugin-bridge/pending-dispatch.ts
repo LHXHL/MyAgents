@@ -16,6 +16,7 @@ export type OpenClawReplyPayload = Record<string, unknown> & {
 };
 
 export interface PendingDispatchCallbacks {
+  onDeliveryMode?: (mode: 'auto' | 'tool_only') => void;
   onReplyStart?: () => MaybePromise<void>;
   onPartialReply?: (payload: OpenClawReplyPayload) => MaybePromise<void>;
   onReasoningStream?: (payload: OpenClawReplyPayload) => MaybePromise<void>;
@@ -43,6 +44,7 @@ type PendingOperation =
   | { kind: 'complete'; outcome: 'completed' | 'aborted' };
 
 export interface PendingDispatch {
+  deliveryMode: 'auto' | 'tool_only';
   requestId: string;
   chatId: string;
   pluginId: string;
@@ -156,6 +158,7 @@ async function settleCallbackFailure(
   error: unknown,
 ): Promise<void> {
   if (dispatch.settled) return;
+  if (dispatch.deliveryMode === 'tool_only') { settleResolved(dispatch, 'failed'); return; }
   dispatch.sealed = true;
   dispatch.queue = [];
   console.error(
@@ -176,6 +179,7 @@ async function settleCallbackFailure(
 }
 
 async function executeOperation(dispatch: PendingDispatch, operation: PendingOperation): Promise<void> {
+  if (dispatch.deliveryMode === 'tool_only' && operation.kind !== 'complete') return;
   switch (operation.kind) {
     case 'run-start':
       await dispatch.callbacks.onReplyStart?.();
@@ -259,6 +263,7 @@ export function registerPendingDispatch(
 
   return new Promise((resolve, reject) => {
     pendingByRequestId.set(requestId, {
+      deliveryMode: 'auto',
       requestId,
       chatId,
       pluginId,
@@ -281,6 +286,12 @@ export function registerPendingDispatch(
     });
     console.log(`[pending-dispatch] dispatch_registered pluginId=${pluginId} requestId=${requestId}`);
   });
+}
+
+export function setPendingDispatchDeliveryMode(requestId: string, mode: 'auto' | 'tool_only'): void {
+  const dispatch = getOpenDispatch(requestId);
+  dispatch.deliveryMode = mode;
+  dispatch.callbacks.onDeliveryMode?.(mode);
 }
 
 export function getPendingDispatch(requestId: string): PendingDispatch | undefined {

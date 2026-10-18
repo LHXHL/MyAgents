@@ -16,6 +16,8 @@ export type AssistantChannelDelivery =
 export type TurnChannelDelivery = Readonly<{
   user: UserChannelDelivery;
   assistant: AssistantChannelDelivery;
+  /** Effective execution snapshot, not current mutable channel configuration. */
+  mode?: import('../../shared/channelContext').ChannelDeliveryMode;
 }>;
 
 export const DESKTOP_CHANNEL_DELIVERY: TurnChannelDelivery = {

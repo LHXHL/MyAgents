@@ -159,7 +159,7 @@ use dingtalk::DingtalkAdapter;
 use feishu::FeishuAdapter;
 use group_history::GroupHistoryBuffer;
 use health::HealthManager;
-use router::{EnsureSidecarPrep, SessionRouter};
+use router::SessionRouter;
 use telegram::TelegramAdapter;
 use types::{GroupActivation, GroupPermission, ImConfig, ImPlatform};
 
@@ -207,30 +207,9 @@ pub(super) async fn ensure_sidecar_port_for_command<R: Runtime>(
     manager: &ManagedSidecarManager,
     health: &Arc<HealthManager>,
 ) -> Result<u16, String> {
-    let prep = {
-        let mut router_guard = router.lock().await;
-        router_guard
-            .prepare_ensure_sidecar(session_key, manager)
-            .await
-    };
-
-    match prep {
-        EnsureSidecarPrep::Healthy(port) => Ok(port),
-        EnsureSidecarPrep::NeedCreate(info) => {
-            // Command path only needs the port; is_new is irrelevant here (no
-            // config sync). Destructure the tuple but ignore the flag.
-            let (port, _is_new) =
-                SessionRouter::create_sidecar_blocking(info.clone(), app_handle, manager).await?;
-            {
-                let mut router_guard = router.lock().await;
-                router_guard.commit_ensure_sidecar(session_key, &info, port);
-            }
-            let _ =
-                health::persist_router_active_sessions(health, router, "command-ensure-sidecar")
-                    .await;
-            Ok(port)
-        }
-    }
+    let (port, _) = SessionRouter::ensure_sidecar(router, session_key, app_handle, manager).await?;
+    let _ = health::persist_router_active_sessions(health, router, "command-ensure-sidecar").await;
+    Ok(port)
 }
 
 /// Platform-agnostic adapter enum — avoids dyn dispatch overhead.
@@ -241,7 +220,31 @@ pub(crate) enum AnyAdapter {
     Bridge(Arc<BridgeAdapter>),
 }
 
+impl AnyAdapter {
+    /// Transport identity is supplied by the live adapter, not its installation config.
+    pub(crate) fn routing_platform(&self) -> Result<ImPlatform, String> {
+        match self {
+            Self::Telegram(_) => Ok(ImPlatform::Telegram),
+            Self::Feishu(_) => Ok(ImPlatform::Feishu),
+            Self::Dingtalk(_) => Ok(ImPlatform::Dingtalk),
+            Self::Bridge(adapter) => adapter.routing_platform(),
+        }
+    }
+}
+
 impl adapter::ImAdapter for AnyAdapter {
+    async fn peer_names(
+        &self,
+        targets: &super::peer_names::PeerNameTargets,
+    ) -> Vec<super::peer_names::PeerDisplayName> {
+        match self {
+            Self::Telegram(a) => a.peer_names(targets).await,
+            Self::Feishu(a) => a.peer_names(targets).await,
+            Self::Dingtalk(a) => a.peer_names(targets).await,
+            Self::Bridge(a) => a.peer_names(targets).await,
+        }
+    }
+
     async fn verify_connection(&self) -> adapter::AdapterResult<String> {
         match self {
             Self::Telegram(a) => a.verify_connection().await,
@@ -329,6 +332,16 @@ impl adapter::ImAdapter for AnyAdapter {
 }
 
 impl adapter::ImStreamAdapter for AnyAdapter {
+    async fn set_reply_delivery_mode(
+        &self,
+        request_id: &str,
+        mode: super::types::ChannelDeliveryMode,
+    ) -> adapter::AdapterResult<()> {
+        match self {
+            Self::Bridge(adapter) => adapter.set_reply_delivery_mode(request_id, mode).await,
+            _ => Ok(()),
+        }
+    }
     async fn send_message_returning_id(
         &self,
         chat_id: &str,

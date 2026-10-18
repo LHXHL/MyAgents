@@ -97,11 +97,14 @@ import {
   recordingTabProjection,
   sameRecordingTabProjection,
 } from '@/features/record/tabProjection';
-import { createChatTabLifecycle } from '@/features/chat/tabLifecycle';
+import { createChatTabLifecycle, detachChatTabResources } from '@/features/chat/tabLifecycle';
+import { COLD_RENDERER_ATTACHMENT, type RendererAttachment } from '@/utils/mainRenderer';
 import { useRecordTabLifecycle } from '@/features/record/useRecordTabLifecycle';
 import { useTabCloseController } from '@/tab-workspace/useTabCloseController';
 import {
   buildRestoredTabs,
+  serializeTabs,
+  loadPendingRestoredTabs,
   saveOpenTabs,
   hydratePersistedState,
   pickDurableOverride,
@@ -363,7 +366,7 @@ export interface LaunchProjectAnalyticsContext {
   assistantEntry?: AssistantEntry;
 }
 
-export default function App() {
+export default function App({ rendererAttachment = COLD_RENDERER_ATTACHMENT }: { rendererAttachment?: RendererAttachment } = {}) {
   const { t } = useTranslation('app');
   // Auto-update state (silent background updates)
   const {
@@ -450,19 +453,12 @@ export default function App() {
     toastRef.current.info(t('appChrome.maxTabsReached'));
   }, [t]);
 
-  // Multi-tab state.
-  //
-  // Startup behaviour (Issue #309): boot is ALWAYS a clean new launcher — we no
-  // longer auto-restore the previous session. Restoring is opt-in via the
-  // title-bar restore pill, surfaced only when the last exit was NOT a
-  // deliberate quit (i.e. a crash or an update-restart — see the boot-decision
-  // effect below). `buildRestoredTabs()` still runs synchronously here to
-  // CAPTURE the prior session's restorable tabs BEFORE the post-commit persist
-  // effect overwrites localStorage with this fresh launcher; the captured set
-  // becomes the pill's restore candidate. Those Tabs are not mounted until the
-  // user accepts the pill; the click path validates them before committing the
-  // final live Tab projection.
+  // Cold launches keep the opt-in restore policy. A native Renderer
+  // replacement resumes the currently-live layout automatically.
   const [restoreCandidate] = useState(() => buildRestoredTabs());
+  const [pendingRestoreCandidate] = useState(() => loadPendingRestoredTabs());
+  const [tabPersistenceReady, setTabPersistenceReady] = useState(false);
+  const tabPersistenceReadyRef = useRef(false);
   const [initialWorkspace] = useState(() => {
     const tab = createNewTab();
     return { tabs: [tab] as Tab[], activeTabId: tab.id };
@@ -498,9 +494,8 @@ export default function App() {
   const appRouteGenerationRef = useRef(0);
   const spaceRouteTabIdRef = useRef<string | null>(null);
 
-  // Restore pill (Issue #309). `restorePillCount > 0` shows it; the resolved
-  // candidate is held in a ref (NOT localStorage — the persist effect clears
-  // that on the fresh boot) so the user can still restore after starting work.
+  // Candidate is persisted separately from the current live layout until
+  // accepted or dismissed. A Launcher commit cannot consume it.
   const restoreCandidateRef = useRef<{
     tabs: Tab[];
     activeTabId: string | null;
@@ -590,21 +585,22 @@ export default function App() {
 
   // Persist open Chat / Record tabs after every structural change (Issue #232).
   // a POST-COMMIT effect — it flushes shortly after each tabs/activeTabId change
-  // (not synchronously inside the mutation). The payload is tiny (≤MAX_TABS × 4
-  // fields), and we deliberately avoid `beforeunload` (unreliable in Tauri
+  // (not synchronously inside the mutation). Only whitelisted tab identity
+  // fields persist; we deliberately avoid `beforeunload` (unreliable in Tauri
   // WKWebView; update install + app quit both exit from the Rust side, not a
   // renderer unload handshake — see the hide/quit flush below and
   // handleRestartAndUpdate).
   useEffect(() => {
-    saveOpenTabs(tabs, activeTabId);
-  }, [tabs, activeTabId]);
+    if (tabPersistenceReady) saveOpenTabs(tabs, activeTabId, restoreCandidateRef.current);
+  }, [tabs, activeTabId, tabPersistenceReady]);
 
   // Synchronous flush of the latest tab state. Used to close the narrow window
   // where the process exits (update relaunch, Cmd+Q / Dock quit) in the same
   // frame as a structural change, before the post-commit effect above runs.
   const flushOpenTabsNow = useCallback(() => {
+    if (!tabPersistenceReadyRef.current) return;
     const snapshot = tabWorkspaceController.getSnapshot();
-    saveOpenTabs([...snapshot.tabs], snapshot.activeTabId);
+    saveOpenTabs([...snapshot.tabs], snapshot.activeTabId, restoreCandidateRef.current);
   }, [tabWorkspaceController]);
 
   // Flush on window hide / pagehide — the Tauri-appropriate quit signal (the
@@ -624,46 +620,35 @@ export default function App() {
     };
   }, [flushOpenTabsNow]);
 
-  // Boot startup-behaviour decision (Issue #309). Boot already rendered a fresh
-  // launcher (no auto-restore); here we decide whether to OFFER restoring the
-  // previous session via the title-bar pill, by the EXIT REASON:
-  //   - Resolve the snapshot: the synchronous localStorage capture
-  //     (restoreCandidate) wins; the fsync durable backstop — written by
-  //     handleRestartAndUpdate right before the abrupt update-restart, where the
-  //     async WebView localStorage flush can be lost — fills in when the local
-  //     read came up EMPTY (pickDurableOverride).
-  //   - Read the Rust clean-exit marker: PRESENT means the user deliberately
-  //     quit (Cmd+Q / Dock / tray) → boot fresh, no pill. ABSENT means a crash
-  //     or an update-restart → offer to restore (preserves the #232 intent as an
-  //     opt-in, kills the #309 "stop force-restoring my session" complaint).
-  // Single-shot under StrictMode via the ref; loadAndClearOpenTabsDurable +
-  // consumeCleanExitMarker both delete on read, so a second pass is a no-op.
+  // Only cold application launches consume the exit/update handoff. A
+  // replacement Renderer already has its cause from the native window owner.
   const bootDecisionRef = useRef(false);
   useEffect(() => {
     if (bootDecisionRef.current) return;
     bootDecisionRef.current = true;
+    if (rendererAttachment.replacement) {
+      restoreCandidateRef.current = pendingRestoreCandidate;
+      return; // the automatic recovery effect enables persistence after settlement
+    }
     void (async () => {
       const durable = await loadAndClearOpenTabsDurable();
       const override = pickDurableOverride(restoreCandidate != null, durable);
-      const candidate = override
-        ? hydratePersistedState(override)
-        : restoreCandidate;
+      const candidate = override ? hydratePersistedState(override) : restoreCandidate ?? pendingRestoreCandidate;
       const lastExitWasClean = await consumeCleanExitMarker();
-      if (
-        candidate &&
-        shouldOfferRestore(lastExitWasClean, candidate.tabs.length)
-      ) {
+      if (candidate && shouldOfferRestore(lastExitWasClean, candidate.tabs.length)) {
         restoreCandidateRef.current = candidate;
         setRestorePillCount(candidate.tabs.length);
       }
+      tabPersistenceReadyRef.current = true;
+      setTabPersistenceReady(true);
     })();
-  }, [restoreCandidate]);
+  }, [restoreCandidate, pendingRestoreCandidate, rendererAttachment]);
 
-  // ✕ on the pill — dismiss without restoring (don't nag again this session).
   const handleDismissRestore = useCallback(() => {
     setRestorePillCount(0);
     restoreCandidateRef.current = null;
-  }, []);
+    flushOpenTabsNow();
+  }, [flushOpenTabsNow]);
 
   // Helper-overlay launches must hand `handleLaunchProject` a real, committed
   // active launcher tab. Activating before React commits the workspace snapshot
@@ -2793,11 +2778,8 @@ export default function App() {
   // candidates are validated through RecordStore before the shell commits them.
   // A deleted Record becomes the existing Record-list surface at the same Tab
   // position instead of creating an empty detail owner.
-  const handleRestoreLastSession = useCallback(async () => {
-    const candidate = restoreCandidateRef.current;
-    setRestorePillCount(0);
-    restoreCandidateRef.current = null;
-    if (!candidate || candidate.tabs.length === 0) return;
+  const restoreTabs = useCallback(async (candidate: ReturnType<typeof buildRestoredTabs>) => {
+    if (!candidate || candidate.tabs.length === 0) return null;
 
     type ValidatedRestoreTarget =
       | {
@@ -2887,13 +2869,24 @@ export default function App() {
       )
     ).filter((target): target is ValidatedRestoreTarget => target !== null);
 
-    if (validated.length === 0) return;
+    if (validated.length === 0) return null;
     const validTabs = validated.map(({ tab }) => tab);
     const validActiveTabId = validTabs.some(
       (tab) => tab.id === candidate.activeTabId,
     )
       ? candidate.activeTabId
       : null;
+    const remainingCandidate = () => {
+      const liveTabs = tabWorkspaceController.getSnapshot().tabs;
+      const remainingIds = new Set(validTabs.filter(tab => !liveTabs.some(live =>
+        live.id === tab.id ||
+        (tab.view === 'chat' && live.view === 'chat' && tab.sessionId === live.sessionId) ||
+        (tab.view === 'record' && live.view === 'record' && tab.recordId === live.recordId) ||
+        (tab.view === 'taskcenter' && live.view === 'taskcenter'),
+      )).map(tab => tab.id));
+      const remaining = candidate.tabs.filter(tab => remainingIds.has(tab.id));
+      return remaining.length ? { tabs: remaining, activeTabId: candidate.activeTabId } : null;
+    };
     let restoreResult:
       | ReturnType<typeof tabWorkspaceController.restoreWithPolicy>
       | undefined;
@@ -2917,7 +2910,7 @@ export default function App() {
       if (restoreBlockedByCapacity) {
         toastRef.current.info(t('appChrome.maxTabsReached'));
       }
-      return;
+      return remainingCandidate();
     }
 
     const { addedTabs, previousActiveTabId } = committedRestore;
@@ -2926,7 +2919,7 @@ export default function App() {
     validated.forEach(({ tab, releaseTransition }) => {
       if (!addedTabIds.has(tab.id)) releaseTransition?.();
     });
-    if (addedTargets.length === 0) return;
+    if (addedTargets.length === 0) return remainingCandidate();
     if (addedTargets.some((target) => target.kind === 'record-fallback')) {
       toastRef.current.info(t('appChrome.recordRestoreMissing'));
     }
@@ -2962,7 +2955,7 @@ export default function App() {
         failedTabIds.add(addedChatTargets[index].tab.id);
       }
     });
-    if (failedTabIds.size === 0) return;
+    if (failedTabIds.size === 0) return remainingCandidate();
 
     flushSync(() => {
       const removals = [...failedTabIds]
@@ -2977,7 +2970,68 @@ export default function App() {
         previousActiveTabId,
       );
     });
+    return remainingCandidate();
   }, [materializeExistingSessionTab, t, tabWorkspaceController]);
+
+  const restoreInProgressRef = useRef(false);
+  const handleRestoreLastSession = useCallback(async () => {
+    if (!tabPersistenceReadyRef.current || restoreInProgressRef.current) return;
+    const candidate = restoreCandidateRef.current;
+    if (!candidate) return;
+    restoreInProgressRef.current = true;
+    try {
+      const remaining = await restoreTabs(candidate);
+      // Capacity rejection or failed attachment leaves a retryable offer.
+      const pending = restoreCandidateRef.current;
+      if (pending) {
+        // Native recovery may have added other candidates during this await.
+        // Consume only this attempt's settled entries from the current offer;
+        // a user-dismissed offer stays dismissed.
+        const unsettledIds = new Set(remaining?.tabs.map(tab => tab.id));
+        const consumedIds = new Set(candidate.tabs.filter(tab => !unsettledIds.has(tab.id)).map(tab => tab.id));
+        const pendingTabs = pending.tabs.filter(tab => !consumedIds.has(tab.id));
+        restoreCandidateRef.current = pendingTabs.length ? { ...pending, tabs: pendingTabs } : null;
+        setRestorePillCount(pendingTabs.length);
+        flushOpenTabsNow();
+      }
+    } finally {
+      restoreInProgressRef.current = false;
+    }
+  }, [restoreTabs, flushOpenTabsNow]);
+
+  const nativeRecoveryStartedRef = useRef(false);
+  useEffect(() => {
+    if (!rendererAttachment.replacement || nativeRecoveryStartedRef.current || configLoading) return;
+    nativeRecoveryStartedRef.current = true;
+    void (async () => {
+      const remaining = await restoreTabs(restoreCandidate);
+      for (const owner of rendererAttachment.previousTabOwners) {
+        const retained = tabWorkspaceController.getSnapshot().tabs.some(tab =>
+          tab.view === 'chat' && tab.id === owner.tabId && tab.sessionId === owner.sessionId);
+        if (!retained) {
+          await detachChatTabResources({ id: owner.tabId, sessionId: owner.sessionId }, {
+            startBackgroundCompletion, stopSseProxy, releaseTabSession,
+            stopLegacyTabSidecar: stopTabSidecar,
+            log: (message, error) => console.error(message, error),
+          });
+        }
+      }
+      // Publish restore offers only after old-token retirement settles. A
+      // same-id retry must not race the old BackgroundCompletion/release await.
+      if (remaining) {
+        const pending = restoreCandidateRef.current;
+        const combined = serializeTabs(
+          [...remaining.tabs, ...(pending?.tabs ?? [])],
+          remaining.activeTabId ?? pending?.activeTabId ?? null,
+          Infinity,
+        );
+        restoreCandidateRef.current = combined ? hydratePersistedState(combined) : null;
+      }
+      tabPersistenceReadyRef.current = true;
+      setRestorePillCount(restoreCandidateRef.current?.tabs.length ?? 0);
+      setTabPersistenceReady(true);
+    })().catch(error => console.error('[App] Native Renderer recovery failed:', error));
+  }, [rendererAttachment, restoreCandidate, restoreTabs, configLoading, tabWorkspaceController]);
 
   /** Chat-local adapter: all history selections use the canonical new/jump/revive path. */
   const handleOpenChatHistorySession = useCallback(
@@ -4920,7 +4974,7 @@ export default function App() {
   return (
     <SessionDeletionContext.Provider value={handleDeleteSession}>
       <LinkContextMenuProvider>
-        <div className="flex h-screen bg-[var(--paper)]">
+        <div className="flex h-screen bg-[var(--paper)]" data-app-shell>
           <GlobalSidebar
             newAgentPanelOpen={newAgentPanelOpen}
             onNewAgentPanelOpenChange={setNewAgentPanelOpen}

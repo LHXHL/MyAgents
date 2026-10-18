@@ -731,7 +731,21 @@ describe('session-engine selector and adapters', () => {
           assistant: 'session-binding',
         },
       }),
+      undefined,
     );
+  });
+
+  it('carries Channel handoff images and the binding guard through both Runtime adapters', async () => {
+    const images = [{ kind: 'inline_base64' as const, name: 'photo.png', mimeType: 'image/png', data: 'eA==' }];
+    const beforeDispatch = vi.fn(async () => ({ accepted: true }));
+    const request = { text: 'handoff', images, beforeDispatch, sessionId: 'target', workspacePath: '/workspace' };
+    await getSessionEngine().enqueueInboxMessage(request);
+    expect(mocks.enqueueUserMessage.mock.calls.at(-1)?.[1]).toEqual(images);
+    expect(mocks.enqueueUserMessage.mock.calls.at(-1)?.[11]).toMatchObject({ beforeDispatch, inputSource: 'inbox', channelDelivery: { user: 'none', assistant: 'session-binding' } });
+    mocks.state.useExternal = true;
+    await getSessionEngine().enqueueInboxMessage(request);
+    expect(mocks.enqueueExternalSendForInbox.mock.calls.at(-1)?.[2]).toEqual(images);
+    expect(mocks.enqueueExternalSendForInbox.mock.calls.at(-1)?.[1]).toMatchObject({ beforeDispatch, channelDelivery: { user: 'none', assistant: 'session-binding' } });
   });
 
   it('exposes fresh inbox dispatch acceptance through builtin and external adapters', async () => {
@@ -847,6 +861,22 @@ describe('session-engine selector and adapters', () => {
 
     expect(mocks.enqueueUserMessage.mock.calls[0]?.[11]).toMatchObject({ beforeDispatch });
     expect(result.dispatchAcceptance).toBe(dispatchAcceptance);
+  });
+
+  it.each(['builtin', 'external'] as const)('captures %s SSE state without materializing cold replay', kind => {
+    mocks.state.useExternal = kind === 'external';
+    const live = {
+      snapshotRevision: 19, inMemoryMessages: [],
+      liveStreamingMessage: { id: 'live', role: 'assistant', content: 'partial', timestamp: new Date(0).toISOString() },
+      liveSessionState: 'running', pendingInteractiveRequests: [],
+    };
+    mocks.getBuiltinLiveSessionSnapshot.mockReturnValue(live);
+    mocks.getExternalLiveSessionSnapshot.mockReturnValue(live);
+    const snapshot = getSessionEngine().getStreamReplaySnapshot({ includeHistory: false });
+    expect(snapshot).toMatchObject({ snapshotRevision: 19, replayMessages: [], liveStreamingMessage: { id: 'live', content: 'partial' } });
+    expect(mocks.getMessages).not.toHaveBeenCalled();
+    expect(kind === 'builtin' ? mocks.getBuiltinLiveSessionSnapshot : mocks.getExternalLiveSessionSnapshot)
+      .toHaveBeenCalledWith(expect.any(String), { includeHistory: false });
   });
 
   it('exposes builtin read and config surfaces without route-level helpers', async () => {

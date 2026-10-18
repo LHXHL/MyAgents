@@ -176,3 +176,9 @@ Settings TTS 试听由设置弹窗自身持有，`useTtsPreview` 只是其局部
 | `src/renderer/components/tools/ToolAttachmentGallery.tsx` | 统一展示入口 |
 | `src/renderer/context/TabProvider.tsx` | 顶层 SSE attachment merge |
 | `src/renderer/components/tools/TaskTool.tsx` | nested sub-agent attachment 展示 |
+
+## Channel 交接的输入附件
+
+发送 CLI 的附件是输入文件，不是工具生成的 `ToolAttachment`。跨会话入口先读取并校验全批次，再由 Rust workspace IO 导入目标工作区 `myagents_files/channel-handoff/<eventId>/`。Inbox 只携带宿主生成的路径、名字、MIME、image、caption；拒绝投递时由 workspace IO 清理，ACK 不明时保留，成功后沿普通工作区文件生命周期保留。
+
+目标校验引用属于本事件目录；图片通过 SessionEngine 的既有 ImagePayload 输入，builtin/DSH/外部 adapter 都使用原 per-Session 附件持久化；文件用原 @工作区引用进入 payload/transcript，模型可读取或交给同一 CLI 发送。来源临时文件删除不影响目标副本；没有跨 Session ToolAttachment ref 或提示词内 base64。

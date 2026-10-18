@@ -91,6 +91,7 @@ export type DesktopAdmissionResult = {
 };
 
 export type ImMessageRequest = {
+  channelPrimaryReminder?: boolean;
   message: string;
   images?: ImagePayload[];
   requestId: string;
@@ -128,6 +129,7 @@ export type ImCancelResult = {
 
 export type InboxMessageRequest = {
   text: string;
+  images?: ImagePayload[];
   sessionId: string;
   workspacePath: string;
   scenario?: InteractionScenario;
@@ -199,6 +201,7 @@ export type InjectedTurnRequest = {
 };
 
 export type InjectedTurnResult = {
+  channelDeliveryMode?: import('../../shared/channelContext').ChannelDeliveryMode;
   success: boolean;
   enqueued?: boolean;
   /** The turn may still be alive and must remain addressable by its exact queue identity. */
@@ -300,6 +303,7 @@ export type SessionEngineReplayMessage = Omit<SessionMessage, 'content' | 'attac
 
 export type SessionEngineStreamReplaySnapshot = {
   sessionId: string;
+  snapshotRevision: number | null;
   initState: Record<string, unknown>;
   replayMessages: SessionEngineReplayMessage[];
   liveStreamingMessage?: SessionEngineReplayMessage | null;
@@ -419,7 +423,7 @@ export interface SessionEngine {
   getRuntimeIdentity(): SessionEngineRuntimeIdentity;
   getLiveSessionState(): SessionEngineLiveState;
   getLatestAssistantResult(): Promise<SessionEngineLatestResult>;
-  getStreamReplaySnapshot(): SessionEngineStreamReplaySnapshot;
+  getStreamReplaySnapshot(options?: { includeHistory?: boolean }): SessionEngineStreamReplaySnapshot;
   getSessionConfigSnapshot(): SessionEngineConfigSnapshot;
   inspectRuntime?(runtime: RuntimeType): Promise<import('../../shared/types/runtime').RuntimeInspection | null>;
   getCurrentSessionContext(): SessionEngineCurrentContext;

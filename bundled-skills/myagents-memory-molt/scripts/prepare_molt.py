@@ -10,12 +10,6 @@ from datetime import date
 from pathlib import Path
 
 
-RULE_CANDIDATES = {
-    "soul": ("02-SOUL.md", "SOUL.md"),
-    "user": ("03-USER.md", "USER.md"),
-    "memory": ("04-MEMORY.md", "MEMORY.md"),
-}
-
 
 def find_repo_from_cwd() -> Path:
     current = Path.cwd().resolve()
@@ -26,13 +20,21 @@ def find_repo_from_cwd() -> Path:
     sys.exit(1)
 
 
-def find_rule(repo: Path, kind: str) -> Path | None:
+def rule_files(repo: Path) -> list[Path]:
+    """Inventory direct regular Markdown files; do not impose a template layout."""
     rules = repo / ".claude" / "rules"
-    for name in RULE_CANDIDATES[kind]:
-        path = rules / name
-        if path.is_file():
-            return path
-    return None
+    if not rules.is_dir():
+        return []
+    return sorted(
+        (path for path in rules.iterdir()
+         if not path.is_symlink() and path.is_file() and path.suffix.lower() == ".md"),
+        key=lambda path: path.name,
+    )
+
+
+def find_rules(repo: Path, kind: str) -> list[Path]:
+    # Filename hints only. The Skill interprets roles in the workspace's architecture.
+    return [path for path in rule_files(repo) if kind in path.name.lower()]
 
 
 def rel(repo: Path, path: Path) -> str:
@@ -176,9 +178,15 @@ def init_progress(repo: Path, today: date) -> None:
         print(f"exists, not overwriting: {rel(repo, progress_path)}")
         return
 
-    soul_items = list_items(find_rule(repo, "soul"))
-    user_items = list_items(find_rule(repo, "user"), limit=30)
-    memory_items = list_items(find_rule(repo, "memory"), limit=60)
+    soul_items = [f"{rel(repo, path)}: {item}"
+                  for path in find_rules(repo, "soul")
+                  for item in list_items(path, limit=60)]
+    user_items = [f"{rel(repo, path)}: {item}"
+                  for path in find_rules(repo, "user")
+                  for item in list_items(path, limit=30)]
+    memory_items = [f"{rel(repo, path)}: {item}"
+                  for path in find_rules(repo, "memory")
+                  for item in list_items(path, limit=60)]
     promises = last_molt_promises(last_file)
     flags = gardener_flags(repo)
     logs = collect_recent_logs(memory_dir, today)
@@ -201,14 +209,14 @@ Rules:
 - [ ] Produce at least 3 cross-time patterns.
 
 ## 2. Belief Audit - MEMORY ({len(memory_items)} parsed items)
-{checkboxes(memory_items, "No parsed MEMORY list items; manually audit the file.")}
+{checkboxes(memory_items, "No parsed MEMORY items; inspect the existing architecture and audit this role if applicable.")}
 ## 3. User Model Audit - USER ({len(user_items)} parsed items)
-{checkboxes(user_items, "No parsed USER list items; manually audit the file.")}
+{checkboxes(user_items, "No parsed USER items; inspect the existing architecture and audit this role if applicable.")}
 ## 4. External Verification
 - [ ] Verify at least 3 time-sensitive claims, or mark them unverified.
 
 ## 5. Identity Coherence - SOUL ({len(soul_items)} parsed items)
-{checkboxes(soul_items, "No parsed SOUL list items; manually audit the file.")}
+{checkboxes(soul_items, "No parsed SOUL items; inspect the existing architecture and audit this role if applicable.")}
 ## 6. Five Required Outputs
 - [ ] New accepted belief.
 - [ ] Rejected old belief.
@@ -240,9 +248,12 @@ def print_preparation(repo: Path, today: date) -> None:
 
     print(f"# Molt Preparation - {today.isoformat()}\n")
     print("## Rule Files\n")
-    for kind in ("soul", "user", "memory"):
-        path = find_rule(repo, kind)
-        print(f"- {kind}: `{rel(repo, path)}`" if path else f"- {kind}: MISSING")
+    files = rule_files(repo)
+    for path in files:
+        print(f"- `{rel(repo, path)}`")
+    if not files:
+        print("- No direct Markdown rules found; inspect the workspace's memory architecture.")
+    print("\nNames are hints, not required layers. Read the workspace rules to determine scope.")
     print()
 
     print("## Previous Molt\n")

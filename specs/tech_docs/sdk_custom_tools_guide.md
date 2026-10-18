@@ -11,7 +11,7 @@ MyAgents 的 builtin custom tools 以 MCP server handler 为复用边界。Built
 | User-toggleable builtin | `builtin-mcp-meta.ts` + `builtin-mcp-registry.ts` | Sidecar 内按 ID 懒加载、按 Session 配置 |
 | Context-injected Channel tools | 对应 Channel/context module，例如 `im-bridge-tools.ts` | 只在所需 context 已建立后创建，可 live sync |
 | External stdio / HTTP MCP | 用户或 preset 配置 + MCP resolver | 由 Runtime adapter 启动或连接 |
-| Task、Goal、Record、IM media 等产品命令 | `myagents` CLI | 不再复制为 SDK-only MCP |
+| Task、Goal、Record 等产品命令 | `myagents` CLI | 不再复制为 SDK-only MCP |
 
 只有真正需要 in-process schema/handler、并且应暴露为模型工具的能力才进入 builtin MCP。普通应用 API、跨 Runtime 产品命令或一次性 helper 不应为了“方便调用”再造 MCP surface。
 
@@ -110,7 +110,7 @@ Integrated DSH 使用同一 discovery/dispatcher，但由 DSH compiler 创建 `h
 
 ## 不应恢复的旧 surface
 
-Task/Cron completion、IM scheduled delivery 和 IM media 已由统一 `myagents` CLI / management API 拥有。继续在工具指南中保留它们的旧 schema 会诱导新代码建立第二套 owner。若某 Runtime 需要这些能力，应通过系统 Prompt 的 CLI discovery 和相同 CLI contract 暴露，而不是恢复退役 MCP。
+Task/Cron completion 与 IM scheduled delivery 由统一 `myagents` CLI / management API 拥有。继续在工具指南中保留它们的旧 schema 会诱导新代码建立第二套 owner。这些能力保持 CLI discovery；渠道文本/媒体复用下述 CLI handler，不注册 MCP/host tool，也不恢复独立 IM media owner。
 
 ## 新增工具检查
 
@@ -123,3 +123,9 @@ Task/Cron completion、IM scheduled delivery 和 IM media 已由统一 `myagents
 7. 若 Managed Codex 也应支持，验证 host dispatcher 的 schema、name、result 和 teardown projection。
 
 测试至少覆盖 schema validation、成功/失败 result、并发 lazy load、load failure retry、Session reconfigure、MCP live mutation、Managed Codex reconnect 和大结果 spill。
+
+## 统一渠道消息工具
+
+`tools/channel-messaging.ts` 为 `myagents im send-message` 的统一 Node handler，各 Runtime 的 CLI 共用请求 schema、文件约束及 Rust management API。Rust 拥有连接、精确默认绑定和最终发送；调用方身份来自 Sidecar/generation，schema 不接受模型指定 sessionId。两种 mode 都提供工具，配置只管普通回推。
+
+Builtin、Managed Codex 新旧 thread、DSH、Claude Code 和系统 Codex 均通过既有 MyAgents CLI 运行 `myagents im send-message`。不注册新 MCP/host tool；system prompt 和逐轮 reminder 统一写 CLI 方法。可用性依赖可信 Session/Agent 资格，不依赖正在进行的 IM request。

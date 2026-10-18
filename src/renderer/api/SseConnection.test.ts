@@ -500,7 +500,7 @@ describe('SseConnection — payload recovery lifecycle', () => {
         kind: 'ref', id: 'b'.repeat(32), mimetype: 'application/json',
     } });
 
-    it('bounds browser payload retries even when every transport and an earlier ref succeed', async () => {
+    it('keeps retrying after four payload failures and recovers without reopening the surface', async () => {
         vi.useFakeTimers();
         mocks.state.isTauri = false;
         const sources: FakeSource[] = [];
@@ -531,9 +531,21 @@ describe('SseConnection — payload recovery lifecycle', () => {
                 if (attempt < 3) await vi.advanceTimersByTimeAsync(1000 * 2 ** attempt);
             }
             expect(sources).toHaveLength(4);
-            expect(statuses).toHaveBeenLastCalledWith('failed');
+            expect(statuses).toHaveBeenLastCalledWith('reconnecting');
+            expect(conn.isActive()).toBe(true);
+            vi.mocked(fetch).mockResolvedValue(new Response('{"recovered":true}'));
+            await vi.advanceTimersByTimeAsync(8_000);
+            expect(sources).toHaveLength(5);
+            const delivered = vi.fn();
+            conn.setEventHandler(delivered);
+            sources.at(-1)!.onopen!();
+            sources.at(-1)!.send(ref);
+            await vi.advanceTimersByTimeAsync(0);
+            expect(delivered).toHaveBeenCalledWith('chat:message-replay', { recovered: true }, { connectionGeneration: 5 });
+            expect(statuses).not.toHaveBeenCalledWith('failed');
+            await conn.disconnect();
             await vi.advanceTimersByTimeAsync(60_000);
-            expect(sources).toHaveLength(4);
+            expect(sources).toHaveLength(5);
             expect(conn.isActive()).toBe(false);
         } finally { await conn.disconnect(); }
     });

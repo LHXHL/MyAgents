@@ -1187,6 +1187,12 @@
       "uninstallConfirm": "卸载"
     },
     "channelDetail": {
+      "deliveryTitle": "消息发送方式",
+      "delivery_auto": "自动回推",
+      "delivery_tool_only": "仅工具发送",
+      "deliveryDescription_auto": "普通回答会自动发送到渠道；Agent 也可以主动发送指定文字、图片或文件。",
+      "deliveryDescription_tool_only": "普通回答仅在桌面会话中保留。Agent 必须调用发送工具，渠道用户才能收到消息。必要的审批和管理交互仍会显示。",
+      "deliveryNextTurn": "修改从下一轮执行开始生效，正在执行的轮次保持原发送方式。",
       "pluginLabel": "插件: {{name}}",
       "noExtraConfig": "此插件无需额外配置",
       "inputPlaceholder": "输入 {{key}}",
@@ -1282,7 +1288,11 @@
       "deleteChannel": "删除 Channel",
       "deleteConfirmTitle": "删除 Channel",
       "deleteConfirmMessage": "确定要删除此 Channel 吗？此操作不可撤销。",
-      "deleteConfirm": "删除"
+      "deleteConfirm": "删除",
+      "platformMentionOnlyDescription": "此渠道仅接收 @机器人 的群消息，不支持全部消息",
+      "groupPrerequisite_telegram": "接收全部消息需要将 Bot 设为群管理员，或在 BotFather 关闭隐私模式后重新加入群聊。",
+      "groupPrerequisite_feishu": "接收全部消息需要在飞书开放平台开通 im:message.group_msg 权限并发布应用。",
+      "groupPrerequisite_plugin": "实际可接收的消息范围取决于插件及平台权限。"
     },
     "channelWizard": {
       "toast": {

@@ -1,5 +1,7 @@
 # Memory Gardener Playbook
 
+文中的层名和路径是默认布局示例；按当前工作区记忆架构选择实际文件，必要时按该架构补建。
+
 这是 `myagents-memory-gardener` 的操作手册。原则在 `SKILL.md`，这里只写怎么下手。
 
 ## 1. 合并同根规则

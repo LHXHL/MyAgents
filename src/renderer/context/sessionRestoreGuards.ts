@@ -1,24 +1,8 @@
-// Pure decision core for coordinating the two history-restore paths in
-// TabProvider, extracted so the invariants are unit-testable (Functional Core /
-// Imperative Shell). See sessionRestoreGuards.test.ts.
-//
-// Background (#0608 — "restore drops recent messages"):
-//   A chat tab restores history through TWO paths that must not fight:
-//     1. REST `/sessions/:id` — reads DISK (authoritative, paginated, ordered).
-//        loadSession sets the full first page, then marks the session as
-//        REST-restored (`restoredSessionId`).
-//     2. SSE `/chat/stream` — on connect sends `chat:init` then replays the
-//        sidecar's IN-MEMORY history as `chat:message-replay` events.
-//   When both ran for the same session, a late `chat:init` (arriving in the
-//   commit window right after loadSession dropped its load guard) wiped the
-//   just-restored REST page, and the in-memory replay then refilled it with an
-//   older / truncated set — the user's most recent messages disappeared.
-//
-//   Fix: REST is the single source of truth for history. Once a session is
-//   REST-restored, SSE `chat:init` must not clear it and `chat:message-replay`
-//   must not re-deliver history (older pages come via `?before=`; the in-flight
-//   turn rides REST's liveStreamingMessage + live chunk events). These two pure
-//   predicates encode that coordination.
+// REST owns ordered, paginated history. SSE attachment now carries only live
+// state and a snapshot revision; a gap uses the same REST restore/fence.
+// These guards also reject legacy/native cold replay and protect visible history
+// from session-reset/init events. A live user echo is an admission event, not
+// cold history, and must still reach its normal projection path.
 
 import type { ContentBlock } from '@/types/chat';
 

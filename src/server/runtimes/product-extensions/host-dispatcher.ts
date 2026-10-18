@@ -29,6 +29,7 @@ type InProcessMcpServer = {
 };
 
 type ConnectedServer = {
+  ownership: { count: number };
   client: Client;
   server: McpServer;
   clientTransport: InMemoryTransport;
@@ -38,7 +39,7 @@ type ConnectedServer = {
 /** Cached builtin MCP instances reconnect across Codex process generations. */
 const serverReleaseByInstance = new WeakMap<McpServer, Promise<void>>();
 
-async function closeConnection(connection: ConnectedServer): Promise<void> {
+async function shutdownConnection(connection: ConnectedServer): Promise<void> {
   const release = Promise.allSettled([
     connection.client.close(),
     connection.server.close(),
@@ -64,43 +65,69 @@ function codexDynamicToolName(serverId: string, toolName: string): string {
   return `myagents__mcp__${safeServer}__${safeTool}`;
 }
 
+// A cached SDK server has one transport. Replacement candidates lease that
+// connection while the previous generation remains callable until admission.
+const connectionsByServer = new WeakMap<McpServer, { ownership: { count: number }; pending: Promise<ConnectedServer> }>();
+
+async function releaseConnection(connection: ConnectedServer): Promise<void> {
+  if (--connection.ownership.count > 0) return;
+  connectionsByServer.delete(connection.server);
+  await shutdownConnection(connection);
+}
+
+async function openConnection(serverId: string, config: InProcessMcpServer, ownership: { count: number }): Promise<ConnectedServer> {
+  await serverReleaseByInstance.get(config.instance);
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: `myagents-managed-codex-${serverId}`, version: '0.4.6' });
+  const connection = { ownership, client, server: config.instance, clientTransport, serverTransport };
+  let acquired = false;
+  try {
+    await config.instance.connect(serverTransport);
+    acquired = true;
+    await client.connect(clientTransport);
+    return connection;
+  } catch (error) {
+    // A failed connect never owns a pre-existing transport (e.g. another host).
+    if (acquired) await shutdownConnection(connection);
+    else await Promise.allSettled([client.close(), clientTransport.close(), serverTransport.close()]);
+    throw error;
+  }
+}
+
 async function connectServer(
   serverId: string,
   config: InProcessMcpServer,
 ): Promise<{ connection: ConnectedServer; tools: ConnectedMcpTool[] }> {
-  await serverReleaseByInstance.get(config.instance);
-  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  const client = new Client({ name: `myagents-managed-codex-${serverId}`, version: '0.4.6' });
+  let slot = connectionsByServer.get(config.instance);
+  if (!slot) {
+    const ownership = { count: 0 };
+    slot = { ownership, pending: openConnection(serverId, config, ownership) };
+    connectionsByServer.set(config.instance, slot);
+    const admitted = slot;
+    void slot.pending.catch(() => {
+      if (connectionsByServer.get(config.instance) === admitted) connectionsByServer.delete(config.instance);
+    });
+  }
+  // Reserve before yielding, including when the shared promise is already ready.
+  slot.ownership.count += 1;
+  let connection: ConnectedServer;
+  try { connection = await slot.pending; }
+  catch (error) { slot.ownership.count -= 1; throw error; }
   try {
-    await config.instance.connect(serverTransport);
-    await client.connect(clientTransport);
-    const listed = await client.listTools(undefined, { timeout: 5_000 });
+    const listed = await connection.client.listTools(undefined, { timeout: 5_000 });
     return {
-      connection: {
-        client,
-        server: config.instance,
-        clientTransport,
-        serverTransport,
-      },
+      connection,
       tools: listed.tools.map(tool => ({
-        exposedName: codexDynamicToolName(serverId, tool.name),
-        serverId,
-        nativeName: tool.name,
+        exposedName: codexDynamicToolName(serverId, tool.name), serverId, nativeName: tool.name,
         descriptor: {
           name: codexDynamicToolName(serverId, tool.name),
-          description: tool.description ?? '',
-          inputSchema: tool.inputSchema as Record<string, unknown>,
+          description: tool.description ?? '', inputSchema: tool.inputSchema as Record<string, unknown>,
         },
-        client,
+        client: connection.client,
       })),
     };
   } catch (error) {
-    await closeConnection({
-      client,
-      server: config.instance,
-      clientTransport,
-      serverTransport,
-    });
+    await releaseConnection(connection);
     throw error;
   }
 }
@@ -217,7 +244,7 @@ class McpHostToolDispatcher implements ProductHostToolDispatcher {
     this.disposed = true;
     console.log(`[product-host-tools] disposing ${this.connections.length} in-process MCP connection(s): ${reason}`);
     for (const connection of this.connections) {
-      void closeConnection(connection);
+      void releaseConnection(connection);
     }
   }
 }
@@ -269,7 +296,7 @@ export async function attachProductHostTools<T extends ProductHostToolInventory>
         return false;
       });
       if (duplicate) {
-        await closeConnection(connected.connection);
+        await releaseConnection(connected.connection);
         reports.push({
           component: 'host_tools',
           id: server.id,
@@ -298,7 +325,7 @@ export async function attachProductHostTools<T extends ProductHostToolInventory>
   }
 
   if (tools.length === 0) {
-    for (const connection of connections) void closeConnection(connection);
+    for (const connection of connections) void releaseConnection(connection);
     return { ...input.snapshot, components: reports };
   }
   const dispatcher = new McpHostToolDispatcher(tools, connections, input.sessionId);

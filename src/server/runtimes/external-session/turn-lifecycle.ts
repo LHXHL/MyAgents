@@ -39,9 +39,13 @@ let terminalObserverBarrier: Promise<void> = Promise.resolve();
 let currentTurnActivityFacts: SessionActivityTurnFacts | null = null;
 let lastSessionCompletionTerminal: SessionCompletionTerminal | null = null;
 type ExternalTurnChannelDeliveryState = {
+  mode?: import('../../../shared/channelContext').ChannelDeliveryMode;
   assistantDisposition: AssistantChannelDelivery;
   pendingAssistantDeliveries: Array<() => Promise<void>>;
 };
+let channelSnapshot: import('../../session-core/channel-context').ChannelTurnSnapshot | null = null;
+export function getExternalChannelSnapshot() { return channelSnapshot; }
+export function setExternalChannelSnapshot(snapshot: typeof channelSnapshot) { channelSnapshot = snapshot; }
 let channelDeliveryTail: Promise<void> = Promise.resolve();
 let currentTurnChannelDeliveryState: ExternalTurnChannelDeliveryState = {
   assistantDisposition: 'none',
@@ -84,9 +88,10 @@ export function admitExternalTurnChannelDelivery(
 ): void {
   currentTurnChannelDeliveryState = {
     assistantDisposition: delivery.assistant,
+    mode: delivery.mode,
     pendingAssistantDeliveries: [],
   };
-  if (userAdmission.kind === 'deliver-session-bound-user') {
+  if (delivery.mode !== 'tool_only' && userAdmission.kind === 'deliver-session-bound-user') {
     appendExternalUserChannelDelivery(userAdmission);
   }
 }
@@ -99,13 +104,14 @@ export function admitExternalRealtimeChannelDelivery(
 ): void {
   const priorState = currentTurnChannelDeliveryState;
   currentTurnChannelDeliveryState = {
+    mode: priorState.mode,
     assistantDisposition: reconcileRealtimeAssistantChannelDelivery(
       priorState.assistantDisposition,
       delivery.assistant,
     ),
     pendingAssistantDeliveries: priorState.pendingAssistantDeliveries,
   };
-  if (userAdmission.kind === 'deliver-session-bound-user') {
+  if (priorState.mode !== 'tool_only' && userAdmission.kind === 'deliver-session-bound-user') {
     appendExternalUserChannelDelivery(userAdmission);
   }
 }
@@ -115,7 +121,7 @@ export function stageExternalAssistantChannelDelivery(
   deliverAssistant: () => Promise<void>,
 ): boolean {
   const state = currentTurnChannelDeliveryState;
-  if (state.assistantDisposition !== 'session-binding') {
+  if (state.mode === 'tool_only' || state.assistantDisposition !== 'session-binding') {
     return false;
   }
   state.pendingAssistantDeliveries.push(deliverAssistant);
@@ -143,7 +149,7 @@ export function captureExternalAssistantChannelDelivery(): ExternalAssistantChan
     settled = true;
     settleDecision(deliver);
   };
-  if (captured.assistantDisposition === 'session-binding') {
+  if (captured.mode !== 'tool_only' && captured.assistantDisposition === 'session-binding') {
     // Reserve this turn's assistant positions before any persistence await.
     // A concurrently admitted next turn therefore joins after this batch even
     // though durability decides later whether these positions emit or skip.
@@ -194,6 +200,8 @@ function notifyBoundTurn(
   finalization: Promise<unknown>,
 ): void {
   const binding = currentTurnBinding;
+  const channel = channelSnapshot?.scope.channels.find(value => value.channelId === channelSnapshot?.scope.defaultTarget?.channelId);
+  if (channel) outcome = { ...outcome, channelDeliveryMode: channel.mode };
   currentTurnBinding = null;
   const finalized = finalization
     .catch((error) => {
@@ -278,6 +286,7 @@ export function isExternalTurnCurrent(queueId: string): boolean {
 }
 
 export function resetExternalTurnLifecycleState(): void {
+  channelSnapshot = null;
   turnCompleted = false;
   lastTurnSucceeded = false;
   currentTurnStartTime = 0;

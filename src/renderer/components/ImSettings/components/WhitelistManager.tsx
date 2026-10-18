@@ -1,3 +1,4 @@
+import { peerDisplayName } from '@/utils/peerDisplayName';
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import React, { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -6,10 +7,12 @@ import type { ImPlatform } from '../../../../shared/types/im';
 
 export default function WhitelistManager({
     users,
+    displayNames,
     onChange,
     platform = 'telegram',
 }: {
     users: string[];
+    displayNames?: Record<string, string>;
     onChange: (users: string[]) => void;
     platform?: ImPlatform;
 	}) {
@@ -50,7 +53,7 @@ export default function WhitelistManager({
                                 key={user}
                                 className="inline-flex items-center gap-1 rounded-full bg-[var(--paper-inset)] px-2.5 py-1 text-xs text-[var(--ink)]"
                             >
-                                {user}
+                                {peerDisplayName(user, displayNames?.[user])}
                                 <button
                                     onClick={() => handleRemove(user)}
                                     className="rounded-full p-0.5 text-[var(--ink-muted)] hover:text-[var(--error)]"
@@ -100,7 +103,7 @@ export default function WhitelistManager({
                             key={user}
                             className="inline-flex items-center gap-1 rounded-full bg-[var(--paper-inset)] px-2.5 py-1 text-xs text-[var(--ink)]"
                         >
-                            {user}
+                            {peerDisplayName(user, displayNames?.[user])}
                             <button
                                 onClick={() => handleRemove(user)}
                                 className="rounded-full p-0.5 text-[var(--ink-muted)] hover:text-[var(--error)]"

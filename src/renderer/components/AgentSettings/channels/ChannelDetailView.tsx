@@ -1,3 +1,4 @@
+import { imPlatformCapabilities } from '../../../../shared/imPlatformCapabilities';
 // Channel detail view — adapted from ImBotDetail for Agent+Channel architecture.
 // Keeps: credentials, binding, groups, platform-specific options, start/stop, enable/disable.
 // Removes: workspace, MCP, heartbeat (all Agent-level).
@@ -248,6 +249,8 @@ export default function ChannelDetailView({
     const [deleting, setDeleting] = useState(false);
     const [credentialsExpanded, setCredentialsExpanded] = useState<boolean | null>(null);
     const [bindingExpanded, setBindingExpanded] = useState<boolean | null>(null);
+    const [deliverySaving, setDeliverySaving] = useState(false);
+    const [deliveryError, setDeliveryError] = useState<string | null>(null);
     const [groupsExpanded, setGroupsExpanded] = useState<boolean | null>(null);
     const [pluginMissing, setPluginMissing] = useState(false);
     const [installedPlugin, setInstalledPlugin] = useState<InstalledPlugin | null>(null);
@@ -1046,6 +1049,7 @@ export default function ChannelDetailView({
                         ) : (
                             <WhitelistManager
                                 users={channel.allowedUsers ?? []}
+                                displayNames={channel.userDisplayNames}
                                 onChange={async (users) => {
                                     await patchChannel({ allowedUsers: users });
                                 }}
@@ -1057,8 +1061,33 @@ export default function ChannelDetailView({
             </div>
             )}
 
+            <section className="space-y-3 rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
+                <h3 className="text-sm font-semibold text-[var(--ink)]">{t('agentSettings.channelDetail.deliveryTitle')}</h3>
+                <div className="flex gap-2" role="group" aria-label={t('agentSettings.channelDetail.deliveryTitle')}>
+                    {(['auto', 'tool_only'] as const).map(mode => (
+                        <button type="button" key={mode} disabled={deliverySaving}
+                            aria-pressed={(channel.messageDeliveryMode ?? 'auto') === mode}
+                            className={`rounded-lg border px-3 py-2 text-sm ${(channel.messageDeliveryMode ?? 'auto') === mode ? 'border-[var(--accent)] text-[var(--accent)]' : 'border-[var(--line)] text-[var(--ink)]'} disabled:opacity-50`}
+                            onClick={async () => {
+                                setDeliverySaving(true);
+                                setDeliveryError(null);
+                                try { await patchChannel({ messageDeliveryMode: mode }); }
+                                catch (error) { setDeliveryError(String(error)); }
+                                finally { setDeliverySaving(false); }
+                            }}>
+                            {t(`agentSettings.channelDetail.delivery_${mode}`)}
+                        </button>
+                    ))}
+                </div>
+                <p className="text-xs text-[var(--ink-muted)]">{t(`agentSettings.channelDetail.deliveryDescription_${channel.messageDeliveryMode ?? 'auto'}`)}</p>
+                <p className="text-xs text-[var(--ink-muted)]">{t('agentSettings.channelDetail.deliveryNextTurn')}</p>
+                {deliveryError && <p role="alert" className="text-xs text-[var(--error)]">{deliveryError}</p>}
+            </section>
+
             {/* Group Permissions */}
             {(() => {
+                const capabilities = imPlatformCapabilities(channel.type);
+                if (capabilities.groups === 'none') return null;
                 const groupPerms = channel.groupPermissions ?? [];
                 const hasGroups = groupPerms.length > 0;
                 const pendingCount = groupPerms.filter(g => g.status === 'pending').length;
@@ -1092,15 +1121,15 @@ export default function ChannelDetailView({
                             <div className="space-y-4 px-5 pb-5">
                                 {/* Group activation mode */}
                                 {(() => {
-                                    const isWecom = channel.type === 'openclaw:wecom';
-                                    const effectiveMode: GroupActivation = isWecom ? 'mention' : (channel.groupActivation ?? 'mention');
+                                    const mentionOnly = capabilities.groups === 'mention';
+                                    const effectiveMode: GroupActivation = mentionOnly ? 'mention' : (channel.groupActivation ?? 'mention');
                                     return (
                                         <div className="flex items-center justify-between">
                                             <div>
                                                 <p className="text-sm font-medium text-[var(--ink)]">{t('agentSettings.channelDetail.groupActivation')}</p>
                                                 <p className="text-xs text-[var(--ink-muted)]">
-                                                    {isWecom
-                                                        ? t('agentSettings.channelDetail.wecomMentionOnlyDescription')
+                                                    {mentionOnly
+                                                        ? t('agentSettings.channelDetail.platformMentionOnlyDescription')
                                                         : effectiveMode === 'mention'
                                                             ? t('agentSettings.channelDetail.mentionOnlyDescription')
                                                             : t('agentSettings.channelDetail.alwaysDescription')}
@@ -1108,13 +1137,13 @@ export default function ChannelDetailView({
                                             </div>
                                             <div className="flex rounded-lg bg-[var(--paper-inset)] p-0.5">
                                                 {(['mention', 'always'] as GroupActivation[]).map(mode => {
-                                                    const disabled = isWecom && mode === 'always';
+                                                    const disabled = mentionOnly && mode === 'always';
                                                     const selected = effectiveMode === mode;
                                                     return (
                                                         <button
                                                             key={mode}
                                                             disabled={disabled}
-                                                            title={disabled ? t('agentSettings.channelDetail.wecomModeDisabledTitle') : undefined}
+                                                            title={disabled ? t('agentSettings.channelDetail.platformMentionOnlyDescription') : undefined}
                                                             onClick={async () => {
                                                                 if (disabled) return;
                                                                 await patchChannel({ groupActivation: mode });
@@ -1135,6 +1164,7 @@ export default function ChannelDetailView({
                                         </div>
                                     );
                                 })()}
+                                {capabilities.prerequisite && <p className="text-xs text-[var(--ink-muted)]">{t(`agentSettings.channelDetail.groupPrerequisite_${capabilities.prerequisite}`)}</p>}
                                 {/* Group list */}
                                 <GroupPermissionList
                                     permissions={groupPerms}

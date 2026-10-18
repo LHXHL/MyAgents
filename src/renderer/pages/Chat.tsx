@@ -1,3 +1,4 @@
+import { useChatWorkspaceLayout } from '@/hooks/useChatWorkspaceLayout';
 import { useChatDraftScope } from "@/hooks/useChatDraftScope";
 import type { Message } from "@/types/chat";
 import TaskDiscussionRecovery from "@/components/TaskDiscussionRecovery";
@@ -281,11 +282,8 @@ import {
 } from '@/utils/runtimeProviderProjection';
 import {
   createWorkspacePanelDisclosureState,
-  DEFAULT_WORKSPACE_LAYOUT_METRICS,
   nextSplitViewAfterBrowserClose,
   reduceWorkspacePanelDisclosure,
-  resolveWorkspacePanelMode,
-  shouldPresentBrowserFullscreen,
 } from '@/utils/chatWorkspaceLayout';
 import {
   isManagedProviderSessionSnapshot,
@@ -322,45 +320,6 @@ type SwitchDialogCopy = {
   message: string;
   confirmText: string;
 };
-
-type WorkspaceLayoutMetrics = {
-  viewportWidthPx: number;
-  contentMinWidthPx: number;
-  sidebarMinWidthPx: number;
-};
-
-function readRootPixelToken(tokenName: string, fallback: number): number {
-  if (typeof document === 'undefined') return fallback;
-  const value = Number.parseFloat(
-    getComputedStyle(document.documentElement).getPropertyValue(tokenName),
-  );
-  return Number.isFinite(value) ? value : fallback;
-}
-
-function readWorkspaceLayoutMetrics(): WorkspaceLayoutMetrics {
-  return {
-    viewportWidthPx:
-      typeof window === 'undefined'
-        ? Number.POSITIVE_INFINITY
-        : window.innerWidth,
-    contentMinWidthPx: readRootPixelToken(
-      '--breakpoint-mobile',
-      DEFAULT_WORKSPACE_LAYOUT_METRICS.contentMinWidthPx,
-    ),
-    sidebarMinWidthPx: readRootPixelToken(
-      '--sidebar-min-width',
-      DEFAULT_WORKSPACE_LAYOUT_METRICS.sidebarMinWidthPx,
-    ),
-  };
-}
-
-function shouldShowWorkspaceByDefault(): boolean {
-  const metrics = readWorkspaceLayoutMetrics();
-  return (
-    metrics.viewportWidthPx - metrics.sidebarMinWidthPx >=
-    metrics.contentMinWidthPx
-  );
-}
 
 // Lazy load FilePreviewModal for split view panel
 const FilePreviewModal = lazy(() => import('@/components/FilePreviewModal'));
@@ -964,34 +923,38 @@ export default function Chat({
   // Imperative handle for the inline title editor — lets the SessionMenuButton's
   // "重命名" item invoke the same flow as clicking the title.
   const titleEditorRef = useRef<SessionTitleEditorHandle>(null);
-  const [workspaceLayoutMetrics, setWorkspaceLayoutMetrics] = useState(
-    readWorkspaceLayoutMetrics,
-  );
-  const isNarrowLayout =
-    workspaceLayoutMetrics.viewportWidthPx <
-    workspaceLayoutMetrics.contentMinWidthPx;
   // If workspace would render as an overlay at startup, keep it hidden so it
   // does not block the chat before the user explicitly opens it.
   const [workspacePanelDisclosure, dispatchWorkspacePanelDisclosure] =
     useReducer(reduceWorkspacePanelDisclosure, undefined, () =>
-      createWorkspacePanelDisclosureState(shouldShowWorkspaceByDefault()),
+      createWorkspacePanelDisclosureState(false),
     );
   const {
     visible: showWorkspace,
     mounted: workspacePanelMounted,
     motion: workspacePanelMotion,
   } = workspacePanelDisclosure;
+  const defaultWorkspacePendingRef = useRef(true);
+  const workspacePanelMotionRef = useRef(workspacePanelMotion);
+  useLayoutEffect(() => { workspacePanelMotionRef.current = workspacePanelMotion; }, [workspacePanelMotion]);
   const workspacePanelUnmountTimerRef = useRef<number | null>(null);
   const clearWorkspacePanelUnmountTimer = useCallback(() => {
     if (workspacePanelUnmountTimerRef.current === null) return;
     window.clearTimeout(workspacePanelUnmountTimerRef.current);
     workspacePanelUnmountTimerRef.current = null;
   }, []);
+  const handleChatContainerResize = useCallback(() => {
+    if (workspacePanelMotionRef.current === null) return;
+    clearWorkspacePanelUnmountTimer();
+    dispatchWorkspacePanelDisclosure({ type: 'settle-layout' });
+  }, [clearWorkspacePanelUnmountTimer]);
   const handleExpandWorkspace = useCallback(() => {
+    defaultWorkspacePendingRef.current = false;
     clearWorkspacePanelUnmountTimer();
     dispatchWorkspacePanelDisclosure({ type: 'open' });
   }, [clearWorkspacePanelUnmountTimer]);
   const handleCollapseWorkspace = useCallback(() => {
+    defaultWorkspacePendingRef.current = false;
     clearWorkspacePanelUnmountTimer();
     dispatchWorkspacePanelDisclosure({ type: 'close' });
     workspacePanelUnmountTimerRef.current = window.setTimeout(() => {
@@ -1033,13 +996,6 @@ export default function Chat({
     introductionRefreshTrigger + workspaceChangeSignal,
     readIntroductionContent,
   );
-  useEffect(() => {
-    const updateLayoutMetrics = () =>
-      setWorkspaceLayoutMetrics(readWorkspaceLayoutMetrics());
-    updateLayoutMetrics();
-    window.addEventListener('resize', updateLayoutMetrics);
-    return () => window.removeEventListener('resize', updateLayoutMetrics);
-  }, []);
 
   // Split view: right-side file preview panel (experimental).
   // `initialEditMode` is set when a fresh `note-…md` is created via 「新建笔记」 —
@@ -1113,20 +1069,23 @@ export default function Chat({
     setBrowserCurrentUrl(u);
   }, []);
 
-  // Browser links stay inside MyAgents even when the split layout has no room.
-  // In that case the same BrowserPanel owner fills the Chat surface instead of
-  // falling back to a system browser.
-  const browserUsesFullscreen = shouldPresentBrowserFullscreen({
-    browserPresented: browserUrl !== null && splitActiveView === 'browser',
-    splitViewEnabled: isSplitViewEnabled,
-    narrowLayout: isNarrowLayout,
-  });
-
-  // Derived: is the right split panel visible?
   const splitPanelVisible =
     splitFile !== null ||
     (terminalPinned && (terminalAlive || splitActiveView === 'terminal')) ||
     browserUrl !== null;
+  const { containerRef: chatLayoutRef, ready: chatLayoutReady, isNarrowLayout,
+    browserUsesFullscreen, workspacePanelMode } = useChatWorkspaceLayout({
+    splitViewEnabled: isSplitViewEnabled,
+    splitPanelVisible, splitRatio,
+    browserPresented: browserUrl !== null && splitActiveView === 'browser',
+    onResize: handleChatContainerResize,
+  });
+  useLayoutEffect(() => {
+    if (!chatLayoutReady || !defaultWorkspacePendingRef.current) return;
+    defaultWorkspacePendingRef.current = false;
+    dispatchWorkspacePanelDisclosure({ type: 'initialize', visible: workspacePanelMode === 'inline' });
+  }, [chatLayoutReady, workspacePanelMode]);
+
   // Should the terminal component stay mounted? (for xterm.js state preservation)
   const terminalMounted =
     terminalAlive || (terminalPinned && splitActiveView === 'terminal');
@@ -1200,14 +1159,6 @@ export default function Chat({
     if (nextView) setSplitActiveView(nextView);
   }, [terminalPinned, terminalAlive, splitFile, cancelFilePreview]);
 
-  const workspacePanelMode = resolveWorkspacePanelMode({
-    viewportWidthPx: workspaceLayoutMetrics.viewportWidthPx,
-    splitPanelVisible:
-      isSplitViewEnabled && splitPanelVisible && !browserUsesFullscreen,
-    splitRatio,
-    contentMinWidthPx: workspaceLayoutMetrics.contentMinWidthPx,
-    sidebarMinWidthPx: workspaceLayoutMetrics.sidebarMinWidthPx,
-  });
   const shouldUseWorkspaceOverlay = workspacePanelMode === 'overlay';
 
   // Cmd+W: split panel visible → always close the active view first (no focus detection).
@@ -6247,7 +6198,7 @@ export default function Chat({
           onQuoteSelection={handleQuoteFileSelection}
           onRevealInTree={handleRevealInTree}
         >
-    <div className="relative flex h-full flex-row overflow-hidden overscroll-none bg-[var(--paper-elevated)] text-[var(--ink)]">
+    <div ref={chatLayoutRef} data-chat-layout className="relative flex h-full flex-row overflow-hidden overscroll-none bg-[var(--paper-elevated)] text-[var(--ink)]">
       {/* Left side: chat area (+ side workspace when wide) */}
       <div
         className={`relative flex min-w-0 flex-row overflow-hidden ${!isDraggingSplit ? 'transition-[width] duration-300 ease-in-out' : ''}`}

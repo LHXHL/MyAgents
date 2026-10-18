@@ -8,6 +8,7 @@ pub(crate) struct SessionChannelTarget {
     pub chat_id: String,
     pub channel_id: String,
     pub source_type: ImSourceType,
+    pub name: Option<String>,
 }
 
 type ChannelSnapshot = (
@@ -25,18 +26,84 @@ async fn find_in_snapshots(
         let peer = router
             .peer_sessions_iter()
             .find(|peer| peer.session_id == session_id)
-            .map(|peer| (peer.source_id.clone(), peer.source_type.clone()));
+            .map(|peer| {
+                (
+                    peer.source_id.clone(),
+                    peer.source_type.clone(),
+                    peer.source_display_name.clone(),
+                )
+            });
         drop(router);
-        if let Some((chat_id, source_type)) = peer {
+        if let Some((chat_id, source_type, name)) = peer {
             return Some(SessionChannelTarget {
                 adapter,
                 chat_id,
                 channel_id,
                 source_type,
+                name,
             });
         }
     }
     None
+}
+
+/// Tool resolution requires exact cardinality. The existing automatic router's
+/// first-match behavior is intentionally not changed by this API.
+pub(crate) async fn exact_live_bindings(
+    agents: Option<&ManagedAgents>,
+    im_bots: Option<&ManagedImBots>,
+    session_id: &str,
+) -> (
+    Vec<SessionChannelTarget>,
+    std::collections::HashMap<String, Arc<AnyAdapter>>,
+) {
+    let mut snapshots = Vec::new();
+    if let Some(agents) = agents {
+        let agents = agents.lock().await;
+        for agent in agents.values() {
+            for (id, channel) in &agent.channels {
+                snapshots.push((
+                    id.clone(),
+                    Arc::clone(&channel.bot_instance.adapter),
+                    Arc::clone(&channel.bot_instance.router),
+                ));
+            }
+        }
+    }
+    if let Some(bots) = im_bots {
+        let bots = bots.lock().await;
+        for (id, bot) in bots.iter() {
+            if !snapshots.iter().any(|(existing, _, _)| existing == id) {
+                snapshots.push((
+                    id.clone(),
+                    Arc::clone(&bot.adapter),
+                    Arc::clone(&bot.router),
+                ));
+            }
+        }
+    }
+    let live_channels = snapshots
+        .iter()
+        .map(|(id, adapter, _)| (id.clone(), Arc::clone(adapter)))
+        .collect();
+    let mut bindings = Vec::new();
+    for (channel_id, adapter, router) in snapshots {
+        for peer in router
+            .lock()
+            .await
+            .peer_sessions_iter()
+            .filter(|peer| peer.session_id == session_id)
+        {
+            bindings.push(SessionChannelTarget {
+                adapter: Arc::clone(&adapter),
+                channel_id: channel_id.clone(),
+                chat_id: peer.source_id.clone(),
+                source_type: peer.source_type.clone(),
+                name: peer.source_display_name.clone(),
+            });
+        }
+    }
+    (bindings, live_channels)
 }
 
 async fn bound_ids_in_snapshots(snapshots: Vec<ChannelSnapshot>) -> Vec<String> {

@@ -1,3 +1,7 @@
+import { createDirectoryPeerNamesResolver, type QueryDirectory, type PeerNameTargets } from './directory-peer-names';
+import { imPlatformCapabilities } from '../../shared/imPlatformCapabilities';
+import { normalizePluginMessage } from './channel-context';
+import { createWecomPeerNamesResolver } from './wecom-sender-name';
 /**
  * OpenClaw Channel Runtime Compatibility Shim
  *
@@ -183,7 +187,7 @@ function chunkByNewline(text: string, limit: number): string[] {
  * actually parse mention info (e.g. Feishu sets `WasMentioned` via
  * `mentionedBot(ctx.mentions)`) should opt into the mention gate.
  *
- * **WeCom exception**: the WeCom AI-Bot platform only delivers
+ * **Mention-only transports (WeCom and QQ)**: the WeCom AI-Bot platform only delivers
  * `aibot_msg_callback` for group chats when the bot is explicitly @-mentioned.
  * Every group message we receive from the wecom plugin is therefore an
  * @-mention by platform invariant, but the plugin's `buildMessageContext()`
@@ -192,9 +196,8 @@ function chunkByNewline(text: string, limit: number): string[] {
  * forever (see PRD 0.2.16 / unified-2026-05-14 log post 14:19:49 trace).
  */
 function defaultIsMentionForGroup(pluginId: string): boolean {
-  // WeCom: platform only delivers group callbacks on @-mention.
-  if (pluginId === 'wecom') return true;
-  return false;
+  // These installed plugins receive group callbacks only on @-mention.
+  return imPlatformCapabilities(`openclaw:${pluginId}`).groups === 'mention';
 }
 
 function booleanFromContext(value: unknown): boolean | undefined {
@@ -210,11 +213,37 @@ function booleanFromContext(value: unknown): boolean | undefined {
 /**
  * Create a compat channel runtime that routes inbound messages to Rust.
  */
-export function createCompatRuntime(rustPort: number, botId: string, pluginId: string) {
+export function createCompatRuntime(rustPort: number, botId: string, pluginId: string,
+  queryWecomSessions?: (accountId?: string) => Promise<unknown>,
+  queryDirectory?: QueryDirectory) {
   const rustBaseUrl = `http://127.0.0.1:${rustPort}`;
 
   // Mutable — updated after plugin registration when actual ID is known
   let currentPluginId = pluginId;
+  const resolvePeerNames = queryWecomSessions ? createWecomPeerNamesResolver(queryWecomSessions) : null;
+  const resolveDirectory = queryDirectory ? createDirectoryPeerNamesResolver(queryDirectory) : null;
+  async function peerNames(accountId?: string, targets: PeerNameTargets = { users: [], groups: [] }) {
+    if (resolvePeerNames && (currentPluginId === 'wecom' || currentPluginId === 'wecom-openclaw-plugin')) {
+      return resolvePeerNames(accountId);
+    }
+    return resolveDirectory ? resolveDirectory(targets, accountId) : [];
+  }
+  async function normalizeInbound(ctx: Record<string, unknown>, accountId?: string) {
+    const message = normalizePluginMessage(currentPluginId, ctx);
+    const chatType = String(ctx.ChatType || ctx.chatType || 'direct');
+    const destination = String(ctx.To || ctx.to || ctx.From || ctx.from || '');
+    const chatId = destination.includes(':') ? destination.split(':').slice(1).join(':') : destination;
+    if ((currentPluginId === 'wecom' || currentPluginId === 'wecom-openclaw-plugin')
+      && message.groupName === chatId) message.groupName = null;
+    if (!message.senderName || (chatType === 'group' && !message.groupName)) {
+      const peers = await peerNames(accountId, { users: !message.senderName && message.senderId ? [message.senderId] : [], groups: chatType === 'group' && !message.groupName ? [chatId] : [] });
+      message.senderName ??= peers.find(peer => peer.kind === 'user' && peer.id === message.senderId)?.name ?? null;
+      if (chatType === 'group') {
+        message.groupName ??= peers.find(peer => peer.kind === 'group' && peer.id === chatId)?.name ?? null;
+      }
+    }
+    return message;
+  }
 
   // Shim compat version — must match the version in sdk-shim/package.json.
   // Plugins check api.runtime.version (e.g. weixin's assertHostCompatibility)
@@ -224,6 +253,7 @@ export function createCompatRuntime(rustPort: number, botId: string, pluginId: s
   const runtime = {
     /** Update the plugin ID after registration */
     setPluginId(id: string) { currentPluginId = id; },
+    peerNames,
 
     /** OpenClaw host version — checked by plugins via assertHostCompatibility(). */
     version: SHIM_COMPAT_VERSION,
@@ -447,27 +477,33 @@ export function createCompatRuntime(rustPort: number, botId: string, pluginId: s
           }
 
           // Extract fields BEFORE registering pending dispatch (to avoid leak on empty content)
-          const text = String(ctx.BodyForAgent || ctx.Body || ctx.body || ctx.RawBody || '');
+          // Before Rust admits a turn, no ordinary output is authorized.
+          // The request's policy callback replaces this at actual admission;
+          // setup failures must not trigger plugin finally/debug fallback sends.
+          ctx.MyAgentsDeliveryMode = 'tool_only';
+          const normalized = await normalizeInbound(ctx, accountId);
+          const text = normalized.text;
           const mediaAttachments = await extractMediaAttachments(ctx);
           if (!text.trim() && mediaAttachments.length === 0) {
             console.log('[compat-runtime] Empty message (no text, no media) in protocol path, skipping');
             return { queuedFinal: 0, counts: {}, dispatcher: { waitForIdle: async () => {} } };
           }
 
-          const senderId = String(ctx.SenderId || ctx.senderId || '');
-          const senderName = String(ctx.SenderName || ctx.senderName || '');
+          const senderId = normalized.senderId;
+          const senderName = normalized.senderName || '';
           const chatType = String(ctx.ChatType || ctx.chatType || 'direct');
           const messageId = String(ctx.MessageSid || ctx.messageSid || ctx.MessageId || '');
           const groupId = String(ctx.QQGroupOpenid || ctx.GroupId || ctx.groupId || '');
           const isMention = booleanFromContext(ctx.IsMention ?? ctx.WasMentioned ?? ctx.isMention)
             ?? (chatType === 'group' ? defaultIsMentionForGroup(currentPluginId) : true);
-          const groupName = String(ctx.GroupSubject || ctx.GroupName || ctx.groupName || '') || undefined;
+          const groupName = normalized.groupName || undefined;
           const threadId = String(ctx.MessageThreadId || ctx.threadId || '') || undefined;
           const replyToBody = String(ctx.ReplyToBody || ctx.replyToBody || '') || undefined;
           const groupSystemPrompt = String(ctx.GroupSystemPrompt || ctx.groupSystemPrompt || '') || undefined;
 
           // Build protocol callbacks from the plugin's dispatcher and replyOptions
           const callbacks: PendingDispatchCallbacks = {
+            onDeliveryMode: mode => { ctx.MyAgentsDeliveryMode = mode; },
             onReplyStart: typeof replyOptions?.onReplyStart === 'function'
               ? replyOptions.onReplyStart.bind(replyOptions) as PendingDispatchCallbacks['onReplyStart']
               : undefined,
@@ -531,6 +567,7 @@ export function createCompatRuntime(rustPort: number, botId: string, pluginId: s
                 body: JSON.stringify({
                   botId,
                   pluginId: currentPluginId,
+                  sourceMetadata: normalized.sourceMetadata,
                   requestId,
                   deliveryProtocol: 'openclaw-reply',
                   senderId,
@@ -664,9 +701,14 @@ export function createCompatRuntime(rustPort: number, botId: string, pluginId: s
             return { ...result, dispatcher };
           }
 
-          const text = String(ctx.BodyForAgent || ctx.Body || ctx.body || ctx.RawBody || '');
-          const senderId = String(ctx.SenderId || ctx.senderId || '');
-          const senderName = String(ctx.SenderName || ctx.senderName || '');
+          // Before Rust admits a turn, no ordinary output is authorized.
+          // The request's policy callback replaces this at actual admission;
+          // setup failures must not trigger plugin finally/debug fallback sends.
+          ctx.MyAgentsDeliveryMode = 'tool_only';
+          const normalized = await normalizeInbound(ctx, String(ctx.AccountId || ctx.accountId || params.accountId || '') || undefined);
+          const text = normalized.text;
+          const senderId = normalized.senderId;
+          const senderName = normalized.senderName || '';
           const accountId = String(ctx.AccountId || ctx.accountId || params.accountId || '') || undefined;
           const chatType = String(ctx.ChatType || ctx.chatType || 'direct');
           // Chat ID extraction: ctx.To is the REPLY DESTINATION in OpenClaw protocol.
@@ -685,7 +727,7 @@ export function createCompatRuntime(rustPort: number, botId: string, pluginId: s
             ?? (chatType === 'group' ? defaultIsMentionForGroup(currentPluginId) : true);
 
           // Group metadata from OpenClaw plugin dispatch context
-          const groupName = String(ctx.GroupSubject || ctx.GroupName || ctx.groupName || '') || undefined;
+          const groupName = normalized.groupName || undefined;
           const threadId = String(ctx.MessageThreadId || ctx.threadId || '') || undefined;
 
           // Quoted reply content (for threaded replies)
@@ -713,6 +755,7 @@ export function createCompatRuntime(rustPort: number, botId: string, pluginId: s
           let finalCount = 0;
           const completionPromise = requestId
             ? registerPendingDispatch(requestId, chatId, {
+              onDeliveryMode: mode => { ctx.MyAgentsDeliveryMode = mode; },
               onReplyStart: async () => {
                 await (replyOptions?.onAgentRunStart as (() => unknown) | undefined)?.();
                 await (replyOptions?.onAssistantMessageStart as (() => unknown) | undefined)?.();
@@ -750,6 +793,7 @@ export function createCompatRuntime(rustPort: number, botId: string, pluginId: s
                 body: JSON.stringify({
                   botId,
                   pluginId: currentPluginId,
+                  sourceMetadata: normalized.sourceMetadata,
                   ...(requestId ? { requestId, deliveryProtocol: 'openclaw-reply' } : {}),
                   senderId,
                   senderName: senderName || undefined,

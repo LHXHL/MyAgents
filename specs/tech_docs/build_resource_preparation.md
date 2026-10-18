@@ -44,6 +44,12 @@ Linux 的 setup 通过 `build_linux.sh --install-deps` 和 `--prepare` 复用资
 
 macOS 正式构建完成各目标打包后，收尾步骤使用同一准备入口恢复主机架构的 Node、DSH 和 CLIProxy，并在恢复 DSH 选择后重建业务 bundle。Node 与 DSH 的原生依赖必须属于同一目标，业务 bundle 也必须绑定恢复后的 DSH 身份；只恢复 Node 会让本地启动加载另一架构的 Runtime。此步骤只更新 checkout 的 staging，不修改已经打包的 App；任一准备或业务构建失败都会使脚本失败，重跑准备入口可恢复，不提供跨资源事务回滚。
 
+## Tauri 事件依赖补丁
+
+Tauri JS event API 与 Rust 生成的注册/清理脚本是成对的依赖契约。当前精确版本、原始/修复字节由 `scripts/patches/tauri-events.json` 与 Cargo manifest/lock 固定；`postinstall` 应用 ESM/CJS 补丁，web dev/build/typecheck 检查补丁存在。Rust 经 `[patch.crates-io]` 使用 `vendor/tauri`，原始 crate 清单、唯一源码差异与移除条件见该目录 `MYAGENTS_PATCH.md`。构建不改写共享 Cargo 缓存，也不在业务组件注入事件补救逻辑。
+
+这份补丁修复 callback 释放依赖延迟 descriptor 的竞态，以及 descriptor / 空 event table 未释放；必须随同一次 native + web 构建交付，不能仅热更新 JS 后假定旧 native 也已修复。升级时同时复核 `scripts/tauri-event-lifecycle.test.mjs` 与 `npm run test:native:tauri-events`；已完成取消不应留下回调或元数据，延迟注册不得复活取消对象。该生命周期修复不等于确认 #667 OOM 原因。
+
 ## 业务 bundle 与本次 Runtime 选择一致
 
 `npm run build:assets` 是前端、Sidecar、Bridge、CLI 的组合入口。构建派生的 DSH 契约和身份进入业务 bundle，因此必须在选定本次 target 的 handoff 后执行，不能跨 target 复用上一份 bundle。各产物细节仍属于既有 Vite / esbuild driver。

@@ -99,7 +99,7 @@ Managed Runtime 的目标下载版本以 `src/shared/managed-codex-runtime.json`
 
 打包时的 DSH 来源由 [构建资源准备](build_resource_preparation.md#integrated-dsh-构建来源) 选定。Release lock 是正式包的 authority；显式本地 Dev 构建从已验证 handoff 派生一次性 effective lock。两种来源都在打包前冻结相同的 TypeScript/Rust 运行身份，不进入 Agent 设置或 Session 可变配置。
 
-DSH 是受控分发的 Integrated Runtime。`shared/integrated-runtimes/resolver.ts` 结合 distribution policy、Agent `runtimePreference`、Provider constraint 与 readiness，解析 `EffectiveRuntimeBinding`。产品发行版始终开放 Runtime 选择；Agent 未明确选择时，新 ordinary-provider Session 使用 allowlisted `config.defaultIntegratedRuntime` 或构建默认，明确选择则优先。通用设置中的“Agent 功能设置”配置此默认值，仅影响新 Session，不将显示的默认值自动写回 Agent。已有 Session 优先读取 frozen `runtimeBinding`，未知组合只允许历史读取，不能静默回退 builtin。
+DSH 是受控分发的 Integrated Runtime。`shared/integrated-runtimes/resolver.ts` 结合 distribution policy、Agent `runtimePreference`、Provider constraint 与 readiness，解析 `EffectiveRuntimeBinding`。产品发行版始终开放 Runtime 选择；Agent 未明确选择时，新 ordinary-provider Session 使用 allowlisted `config.defaultIntegratedRuntime` 或构建默认，明确选择则优先。通用设置中的“Agent 功能设置”配置此默认值，仅影响新 Session，不将显示的默认值自动写回 Agent。 Rust 按工作区的 `Project.agentId` 解析新 Session 身份时也必须保留明确的 builtin 结果；`None` 只表示无法确定 Agent 身份，不能用来表示 SDK，否则调用方会再次套用全局默认。已有 Session 优先读取 frozen `runtimeBinding`，未知组合只允许历史读取，不能静默回退 builtin。
 
 `SessionEngine` selector 将 DSH 交给 integrated adapter，其实现复用 external-session 的队列、交互、transcript 和配置 owner；调用方判断 SDK 专属路径时使用 `engine.kind === 'builtin'`，不能把所有非 external engine 当作 SDK。
 
@@ -203,7 +203,7 @@ DSH 权限选择先存为 Session 的期望模式；当前 turn 使用 admission
 | `runtime-config.ts` | desired/effective config 与 source filtering |
 | `transcript-persistence.ts` | user append、assistant commit、cursor 与产品内容投影；联合历史 mutation 由 facade 调用 SessionStore |
 | `content-blocks.ts` | V1 内容块与共用展示 policy；V2 内容由 SessionStore projection 持有 |
-| `interactive.ts` | permissions、questions、IM/Inbox/watch association |
+| `interactive.ts` | permissions、questions、IM/Inbox/watch association；按 requestId 读取渠道入站事实与发布本轮发送策略 |
 | `extensions.ts` | Managed Codex extension projection |
 
 facade 负责组装 owner，不重新保存同一份 mutable state。Route 和 SessionEngine adapter 不直接 import这些内部模块。
@@ -360,3 +360,9 @@ native compact 是 capability，不是所有 Runtime 的共同功能。builtin �
 | `src/renderer/components/RuntimeDiagnosticsBanner.tsx` | Runtime 诊断投影 |
 
 工具附件的 current wire、落盘与展示规则见 [`tool_attachment_pipeline.md`](tool_attachment_pipeline.md)。
+
+## Channel execution contract
+
+Runtime selector/SessionEngine 路由不变；Builtin queue item 和 External lifecycle 是本轮渠道配置快照 owner。固定 system 能力与逐输入 CHANNEL_CONTEXT 共用 shared 模板，实时输入复用该轮 mode，排队/拒绝 steer 后的下一轮重新捕获。成功 terminal 携带 frozen mode 给 Heartbeat/Goal owner；普通镜像使用同一策略，不读最新 Channel 配置覆盖旧结果。
+
+统一发送通过现有 MyAgents CLI，handler 与上下文规则见 [自定义工具指南](sdk_custom_tools_guide.md#统一渠道消息工具)。Builtin、Managed Codex 新旧 thread、DSH、Claude Code 和系统 Codex 均运行 `myagents im send-message`；不额外注册 MCP/host tool，不修改 Session runtime/MCP authority，也不要求 /new。

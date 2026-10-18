@@ -52,3 +52,41 @@ describe('buildDshSystemContext', () => {
     }]);
   });
 });
+
+
+describe('Channel Prompt Contract v1 stable system sections', () => {
+  it('keeps variable identity and delivery facts out of long-lived instructions', async () => {
+    const { CHANNEL_PROMPT } = await import('../shared/channelPrompt');
+    const scenario = {type: 'agent-channel', platform: 'openclaw-weixin', sourceType: 'private', botName: 'not a verified identity'} as const;
+    const text = buildSystemPromptAppend(scenario, {cliToolsEnabled: true});
+    expect(text).toContain(CHANNEL_PROMPT);
+    expect(text.match(/<myagents-channel>/g)).toHaveLength(1);
+    expect(text).toContain('## 对话环境');
+    expect(text).toContain('## 消息发送');
+    expect(text).not.toContain('not a verified identity');
+    expect(text).not.toContain('myagents-cli-im-media');
+    expect(text).not.toContain('im send-media');
+    expect(buildDshSystemContext(scenario).sections.find(section => section.id === 'myagents:session')?.text).toContain(CHANNEL_PROMPT);
+    const desktop = buildSystemPromptAppend({type:'desktop'}, {channelMessagingEnabled:true});
+    expect(desktop).toContain(CHANNEL_PROMPT);
+    expect(desktop).toContain('仅在 CHANNEL_CONTEXT 给出会话绑定时');
+    expect(desktop).not.toContain('你通过外部聊天渠道参与对话');
+    expect(buildSystemPromptAppend({type:'desktop'})).not.toContain(CHANNEL_PROMPT);
+  });
+});
+
+
+describe('Session environment and desktop presentation', () => {
+  it('does not claim that desktop restoration makes the current input a desktop conversation', () => {
+    for (const runtime of ['builtin', 'dsh', 'codex', 'claude-code'] as const) {
+      const options = { runtime, channelMessagingEnabled: true, channelBound: true };
+      const text = buildSystemPromptAppend({ type: 'desktop' }, options);
+      expect(text).not.toContain('用户正通过 MyAgents 桌面客户端与你对话');
+      expect(text).not.toContain('<myagents-generative-ui>');
+      expect(text).toContain('<myagents-channel>');
+      expect(text).toContain('桌面');
+      expect(buildDshSystemContext({ type: 'desktop' }, options).sections[2]?.text).not.toContain('<myagents-generative-ui>');
+    }
+    expect(buildSystemPromptAppend({ type: 'desktop' }, { channelMessagingEnabled: true, channelBound: false })).toContain('<myagents-generative-ui>');
+  });
+});

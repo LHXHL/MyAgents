@@ -290,16 +290,17 @@ export function createBuiltinSessionEngine(): SessionEngine {
       };
     },
 
-    getStreamReplaySnapshot() {
+    getStreamReplaySnapshot(options) {
       const sessionId = getSessionId();
-      const liveSnapshot = getBuiltinLiveSessionSnapshot(sessionId);
+      const liveSnapshot = getBuiltinLiveSessionSnapshot(sessionId, options);
       const streamingId = getStreamingAssistantId();
-      const replayMessages = getMessages()
+      const replayMessages = options?.includeHistory === false ? [] : getMessages()
         .filter(message => !(streamingId && message.id === streamingId))
         .map(messageWireToReplayMessage);
       const systemInitInfo = getSystemInitInfo();
       return {
         sessionId,
+        snapshotRevision: liveSnapshot?.snapshotRevision ?? null,
         initState: { ...getAgentState(), queuedMessages: getQueueStatus() },
         replayMessages,
         liveStreamingMessage: liveSnapshot?.liveStreamingMessage
@@ -500,6 +501,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
           ...(request.turnBoundaryOnly ? { queueResponseModeOverride: 'turn' as const } : {}),
           beforeDispatch: request.beforeDispatch,
           channelDelivery: IM_CHANNEL_DELIVERY,
+          channelPrimaryReminder: request.channelPrimaryReminder,
         },
       );
       if (result.error) {
@@ -550,7 +552,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
       await setInteractionScenario(scenario);
       return enqueueUserMessage(
         request.text,
-        undefined,
+        request.images,
         undefined,
         undefined,
         undefined,
@@ -783,6 +785,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
           queueResponseModeOverride: 'turn',
           beforeDispatch,
           channelDelivery: injectedTurnChannelDelivery(request.assistantChannelDelivery),
+          channelPrimaryReminder: true,
         },
       );
       const enqueueResult = await waitForDeadline(

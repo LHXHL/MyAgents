@@ -23,6 +23,9 @@
     "editProfile": "Edit account profile"
   },
   "globalSidebar": {
+    "resize": "Resize sidebar",
+    "resizeHint": "Drag to resize. Double-click or press Enter to reset.",
+    "resizeSaveFailed": "Sidebar resized, but the width could not be saved. It may reset after restarting.",
     "navigation": "Global navigation",
     "openWebsite": "Open the MyAgents website",
     "collapse": "Collapse sidebar",
@@ -114,6 +117,7 @@
     "later": "Later"
   },
   "tabProvider": {
+    "reconnecting": "Conversation updates interrupted. Reconnecting automatically…",
     "sendUnconfirmed": "Send status is unconfirmed. Check history and the queue before retrying.",
     "compactSuccess": "Context compressed",
     "compactFailed": "Context compression failed",
@@ -300,6 +304,7 @@
       }
     },
     "systemTags": {
+      "channelMessage": "Channel message",
       "heartbeat": "Heartbeat",
       "cronTask": "Scheduled task",
       "floatingContext": "Floating context",

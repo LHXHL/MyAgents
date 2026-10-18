@@ -53,7 +53,7 @@ export interface AdoptMigratedSessionOptions {
 export type SessionState = 'idle' | 'starting' | 'running' | 'stopping' | 'error';
 
 export interface SystemNotice {
-    kind: 'compact' | 'agent-mention';
+    kind: 'compact' | 'agent-mention' | 'connection';
     level: 'success' | 'error' | 'warning';
     message: string;
 }

@@ -121,7 +121,11 @@ function parseSingleLeadingSystemReminder(raw: string | null | undefined): Parse
 
   const body = leadingTrimmed.slice(SYSTEM_REMINDER_OPEN.length, closeIdx).trim();
   const rawReminder = leadingTrimmed.slice(0, closeIdx + SYSTEM_REMINDER_CLOSE.length);
-  const visibleText = leadingTrimmed.slice(closeIdx + SYSTEM_REMINDER_CLOSE.length).trim();
+  const tail = leadingTrimmed.slice(closeIdx + SYSTEM_REMINDER_CLOSE.length);
+  // The versioned channel composer guarantees a single envelope. Its tail is
+  // literal user content, including whitespace and XML-looking messages.
+  const visibleText = body.includes('<CHANNEL_CONTEXT version="1">')
+    ? tail.replace(/^\n/, '') : tail.trim();
   return {
     hasReminder: true,
     kind: leadingReminderKind(body),
@@ -133,7 +137,7 @@ function parseSingleLeadingSystemReminder(raw: string | null | undefined): Parse
 
 export function parseLeadingSystemReminder(raw: string | null | undefined): ParsedLeadingSystemReminder {
   const outer = parseSingleLeadingSystemReminder(raw);
-  if (!outer.hasReminder) return outer;
+  if (!outer.hasReminder || outer.body.includes('<CHANNEL_CONTEXT version="1">')) return outer;
 
   let visibleText = outer.visibleText;
   for (let depth = 0; depth < 8; depth += 1) {

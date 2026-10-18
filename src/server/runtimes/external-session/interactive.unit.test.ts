@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   metadata: undefined as Record<string, unknown> | undefined,
@@ -34,14 +34,87 @@ import {
 import { setExternalActiveProcess, setExternalActiveRuntime, resetExternalLifecycleState } from './lifecycle';
 import {
   getExternalInteractiveRequest,
+  getExternalChannelInbound,
   deleteExternalInteractiveRequest,
   getExternalPermissionSuggestions,
   resetExternalInteractiveState,
+  publishExternalChannelDeliveryPolicy,
+  setExternalActiveRequestId,
   setExternalAskUserQuestion,
   setExternalInteractiveRequest,
   setExternalPermissionSuggestions,
 } from './interactive';
 import type { AgentRuntime, RuntimeProcess } from '../types';
+import { normalizeImInbound } from '../../session-core/channel-context';
+import { imRequestRegistry } from '../../utils/im-request-registry';
+import { imEventBus, type ImEvent } from '../../utils/im-event-bus';
+
+describe('external channel request association', () => {
+  beforeEach(() => {
+    resetExternalInteractiveState();
+    imRequestRegistry.clear();
+    imEventBus.clear();
+  });
+
+  afterEach(() => {
+    resetExternalInteractiveState();
+    imRequestRegistry.clear();
+    imEventBus.clear();
+  });
+
+  it('reads the incoming request and publishes its mode before notifying, independently of the active request', () => {
+    const active = imRequestRegistry.register('active', 'session');
+    active.channelDeliveryMode = 'auto';
+    setExternalActiveRequestId(active.requestId);
+    const incoming = imRequestRegistry.register('incoming', 'session');
+    incoming.channelInbound = normalizeImInbound({
+      botId: 'bot', requestId: 'incoming', senderId: 'sender', receivedAt: '2026-10-18T00:00:00Z',
+    });
+    const events: ImEvent[] = [];
+    imEventBus.subscribe(0, event => events.push(event));
+
+    expect(getExternalChannelInbound('incoming')).toEqual(incoming.channelInbound);
+    publishExternalChannelDeliveryPolicy('incoming', 'tool_only');
+
+    expect(incoming.channelDeliveryMode).toBe('tool_only');
+    expect(active.channelDeliveryMode).toBe('auto');
+    expect(events).toEqual([expect.objectContaining({
+      requestId: 'incoming', type: 'delivery-policy', channelDeliveryMode: 'tool_only',
+    })]);
+    expect(incoming.status).toBe('queued');
+  });
+
+  it('retains automatic delivery for a request without an explicit mode', () => {
+    const request = imRequestRegistry.register('legacy', 'session');
+    const events: ImEvent[] = [];
+    imEventBus.subscribe(0, event => events.push(event));
+    publishExternalChannelDeliveryPolicy(request.requestId, undefined);
+    expect(request.channelDeliveryMode).toBe('auto');
+    expect(events[0]).toMatchObject({ requestId: 'legacy', channelDeliveryMode: 'auto' });
+  });
+
+  it('does not borrow active request data or recreate a retired request', () => {
+    const active = imRequestRegistry.register('active', 'session');
+    active.channelDeliveryMode = 'auto';
+    active.channelInbound = normalizeImInbound({
+      botId: 'bot', requestId: 'active', senderId: 'other-sender', receivedAt: '2026-10-18T00:00:00Z',
+    });
+    setExternalActiveRequestId(active.requestId);
+    imRequestRegistry.register('retired', 'session');
+    imRequestRegistry.unregister('retired');
+    const events: ImEvent[] = [];
+    imEventBus.subscribe(0, event => events.push(event));
+    expect(getExternalChannelInbound(undefined)).toBeUndefined();
+    expect(getExternalChannelInbound('retired')).toBeUndefined();
+    publishExternalChannelDeliveryPolicy(undefined, 'tool_only');
+    expect(events).toEqual([]);
+    publishExternalChannelDeliveryPolicy('retired', 'tool_only');
+    expect(imRequestRegistry.get('retired')).toBeUndefined();
+    expect(active.channelDeliveryMode).toBe('auto');
+    expect(events).toEqual([expect.objectContaining({ requestId: 'retired', type: 'delivery-policy' })]);
+    expect(events[0].channelDeliveryMode).toBeUndefined();
+  });
+});
 
 describe('external interactive owner integration', () => {
   beforeEach(() => {

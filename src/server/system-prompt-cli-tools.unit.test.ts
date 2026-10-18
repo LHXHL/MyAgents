@@ -12,6 +12,7 @@ describe('buildCliToolsAppend', () => {
   it('discovers local capabilities and local/network collaboration without conflating Task or permission scope', () => {
     const text = buildSessionInboxSection({ type: 'desktop' });
     for (const command of [
+      'myagents agent current --json', 'myagents version --json',
       'myagents --help', 'myagents agent list', 'myagents agent show <agentId>',
       'myagents session list --agent <agentId>', 'myagents session start --agent <agentId>',
       'myagents session send <sessionId>', 'myagents session get <sessionId>',
@@ -124,7 +125,7 @@ describe('buildCliToolsAppend', () => {
       expect(text).not.toContain('<myagents-cli-record>');
       expect(text).not.toContain('myagents record create');
       if (scenario.type === 'im' || scenario.type === 'agent-channel') {
-        expect(text).toContain('<myagents-cli-im-media>');
+        expect(text).not.toContain('<myagents-cli-im-media>');
       }
     }
   });

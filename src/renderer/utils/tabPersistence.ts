@@ -52,11 +52,11 @@ export interface PersistedTabState {
  *  - only restorable chat / Record tabs
  *  - field whitelist (no runtime-only fields leak to disk)
  *  - de-duped by Session / Record identity, first occurrence wins
- *  - capped at MAX_TABS
+ *  - live layouts capped at MAX_TABS; pending offers may exceed live capacity
  *  - activeTabId is preserved only if it survives filtering; otherwise falls
  *    back to the first surviving tab
  */
-export function serializeTabs(tabs: readonly Tab[], activeTabId: string | null): PersistedTabState | null {
+export function serializeTabs(tabs: readonly Tab[], activeTabId: string | null, maxTabs = MAX_TABS): PersistedTabState | null {
   const seenResources = new Set<string>();
   const seenIds = new Set<string>();
   const persisted: PersistedTab[] = [];
@@ -71,7 +71,7 @@ export function serializeTabs(tabs: readonly Tab[], activeTabId: string | null):
     seenResources.add(identity);
     seenIds.add(tab.id);
     persisted.push(entry);
-    if (persisted.length >= MAX_TABS) break;
+    if (persisted.length >= maxTabs) break;
   }
   if (persisted.length === 0) return null;
 
@@ -95,7 +95,7 @@ function normalizePersistedTab(value: unknown): TabPersistenceProjection<Persist
  * Re-applies dedup + cap defensively in case the stored payload was written by
  * an older/buggy build or hand-edited.
  */
-export function deserializeTabs(raw: string | null): PersistedTabState | null {
+export function deserializeTabs(raw: string | null, maxTabs = MAX_TABS): PersistedTabState | null {
   if (!raw) return null;
   let parsed: unknown;
   try {
@@ -119,7 +119,7 @@ export function deserializeTabs(raw: string | null): PersistedTabState | null {
     seenResources.add(projection.resourceIdentity);
     seenIds.add(tab.id);
     tabs.push(tab);
-    if (tabs.length >= MAX_TABS) break;
+    if (tabs.length >= maxTabs) break;
   }
   if (tabs.length === 0) return null;
 
@@ -132,13 +132,20 @@ export function deserializeTabs(raw: string | null): PersistedTabState | null {
 /** Synchronous persist-on-mutation. Clears the key when there's nothing to
  *  store. Swallows storage errors (quota / private mode) — persistence is
  *  best-effort and must never break the app. */
-export function saveOpenTabs(tabs: readonly Tab[], activeTabId: string | null): void {
+export function saveOpenTabs(
+  tabs: readonly Tab[], activeTabId: string | null,
+  pendingRestore: { tabs: readonly Tab[]; activeTabId: string | null } | null = null,
+): void {
   try {
     const state = serializeTabs(tabs, activeTabId);
-    if (state === null) {
+    const pending = pendingRestore && serializeTabs(pendingRestore.tabs, pendingRestore.activeTabId, Infinity);
+    if (state === null && !pending) {
       window.localStorage.removeItem(PERSIST_KEY);
     } else {
-      window.localStorage.setItem(PERSIST_KEY, JSON.stringify(state));
+      window.localStorage.setItem(PERSIST_KEY, JSON.stringify({
+        ...(state ?? { version: PERSIST_VERSION, tabs: [], activeTabId: null }),
+        ...(pending ? { pendingRestore: pending } : {}),
+      }));
     }
   } catch {
     // ignore — localStorage unavailable / quota exceeded
@@ -155,9 +162,21 @@ export function loadPersistedTabs(): PersistedTabState | null {
   }
 }
 
-/** Hydrate a validated PersistedTabState into normal live Tab shapes. They
- *  remain only in the restore candidate until the user accepts the pill; App
- *  validates and atomically mounts survivors. */
+/** The unaccepted previous-session offer has a different lifetime from live
+ * Tabs. Keep it in the same snapshot until acceptance/dismissal, even while
+ * the user works in a fresh Launcher. Older v1 readers ignore this field. */
+export function loadPendingRestoredTabs(): ReturnType<typeof buildRestoredTabs> {
+  try {
+    const raw = window.localStorage.getItem(PERSIST_KEY);
+    const pending = raw && deserializeTabs(JSON.stringify(JSON.parse(raw).pendingRestore), Infinity);
+    return pending ? hydratePersistedState(pending) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Hydrate a validated snapshot without mounting it. App validates and mounts
+ *  survivors after native replacement or explicit restore acceptance. */
 export function hydratePersistedState(state: PersistedTabState): {
   tabs: Tab[];
   activeTabId: string | null;

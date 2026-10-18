@@ -1,3 +1,7 @@
+import { CHANNEL_MANAGED_CODEX_LIMITS } from '../../shared/channelPrompt';
+import { readChannelPromptOptions } from '../tools/channel-messaging';
+import { captureChannelTurn, effectiveChannelDelivery, channelContextForInput, decorateChannelQuery, channelInputSource } from '../session-core/channel-context';
+import { getExternalChannelSnapshot, setExternalChannelSnapshot } from './external-session/turn-lifecycle';
 import { desktopContextOf } from '../../shared/agentMentions';
 import { runtimeProviderAnalytics } from '../session-core/turn-analytics';
 import type { AskUserQuestionAnswers } from '../../shared/types/askUserQuestion';
@@ -531,6 +535,7 @@ import {
   finalizeExternalQueuedImRequest,
   fireExternalImCallback,
   getExternalActiveRequestId,
+  getExternalChannelInbound,
   getExternalImBridgeTurnContext,
   getExternalAskUserQuestion,
   getExternalInteractiveRequest,
@@ -540,6 +545,7 @@ import {
   getExternalTurnInboxMeta,
   hasExternalAskUserQuestion,
   hasExternalInteractiveRequests,
+  publishExternalChannelDeliveryPolicy,
   resetExternalInteractiveState,
   resetExternalTurnAttachmentHints,
   setExternalActiveRequestId,
@@ -1964,6 +1970,29 @@ function completeSubagentTrace(
   return true;
 }
 
+async function prepareExternalChannelInput(text: string, context: ExternalSendContext, realtime = false): Promise<string> {
+  const scenario = context.scenario;
+  const ask = !isManagedCodexProductRuntime() && (scenario.type === 'im' || scenario.type === 'agent-channel')
+    ? scenario.hostInteraction?.askUserQuestion ?? 'none' : 'none';
+  const snapshot = realtime ? getExternalChannelSnapshot() : await captureChannelTurn(ask);
+  context.channelSnapshot = snapshot;
+  context.channelDelivery = effectiveChannelDelivery(snapshot, context.channelDelivery);
+  return decoratePreparedExternalChannelInput(text, context);
+}
+
+function decoratePreparedExternalChannelInput(text: string, context: ExternalSendContext): string {
+  if (!context.channelSnapshot) return text;
+  const source = channelInputSource(context.analyticsSource ?? context.scenario.type, context.requestId, context.analyticsOrigin, context.turnOwner);
+  const inbound = getExternalChannelInbound(context.requestId);
+  return decorateChannelQuery(text, channelContextForInput(context.channelSnapshot, context.channelDelivery, source, inbound),
+    !!(context.desktopQuery?.primaryContext || context.desktopQuery?.agentMentions?.length) || !!context.channelPrimaryReminder || context.analyticsOrigin?.kind === 'session-inbox');
+}
+
+function commitExternalChannelInput(context: ExternalSendContext): void {
+  setExternalChannelSnapshot(context.channelSnapshot ?? null);
+  publishExternalChannelDeliveryPolicy(context.requestId, context.channelDelivery.mode);
+}
+
 type ExternalUserChannelProjection =
   | { kind: 'skip' }
   | {
@@ -1977,7 +2006,7 @@ function projectExternalUserChannelAdmission(
   content: string,
   resolvedImages: ResolvedImagePayload[] | undefined,
 ): ExternalUserChannelProjection {
-  if (channelDelivery.user !== 'session-binding') return { kind: 'skip' };
+  if (channelDelivery.mode === 'tool_only' || channelDelivery.user !== 'session-binding') return { kind: 'skip' };
   const text = visibleDesktopMirrorText(content);
   const images = resolvedImagesToMirrorImages(resolvedImages);
   return text || images
@@ -2506,12 +2535,7 @@ function flushAllPending(
 // reset-on-activity setTimeout, which fired on resume because its deadline
 // elapsed in wall-clock during sleep — a turn the runtime never actually hung.)
 const WATCHDOG_INTERVAL_MS = 30 * 1000;
-const MANAGED_CODEX_STRUCTURED_USER_INPUT_DISABLED_PROMPT = `<myagents-managed-codex-interaction-limits>
-This session is running on Managed Codex. The structured user-input tools are intentionally disabled here.
 
-Do not call request_user_input, AskUserQuestion, or MCP elicitation/form tools to ask the IM user a question.
-If you need clarification or a choice from the user, ask it as normal chat text and wait for the user's next message.
-</myagents-managed-codex-interaction-limits>`;
 
 function isManagedCodexStructuredUserInputDisabled(
   runtimeType: RuntimeType,
@@ -2550,8 +2574,8 @@ function appendManagedCodexInteractionLimitPrompt(
   if (!isManagedCodexStructuredUserInputDisabled(runtimeType, runtimeSource))
     return prompt;
   return prompt
-    ? `${prompt}\n\n${MANAGED_CODEX_STRUCTURED_USER_INPUT_DISABLED_PROMPT}`
-    : MANAGED_CODEX_STRUCTURED_USER_INPUT_DISABLED_PROMPT;
+    ? `${prompt}\n\n${CHANNEL_MANAGED_CODEX_LIMITS}`
+    : CHANNEL_MANAGED_CODEX_LIMITS;
 }
 
 const externalWatchdog = new InactivityWatchdog({
@@ -3634,7 +3658,10 @@ function persistExternalPartialAssistantProjection(
   return persistence;
 }
 
-export function getExternalLiveSessionSnapshot(targetSessionId: string): {
+export function getExternalLiveSessionSnapshot(
+  targetSessionId: string,
+  options?: { includeHistory?: boolean },
+): {
   snapshotRevision: number;
   inMemoryMessages: SessionMessage[];
   liveStreamingMessage: SessionMessage | null;
@@ -3646,7 +3673,7 @@ export function getExternalLiveSessionSnapshot(targetSessionId: string): {
   flushPendingLiveEvents();
   const liveStreamingMessage = getExternalLiveAssistantMessage();
   let inMemoryMessages =
-    getExternalTranscriptSessionId() === targetSessionId
+    options?.includeHistory !== false && getExternalTranscriptSessionId() === targetSessionId
       ? getExternalSessionMessagesSnapshot()
       : [];
   if (getActiveSessionTranscript(targetSessionId) && liveStreamingMessage) {
@@ -3654,7 +3681,7 @@ export function getExternalLiveSessionSnapshot(targetSessionId: string): {
       (message) => message.id !== liveStreamingMessage.id,
     );
   }
-  for (const pending of getExternalPendingUserMessageProjections(
+  for (const pending of options?.includeHistory === false ? [] : getExternalPendingUserMessageProjections(
     targetSessionId,
   )) {
     if (!inMemoryMessages.some((message) => message.id === pending.id)) {
@@ -4583,7 +4610,7 @@ async function _doStartExternalSession(options: {
   // prd_0.1.67_external_runtime_cli_skill.md for the original design.
   //
   // Generative-UI widget guidance is universal (no MCP equivalent) and is
-  // injected unconditionally for desktop scenarios via buildWidgetSection().
+  // selected for desktop scenarios without a Channel binding.
   const existingMetadataAtStart = getExternalSessionMetadata(options.sessionId);
   const enabledOfficialToolIds = getEffectiveOfficialToolIdsForSession(
     options.workspacePath,
@@ -4592,6 +4619,7 @@ async function _doStartExternalSession(options: {
   const systemPromptOptions = {
     runtime: runtimeType,
     cliToolsEnabled: true,
+    ...await readChannelPromptOptions(),
     userCliToolsEnabled: isCliToolRegistryEnabled(),
     enabledOfficialToolIds,
   } as const;
@@ -4812,6 +4840,10 @@ async function _doStartExternalSession(options: {
             ? options.scenario.surface
             : undefined,
       });
+    options.initialRuntimeMessage = await prepareExternalChannelInput(options.initialRuntimeMessage ?? options.initialMessage, messageOperation.context);
+    options.channelDelivery = messageOperation.context.channelDelivery;
+    assertExternalTurnPromotionCurrent(options.dispatchPromotion ?? null);
+    commitExternalChannelInput(messageOperation.context);
     const channelDelivery = options.channelDelivery ?? NO_CHANNEL_DELIVERY;
     const userChannelProjection = projectExternalUserChannelAdmission(
       channelDelivery,
@@ -4829,6 +4861,7 @@ async function _doStartExternalSession(options: {
       ? new Date().toISOString()
       : undefined;
     const userMsg = messageOperation.userProjection.message;
+    userMsg.content = decoratePreparedExternalChannelInput(String(userMsg.content), messageOperation.context);
     if (!messageOperation.context.asyncQuestionReply) {
     pushExternalSessionMessage(userMsg);
     markExternalUserMessageInTranscript(messageOperation);
@@ -6174,7 +6207,12 @@ async function dispatchExternalMessageOperation(
       return { queued: false, error: applyResult.error };
     }
     assertExternalTurnPromotionCurrent(dispatchPromotion);
+    runtimeText = await prepareExternalChannelInput(runtimeText, operation.context);
+    if (context) context.channelDelivery = operation.context.channelDelivery;
+    assertExternalTurnPromotionCurrent(dispatchPromotion);
+    commitExternalChannelInput(operation.context);
     const userMsg = operation.userProjection.message;
+    userMsg.content = decoratePreparedExternalChannelInput(String(userMsg.content), operation.context);
     setExternalTurnActivityFacts(activityFacts);
     const admissionActivityAt = shouldRecordAdmissionActivity(activityFacts)
       ? new Date().toISOString()
@@ -6405,6 +6443,9 @@ async function steerExternalMessage(input: {
       clientOperationId: owner.clientOperationId,
     };
   }
+  const originalUserContent = userMsg.content;
+  const channelRuntimeText = await prepareExternalChannelInput(input.text, input.context, true);
+  userMsg.content = decoratePreparedExternalChannelInput(String(userMsg.content), input.context);
   const admission = Promise.withResolvers<void>();
   let dshIntentPersisted = false;
   void admission.promise.catch(() => undefined);
@@ -6430,9 +6471,10 @@ async function steerExternalMessage(input: {
     executionTurnId: getExternalExecutionTurnId() ?? undefined,
   });
   try {
+    commitExternalChannelInput(input.context);
     await active.runtime.steerMessage(
       active.process,
-      input.text,
+      channelRuntimeText,
       resolvedImages && resolvedImages.length > 0 ? resolvedImages : undefined,
       {
         clientUserMessageId: userMsg.id,
@@ -6495,6 +6537,10 @@ async function steerExternalMessage(input: {
         }
       }
       forgetPendingRealtimeSteeredUserMessage(userMsg.id);
+      // This input was not admitted. Rebuild its context at the next actual
+      // turn boundary rather than nesting the rejected steer projection.
+      userMsg.content = originalUserContent;
+      input.context.channelSnapshot = undefined;
       return deferRealtimeOperationToTurnBoundary(input);
     }
     const message = err instanceof Error ? err.message : String(err);
@@ -6801,9 +6847,9 @@ export async function validateExternalAsyncQuestionReply(
 
 /** Inbox timing is independent of desktop settings; the original queue owns admission. */
 export function enqueueExternalSendForInbox(
-  text: string, context: ExternalSendContext,
+  text: string, context: ExternalSendContext, images?: ImagePayload[],
 ): ReturnType<typeof enqueueExternalQueuedMessage> {
-  return enqueueExternalQueuedMessage(text, undefined, undefined, undefined, context, 'realtime', 'inbox');
+  return enqueueExternalQueuedMessage(text, images, undefined, undefined, context, 'realtime', 'inbox');
 }
 
 export function enqueueExternalSendForDesktop(

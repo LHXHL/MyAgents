@@ -148,7 +148,11 @@ function normalizeSchemaNode(
       'type', 'properties', 'required', 'additionalProperties', 'items', 'enum',
       'title', 'description',
     ]);
-    if (Object.keys(record).some(key => !allowed.has(key))) {
+    // MCP SDK emits a root dialect annotation. It has no effect on the
+    // restricted schema subset below; all actual constraints remain checked.
+    const standardDialect = root && (record.$schema === 'http://json-schema.org/draft-07/schema#'
+      || record.$schema === 'https://json-schema.org/draft/2020-12/schema');
+    if (Object.keys(record).some(key => !allowed.has(key) && !(key === '$schema' && standardDialect))) {
       throw new Error(`${label} uses unsupported JSON Schema keywords`);
     }
     if (typeof record.type !== 'string' || !SCHEMA_TYPES.has(record.type)) {
@@ -684,16 +688,7 @@ export function compileDshProductExtensionPlane(
   if (new Set(componentKeys).size !== componentKeys.length) {
     throw new Error('Product extension inventory has conflicting DSH component identities');
   }
-  // A product-owned Browser capability can rotate without a config edit.
-  // Credential revision is opaque; secrets remain in the reverse plane only.
-  const revision = productExtensionRevision(source);
-  const snapshot = compileDshExtensionSnapshot({
-    revision,
-    components,
-    resources,
-    skillRoots,
-    mcpLaunchProfiles,
-  });
+  const snapshot = compileProductSnapshot(source, { components, resources, skillRoots, mcpLaunchProfiles });
   return Object.freeze({
     snapshot,
     credentialBindings: Object.freeze([...credentialBindings]),
@@ -704,9 +699,15 @@ export function compileDshProductExtensionPlane(
   });
 }
 
-function productExtensionRevision(source: DshProductExtensionSource): string {
-  const browserRevision = source.mcpServers.find(server => server.id === MANAGED_BROWSER_MCP_ID)?.runtimeConfigRevision;
-  return `myagents-dsh-v3:${browserRevision ? digest(`${source.revision}:${browserRevision}`) : source.revision}`;
+/** Discovery revision precedes live MCP tools and credential projection. Version
+ * the actual declarative payload here, at the final DSH compilation boundary. */
+function compileProductSnapshot(
+  source: DshProductExtensionSource,
+  content: Required<Pick<NonNullable<Parameters<typeof compileDshExtensionSnapshot>[0]>,
+    'components' | 'resources' | 'skillRoots' | 'mcpLaunchProfiles'>>,
+): DshExtensionSnapshot {
+  const revision = `myagents-dsh-v4:${digest(stableJson({ sourceRevision: source.revision, ...content }))}`;
+  return compileDshExtensionSnapshot({ revision, ...content });
 }
 
 /** Refresh transport authority without rediscovering already-admitted product components. */
@@ -731,11 +732,11 @@ export function refreshDshManagedBrowserPlane(
   }
   return Object.freeze({
     ...current,
-    snapshot: compileDshExtensionSnapshot({
-      revision: productExtensionRevision(projectedSource), components,
+    snapshot: compileProductSnapshot(projectedSource, {
+      components,
       resources: current.snapshot.resources,
       skillRoots: current.snapshot.skillSourcePolicy.roots,
-      mcpLaunchProfiles: current.snapshot.mcpLaunchPolicy?.profiles,
+      mcpLaunchProfiles: current.snapshot.mcpLaunchPolicy?.profiles ?? [],
     }),
     credentialBindings: Object.freeze(credentialBindings),
     diagnostics: Object.freeze(diagnostics.map(entry => Object.freeze({ ...entry }))),

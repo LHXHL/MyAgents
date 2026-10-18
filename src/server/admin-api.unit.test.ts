@@ -2973,6 +2973,74 @@ describe('admin-api agent set configuration intent', () => {
 });
 
 describe('admin-api model add', () => {
+  it.each(['separate', 'equals'])('carries documented options through CLI admission into a dry-run (%s)', async (spelling) => {
+    const { parseArgs, validateInternalCliInvocation, buildRequestBody } = await import('../cli/myagents');
+    const { handleModelAdd } = await import('./admin-api');
+    const options = [
+      ['id', 'contract-provider'], ['name', 'Contract Provider'],
+      ['base-url', 'https://provider.example/v1'], ['models', 'A'], ['models', 'B'],
+      ['model-names', 'Model A'], ['model-names', 'Model B'], ['primary-model', 'B'],
+      ['auth-type', 'api_key'], ['protocol', 'openai'], ['upstream-format', 'responses'],
+      ['max-output-tokens', '8192'],
+    ];
+    const parsed = parseArgs(['model', 'add', ...options.flatMap(([key, value]) =>
+      spelling === 'equals' ? [`--${key}=${value}`] : [`--${key}`, value]), '--dry-run']);
+    expect(validateInternalCliInvocation(parsed.positional, parsed.flags)).toBeUndefined();
+    const result = await handleModelAdd(buildRequestBody('model', 'add', [], parsed.flags) as Parameters<typeof handleModelAdd>[0]);
+    expect(result).toMatchObject({ success: true, dryRun: true, preview: {
+      apiProtocol: 'openai', authType: 'api_key', upstreamFormat: 'responses', maxOutputTokens: 8192,
+      primaryModel: 'B', models: [{ model: 'A', modelName: 'Model A' }, { model: 'B', modelName: 'Model B' }],
+    } });
+    expect(existsSync(join(scratch, '.myagents', 'providers', 'contract-provider.json'))).toBe(false);
+  });
+
+  it.each([
+    { apiProtocol: 'unknown' }, { authType: 'unknown' }, { upstreamFormat: 'unknown', apiProtocol: 'openai' },
+    { apiProtocol: 'openai', maxOutputTokens: 'NaN' }, { apiProtocol: 'openai', maxOutputTokens: true },
+    { apiProtocol: 'openai', maxOutputTokens: '0' }, { apiProtocol: 'openai', maxOutputTokens: '1.5' },
+    { upstreamFormat: 'responses' }, { primaryModel: 'absent' },
+  ])('rejects invalid provider intent before persistence: %j', async (options) => {
+    const { handleModelAdd } = await import('./admin-api');
+    const result = await handleModelAdd({ provider: {
+      id: 'invalid-contract', name: 'Invalid', baseUrl: 'https://provider.example/v1', models: ['A'], ...options,
+    }, dryRun: true });
+    expect(result.success).toBe(false);
+  });
+
+  it.each(['models', 'model-names'])('does not consume --dry-run when --%s is missing its value', async (flag) => {
+    const { parseArgs, validateInternalCliInvocation, buildRequestBody } = await import('../cli/myagents');
+    for (const missing of [[`--${flag}`, '--dry-run'], [`--${flag}=`, '--dry-run'], [`--${flag}`]]) {
+      const parsed = parseArgs(['model', 'add', '--id', 'no-write', '--name', 'No write',
+        '--base-url', 'https://example.invalid', '--models', 'A', ...missing]);
+      const admission = validateInternalCliInvocation(parsed.positional, parsed.flags);
+      expect(admission).toMatchObject({ code: 'FLAG_VALUE_REQUIRED' });
+      if (missing.includes('--dry-run')) {
+        expect(buildRequestBody('model', 'add', [], parsed.flags)).toMatchObject({ dryRun: true });
+      }
+      // The production router stops at failed admission, before any Admin IO.
+      expect(existsSync(join(scratch, '.myagents', 'providers', 'no-write.json'))).toBe(false);
+    }
+    expect(parseArgs(['mcp', 'add', '--args', '--stdio']).flags.args).toEqual(['--stdio']);
+  });
+
+  it('keeps the legacy Anthropic default and rejects flags with no effect', async () => {
+    const { parseArgs, validateInternalCliInvocation, validateDryRunSupport, buildRequestBody } = await import('../cli/myagents');
+    const { handleModelAdd, handleConfigUnset } = await import('./admin-api');
+    for (const flag of ['type', 'api-key']) {
+      const parsed = parseArgs(['model', 'add', `--${flag}=unused`]);
+      expect(validateInternalCliInvocation(parsed.positional, parsed.flags)).toMatchObject({ code: 'UNKNOWN_FLAG' });
+    }
+    const result = await handleModelAdd({ provider: { id: 'legacy-default', name: 'Legacy', baseUrl: 'https://provider.example', models: ['A'] }, dryRun: true });
+    expect(result).toMatchObject({ success: true, preview: { authType: 'auth_token' } });
+    expect((result.preview as Record<string, unknown>).apiProtocol ?? 'anthropic').toBe('anthropic');
+    writeJson(join(scratch, '.myagents', 'config.json'), { notARealKey: 'stored' });
+    const unset = parseArgs(['config', 'unset', 'notARealKey', '--dry-run']);
+    expect(validateInternalCliInvocation(unset.positional, unset.flags)).toBeUndefined();
+    expect(validateDryRunSupport(unset.positional, unset.flags)).toBeUndefined();
+    expect(await handleConfigUnset(buildRequestBody('config', 'unset', ['notARealKey'], unset.flags) as Parameters<typeof handleConfigUnset>[0])).toMatchObject({ success: true, dryRun: true });
+    expect(readConfig().notARealKey).toBe('stored');
+  });
+
   it('expands custom provider models from repeated and comma-separated CLI inputs', async () => {
     const { handleModelAdd } = await import('./admin-api');
 
@@ -4238,6 +4306,38 @@ describe('admin-api Agent / Session discovery', () => {
     expect(JSON.stringify(result)).not.toContain('do-not-expose');
     expect(JSON.stringify(result)).not.toContain('enabled');
   });
+  it('separates registered channel platforms from plugin installation types in discovery', async () => {
+    const channel = { id: 'wecom-connection', type: 'openclaw:wecom-openclaw-plugin', name: 'WeCom', enabled: true, botToken: 'never-disclose' };
+    writeJson(join(scratch, '.myagents', 'config.json'), { agents: [{ id: 'agent-one', name: 'One', channels: [channel] }] });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{ id: 'workspace-one', name: 'One', path: '/one', agentId: 'agent-one' }]);
+    managementApiMocks.managementApi.mockImplementation(async (path) => path === '/api/im/channel-context'
+      ? { ok: true, defaultTarget: null, channels: [{ channelId: channel.id, platform: 'openclaw:wecom' }] }
+      : { ok: true, channels: [{ botId: channel.id, platform: 'openclaw:wecom', pluginId: 'wecom-openclaw-plugin' }] });
+    const { handleAgentList, handleAgentChannelList, handleImChannels } = await import('./admin-api');
+    const list = await handleAgentList();
+    const channels = await handleAgentChannelList({ agentId: 'agent-one' });
+    const im = await handleImChannels();
+    const expected = { id: channel.id, type: channel.type, platform: 'openclaw:wecom', pluginId: 'wecom-openclaw-plugin' };
+    expect(list.data).toEqual([expect.objectContaining({ channels: [expect.objectContaining(expected)] })]);
+    expect(channels.data).toEqual([expect.objectContaining(expected)]);
+    expect(im.data).toMatchObject({ channels: [expect.objectContaining({ platform: 'openclaw:wecom', pluginId: 'wecom-openclaw-plugin' })] });
+    delete process.env.MYAGENTS_SIDECAR_ID;
+    const globalIm = await handleImChannels();
+    expect(globalIm.data).toMatchObject({ channels: [expect.objectContaining({ platform: 'openclaw:wecom', pluginId: 'wecom-openclaw-plugin' })] });
+    expect(JSON.stringify([list, channels])).not.toContain('never-disclose');
+    expect(JSON.parse(readFileSync(join(scratch, '.myagents', 'config.json'), 'utf8')).agents[0].channels[0]).toEqual(channel);
+  });
+
+  it('links IM help and readme to recorded Session history', async () => {
+    const { handleHelp } = await import('./admin-api');
+    for (const path of [['im'], ['im', 'readme']]) {
+      const text = String((handleHelp({ path }).data as { text?: string })?.text ?? '');
+      expect(text).toContain('myagents session get <sessionId>');
+      expect(text).toContain('recorded');
+      expect(text).toContain('platform');
+    }
+  });
+
   it('lists healthy Agents and exposes conflicted targets with paths but no credentials', async () => {
     writeJson(join(scratch, '.myagents', 'config.json'), { agents: [
       { id: 'shared', name: 'Shared', channels: [{ id: 'secret-channel', botToken: 'do-not-expose' }] },

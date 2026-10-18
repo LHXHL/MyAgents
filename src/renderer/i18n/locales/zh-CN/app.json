@@ -23,6 +23,9 @@
     "editProfile": "编辑账号资料"
   },
   "globalSidebar": {
+    "resize": "调整侧边栏宽度",
+    "resizeHint": "拖动调整宽度，双击或按 Enter 恢复默认",
+    "resizeSaveFailed": "宽度已调整，但未能保存，下次启动可能恢复原设置",
     "navigation": "全局导航",
     "openWebsite": "打开 MyAgents 官网",
     "collapse": "收起侧边栏",
@@ -114,6 +117,7 @@
     "later": "稍后"
   },
   "tabProvider": {
+    "reconnecting": "会话更新暂时中断，正在自动重连…",
     "sendUnconfirmed": "发送状态未确认，请先检查历史和队列再重试。",
     "compactSuccess": "上下文已压缩",
     "compactFailed": "上下文压缩失败",
@@ -300,6 +304,7 @@
       }
     },
     "systemTags": {
+      "channelMessage": "渠道消息",
       "heartbeat": "心跳感知",
       "cronTask": "定时任务",
       "floatingContext": "悬浮上下文",

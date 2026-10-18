@@ -196,11 +196,35 @@ fn job_spec(
         managed_kind,
         name,
         interval_minutes,
-        prompt: format!(
-            "Use the {} skill to maintain long-term memory for this workspace.\n\nWorkspace: `{}`\n\nConstraints:\n- Only inspect and edit memory-related files unless the skill explicitly requires a small supporting read.\n- If this workspace is a git repository, commit only the memory-related files changed by this run.\n- Do not push.\n- If required memory substrate files are missing, create them from the MyAgents defaults before continuing.",
-            skill_name, workspace_path
-        ),
+        prompt: maintenance_prompt(skill_name, workspace_path),
     }
+}
+
+fn maintenance_prompt(skill_name: &str, workspace_path: &str) -> String {
+    format!(
+        "Use the {} skill to maintain long-term memory for this workspace.\n\nWorkspace: `{}`\n\nConstraints:\n- Only inspect and edit memory-related files unless the skill explicitly requires a small supporting read.\n- If this workspace is a git repository, commit only the memory-related files changed by this run.\n- Do not push.\n- First understand this workspace's existing memory architecture and follow its file roles and paths. Create missing files when necessary for the work, consistent with that architecture; different naming or layering does not require the MyAgents default file set.",
+        skill_name, workspace_path
+    )
+}
+
+/// The managed-task owner refreshes its persisted instructions before a timer
+/// can be armed, including startup recovery before renderer reconciliation.
+/// Use TaskStore under the scheduler's Task control guard:
+/// schedules, execution identity, status and history remain authoritative.
+pub(crate) async fn reconcile_prompt_before_start(
+    store: &task::TaskStore,
+    existing: &task::Task,
+    control: &crate::task_scheduler::TaskControlGuard,
+) -> Result<(), String> {
+    let skill_name = match existing.managed_kind.as_deref() {
+        Some(MANAGED_KIND_MEMORY_GARDENER) => "myagents-memory-gardener",
+        Some(MANAGED_KIND_MEMORY_MOLT) => "myagents-memory-molt",
+        _ => return Ok(()),
+    };
+    let prompt = maintenance_prompt(skill_name, &existing.workspace_path);
+    store
+        .sync_managed_prompt_before_start(&existing.id, &prompt, control)
+        .await
 }
 
 // Reconcile owns a complete target, unlike TaskUpdateInput's partial PATCH.
@@ -826,6 +850,97 @@ mod tests {
                     serde_json::to_value(updated).unwrap()
                 );
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn recovered_prompts_refresh_in_place_before_admission() {
+        task::ensure_test_docs_root();
+        for kind in [
+            Some(MANAGED_KIND_MEMORY_GARDENER),
+            Some(MANAGED_KIND_MEMORY_MOLT),
+            None,
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let id = uuid::Uuid::new_v4().to_string();
+            let existing: task::Task = serde_json::from_value(serde_json::json!({
+                "id": id, "name": "historical", "executor": "agent",
+                "workspaceId": "workspace", "workspacePath": tmp.path(),
+                "executionMode": "recurring", "runMode": "new-session",
+                "status": "running", "createdAt": 1, "updatedAt": 2,
+                "dispatchOrigin": "direct", "managedKind": kind,
+                "intervalMinutes": 4320, "runtime": "codex", "sessionIds": ["past"],
+                "executionCount": 7, "lastExecutedAt": 123, "lastScheduledAt": 123
+            }))
+            .unwrap();
+            std::fs::write(
+                tmp.path().join("tasks.jsonl"),
+                serde_json::to_string(&existing).unwrap(),
+            )
+            .unwrap();
+            let store = task::TaskStore::new(tmp.path().to_path_buf());
+            let docs = task::task_docs_dir(&id).unwrap();
+            std::fs::create_dir_all(&docs).unwrap();
+            let path = docs.join("task.md");
+            let old = "If required memory substrate files are missing, create them from the MyAgents defaults before continuing.";
+            std::fs::write(&path, old).unwrap();
+            let control = crate::task_scheduler::acquire_task_control(&id).await;
+            reconcile_prompt_before_start(&store, &existing, &control)
+                .await
+                .unwrap();
+            let current = std::fs::read_to_string(&path).unwrap();
+            if let Some(kind) = kind {
+                let skill = if kind == MANAGED_KIND_MEMORY_GARDENER {
+                    "myagents-memory-gardener"
+                } else {
+                    "myagents-memory-molt"
+                };
+                assert_eq!(current, maintenance_prompt(skill, &existing.workspace_path));
+                assert!(current.contains("Create missing files when necessary"));
+                assert!(!current.contains("create them from the MyAgents defaults"));
+            } else {
+                assert_eq!(current, old);
+                assert!(store
+                    .sync_managed_prompt_before_start(&id, "replacement", &control)
+                    .await
+                    .is_err());
+            }
+            let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+            reconcile_prompt_before_start(&store, &existing, &control)
+                .await
+                .unwrap();
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().modified().unwrap(),
+                modified
+            );
+            assert_eq!(
+                serde_json::to_value(store.get(&id).await.unwrap()).unwrap(),
+                serde_json::to_value(&existing).unwrap()
+            );
+            assert_eq!(
+                serde_json::to_value(
+                    task::TaskStore::new(tmp.path().to_path_buf())
+                        .get(&id)
+                        .await
+                        .unwrap()
+                )
+                .unwrap(),
+                serde_json::to_value(&existing).unwrap()
+            );
+            if kind.is_some() {
+                std::fs::remove_file(&path).unwrap();
+                // Missing generated prompt is restored through the same owner.
+                reconcile_prompt_before_start(&store, &existing, &control)
+                    .await
+                    .unwrap();
+                assert_eq!(std::fs::read_to_string(&path).unwrap(), current);
+                std::fs::remove_file(&path).unwrap();
+                std::fs::create_dir(&path).unwrap();
+                assert!(reconcile_prompt_before_start(&store, &existing, &control)
+                    .await
+                    .is_err());
+            }
+            std::fs::remove_dir_all(docs).unwrap();
         }
     }
 

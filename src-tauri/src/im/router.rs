@@ -14,13 +14,14 @@ use std::time::{Duration, Instant};
 use crate::{ulog_info, ulog_warn};
 use reqwest::Client;
 use tauri::{AppHandle, Runtime};
+use tokio::sync::Mutex;
 
 use crate::sidecar::{
     ensure_session_sidecar_with_runtime_identity_override_lifecycle, release_session_sidecar,
     resolve_session_runtime_identity_full, ManagedSidecarManager, SidecarOwner,
 };
 
-use super::types::{ImMessage, ImSourceType, PeerSession};
+use super::types::{ImMessage, ImPlatform, ImSourceType, PeerSession};
 
 /// Max concurrent AI requests across all peers
 pub const GLOBAL_CONCURRENCY: usize = 8;
@@ -118,18 +119,6 @@ impl PeerBindingTransition {
     }
 }
 
-impl EnsureSidecarInfo {
-    pub fn with_runtime_identity(
-        mut self,
-        runtime_override: Option<&str>,
-        runtime_source_override: Option<&str>,
-    ) -> Self {
-        self.runtime_override = runtime_override.map(str::to_string);
-        self.runtime_source_override = runtime_source_override.map(str::to_string);
-        self
-    }
-}
-
 /// Error from Sidecar routing — distinguishes bufferable vs non-bufferable failures.
 #[derive(Debug)]
 pub enum RouteError {
@@ -211,18 +200,83 @@ impl SessionRouter {
     /// If agent_id is set, uses new format: agent:{agentId}:{channelType}:{type}:{id}
     /// Otherwise falls back to legacy: im:{platform}:{type}:{id}
     pub fn session_key(&self, msg: &ImMessage) -> String {
-        if let Some(ref agent_id) = self.agent_id {
-            let source = match msg.source_type {
-                ImSourceType::Private => "private",
-                ImSourceType::Group => "group",
-            };
-            format!(
-                "agent:{}:{}:{}:{}",
-                agent_id, msg.platform, source, msg.chat_id
-            )
-        } else {
-            msg.session_key()
+        self.session_key_for_peer(&msg.platform, &msg.source_type, &msg.chat_id)
+    }
+
+    /// The same identity function serves inbound messages and internal handoffs.
+    pub(crate) fn session_key_for_peer(
+        &self,
+        platform: &ImPlatform,
+        source_type: &ImSourceType,
+        id: &str,
+    ) -> String {
+        let source = match source_type {
+            ImSourceType::Private => "private",
+            ImSourceType::Group => "group",
+        };
+        match &self.agent_id {
+            Some(agent) => format!("agent:{agent}:{platform}:{source}:{id}"),
+            None => format!("im:{platform}:{source}:{id}"),
         }
+    }
+
+    /// Startup-only repair, before any peer fences or Sidecar owners exist.
+    /// Known install-ID aliases become the registered protocol key. A real
+    /// inbound binding wins over its historical handoff alias; Sessions and
+    /// transcripts are never deleted or merged. Validate the whole set first.
+    pub(crate) fn reconcile_protocol_bindings(
+        &mut self,
+        configured: &ImPlatform,
+        registered: &ImPlatform,
+    ) -> Result<usize, String> {
+        let mut moves = Vec::new();
+        for peer in self.peer_sessions.values() {
+            let source_id = super::channel_messaging::inbound_peer_id(registered, &peer.source_id);
+            let canonical = self.session_key_for_peer(registered, &peer.source_type, &source_id);
+            if peer.session_key == canonical {
+                continue;
+            }
+            let alias = self.session_key_for_peer(configured, &peer.source_type, &peer.source_id);
+            let prefixed =
+                self.session_key_for_peer(registered, &peer.source_type, &peer.source_id);
+            if (peer.session_key != alias && peer.session_key != prefixed) || peer.sidecar_port != 0
+            {
+                return Err(format!(
+                    "Cannot reconcile Channel binding {}; unexpected protocol or active owner",
+                    peer.session_key
+                ));
+            }
+            moves.push((peer.session_key.clone(), canonical, source_id));
+        }
+        // Without an inbound key, two different alias Sessions have no
+        // authoritative winner. Do not let HashMap iteration decide.
+        for (_, canonical, _) in &moves {
+            if !self.peer_sessions.contains_key(canonical)
+                && moves.iter().filter(|(_, key, _)| key == canonical).count() > 1
+            {
+                return Err(format!(
+                    "Ambiguous historical Channel bindings for {canonical}"
+                ));
+            }
+        }
+        let count = moves.len();
+        for (alias, canonical, source_id) in moves {
+            let mut peer = self
+                .peer_sessions
+                .remove(&alias)
+                .expect("validated binding");
+            peer.session_key = canonical.clone();
+            peer.source_id = source_id;
+            match self.peer_sessions.entry(canonical.clone()) {
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(peer);
+                }
+                std::collections::hash_map::Entry::Occupied(entry) => {
+                    ulog_info!("[im-router] Detached duplicate binding {} (Session {}); keeping {} (Session {}). History retained.", alias, peer.session_id, canonical, entry.get().session_id);
+                }
+            }
+        }
+        Ok(count)
     }
 
     fn display_name_from_message(msg: &ImMessage) -> Option<String> {
@@ -250,7 +304,17 @@ impl SessionRouter {
     /// private/group chat instead of the whole channel.
     pub fn update_peer_metadata_from_message(&mut self, session_key: &str, msg: &ImMessage) {
         if let Some(ps) = self.peer_sessions.get_mut(session_key) {
-            ps.source_display_name = Self::display_name_from_message(msg);
+            let candidate = Self::display_name_from_message(msg);
+            let peer_id = if msg.source_type == ImSourceType::Group {
+                &msg.chat_id
+            } else {
+                &msg.sender_id
+            };
+            if ps.source_display_name.is_none()
+                || candidate.as_ref().is_some_and(|name| name != peer_id)
+            {
+                ps.source_display_name = candidate;
+            }
             ps.last_sender_name = msg
                 .sender_name
                 .as_ref()
@@ -260,56 +324,47 @@ impl SessionRouter {
         }
     }
 
-    /// Ensure a Sidecar is running for the given session key.
-    /// Returns `(port, is_new_sidecar)` — `is_new_sidecar` is true when a new Sidecar was created
-    /// (caller should sync AI config like model/MCP after creation).
-    ///
-    /// IMPORTANT: This method holds the router lock for the ENTIRE duration including
-    /// the blocking `ensure_session_sidecar` call (up to 5 minutes). For callers that can
-    /// release the lock between phases, use the 3-phase split instead:
-    /// `prepare_ensure_sidecar` → `create_sidecar_blocking` → `commit_ensure_sidecar`.
-    /// This single-lock method is kept for the message processing loop where per-peer locks
-    /// already serialize same-peer access.
+    /// Ensure under the caller's per-peer fence, releasing the router mutex
+    /// during process startup. Recovery calls back into channel-context lookup,
+    /// which must be able to read this same router before readiness can complete.
     pub async fn ensure_sidecar<R: Runtime>(
-        &mut self,
+        router: &Arc<Mutex<Self>>,
         session_key: &str,
         app_handle: &AppHandle<R>,
         manager: &ManagedSidecarManager,
     ) -> Result<(u16, bool), String> {
-        self.ensure_sidecar_with_runtime_identity(session_key, app_handle, manager, None, None)
+        let prep = router
+            .lock()
             .await
+            .prepare_ensure_sidecar(session_key, manager)
+            .await;
+        Self::complete_ensure_sidecar(router, session_key, prep, |info| {
+            Self::create_sidecar_blocking(info, app_handle, manager)
+        })
+        .await
     }
 
-    pub async fn ensure_sidecar_with_runtime_identity<R: Runtime>(
-        &mut self,
+    async fn complete_ensure_sidecar<F, Fut>(
+        router: &Arc<Mutex<Self>>,
         session_key: &str,
-        app_handle: &AppHandle<R>,
-        manager: &ManagedSidecarManager,
-        runtime_override: Option<&str>,
-        runtime_source_override: Option<&str>,
-    ) -> Result<(u16, bool), String> {
-        // Phase 1: Check existing healthy sidecar (brief)
-        let prep = self.prepare_ensure_sidecar(session_key, manager).await;
-        if let EnsureSidecarPrep::Healthy(port) = prep {
-            return Ok((port, false));
-        }
-
-        // Phase 2: Create sidecar (blocking — holds lock the entire time)
-        let info = match prep {
+        prep: EnsureSidecarPrep,
+        create: F,
+    ) -> Result<(u16, bool), String>
+    where
+        F: FnOnce(EnsureSidecarInfo) -> Fut,
+        Fut: std::future::Future<Output = Result<(u16, bool), String>>,
+    {
+        match prep {
+            EnsureSidecarPrep::Healthy(port) => Ok((port, false)),
             EnsureSidecarPrep::NeedCreate(info) => {
-                info.with_runtime_identity(runtime_override, runtime_source_override)
+                let (port, is_new) = create(info.clone()).await?;
+                router
+                    .lock()
+                    .await
+                    .commit_ensure_sidecar(session_key, &info, port);
+                Ok((port, is_new))
             }
-            EnsureSidecarPrep::Healthy(_) => unreachable!(),
-        };
-        // The manager owns process-birth disposition; existing Session metadata
-        // supplies execution configuration for both new and reused processes.
-        let (port, is_new) =
-            Self::create_sidecar_blocking(info.clone(), app_handle, manager).await?;
-
-        // Phase 3: Write result back
-        self.commit_ensure_sidecar(session_key, &info, port);
-
-        Ok((port, is_new))
+        }
     }
 
     // ---- Split ensure_sidecar into 3 phases for lock-free blocking ----
@@ -840,15 +895,15 @@ impl SessionRouter {
         transition
     }
 
-    /// Stage the desktop Tab + Agent migration after owner admission. Unlike
-    /// `/new`, the same live Sidecar port follows the exact participating
-    /// surfaces and Node is given this exact target identity before the command
-    /// reports success.
+    /// Stage desktop surface migration after binding and live-owner admission.
+    /// Cache only the Manager-proven Channel lease port. Dormant bindings keep
+    /// port 0 for the next ensure; attached leases remain eligible for idle release.
     pub fn stage_surface_session_migration(
         &mut self,
         session_key: &str,
         expected_old_session_id: &str,
         target_session_id: &str,
+        channel_sidecar_port: u16,
     ) -> Result<PeerBindingTransition, String> {
         let prior = self
             .peer_sessions
@@ -863,6 +918,7 @@ impl SessionRouter {
         }
         let next = PeerSession {
             session_id: target_session_id.to_string(),
+            sidecar_port: channel_sidecar_port,
             message_count: 0,
             metadata_birth_pending: false,
             metadata_indexed: true,
@@ -1284,15 +1340,15 @@ pub fn parse_session_key(session_key: &str) -> (ImSourceType, String) {
 mod tests {
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
     use super::{
         parse_session_key, peer_binding_source_requires_freeze,
         reconcile_peer_metadata_with_lookup, EnsureSidecarInfo, EnsureSidecarPrep,
-        PeerMetadataDisposition, SessionRouter,
+        PeerMetadataDisposition, SessionRouter, IDLE_TIMEOUT_SECS,
     };
     use crate::im::types::{ImActiveSession, PeerSession};
-    use crate::sidecar::{SidecarManager, SidecarOwner};
+    use crate::sidecar::{release_session_sidecar, SidecarManager, SidecarOwner};
 
     fn peer(session_key: &str, session_id: &str) -> PeerSession {
         let (source_type, source_id) = parse_session_key(session_key);
@@ -1310,6 +1366,269 @@ mod tests {
             metadata_indexed: true,
             last_active: Instant::now(),
         }
+    }
+
+    #[test]
+    fn protocol_binding_repair_preserves_canonical_sessions_and_alias_only_history() {
+        use crate::im::types::{ImPlatform, ImSourceType};
+        for (configured, registered, private, group) in [
+            (
+                ImPlatform::OpenClaw("wecom-openclaw-plugin".into()),
+                ImPlatform::OpenClaw("wecom".into()),
+                "u",
+                "g",
+            ),
+            (
+                ImPlatform::OpenClaw("openclaw-lark".into()),
+                ImPlatform::OpenClaw("feishu".into()),
+                "user:ou_u",
+                "chat:oc_g",
+            ),
+        ] {
+            let mut router = SessionRouter::new_for_agent(PathBuf::from("/synthetic"), "a".into());
+            for (source, id, sid) in [
+                (ImSourceType::Private, private, "private"),
+                (ImSourceType::Group, group, "group"),
+            ] {
+                let alias = router.session_key_for_peer(&configured, &source, id);
+                let canonical_id = crate::im::channel_messaging::inbound_peer_id(&registered, id);
+                let canonical = router.session_key_for_peer(&registered, &source, &canonical_id);
+                router.upsert_peer_session(peer(&alias, &format!("duplicate-{sid}")));
+                router.upsert_peer_session(peer(&canonical, sid));
+            }
+            assert_eq!(
+                router
+                    .reconcile_protocol_bindings(&configured, &registered)
+                    .unwrap(),
+                2
+            );
+            let active = router.active_sessions();
+            assert_eq!(active.len(), 2);
+            assert!(active
+                .iter()
+                .all(|p| p.session_id == "private" || p.session_id == "group"));
+            let mut restored =
+                SessionRouter::new_for_agent(PathBuf::from("/synthetic"), "a".into());
+            restored.restore_sessions_with_metadata_lookup(&active, |_| true);
+            assert_eq!(
+                restored
+                    .reconcile_protocol_bindings(&configured, &registered)
+                    .unwrap(),
+                0
+            );
+            assert_eq!(restored.active_sessions().len(), 2);
+            let mut lone = SessionRouter::new(PathBuf::from("/synthetic"));
+            let key = lone.session_key_for_peer(&configured, &ImSourceType::Private, private);
+            lone.upsert_peer_session(peer(&key, "history"));
+            lone.reconcile_protocol_bindings(&configured, &registered)
+                .unwrap();
+            let one = lone.active_sessions();
+            assert_eq!(one.len(), 1);
+            assert_eq!(one[0].session_id, "history");
+            assert_eq!(
+                one[0].source_id.as_deref(),
+                Some(crate::im::channel_messaging::inbound_peer_id(&registered, private).as_str())
+            );
+        }
+    }
+
+    #[test]
+    fn protocol_binding_repair_rejects_ambiguity_and_foreign_keys_without_partial_mutation() {
+        use crate::im::types::ImPlatform;
+        let configured = ImPlatform::OpenClaw("openclaw-lark".into());
+        let registered = ImPlatform::OpenClaw("feishu".into());
+        for other in [
+            "agent:a:openclaw:feishu:private:user:ou_u",
+            "agent:other:openclaw:feishu:private:ou_u",
+        ] {
+            let mut router = SessionRouter::new_for_agent(PathBuf::from("/synthetic"), "a".into());
+            let alias = "agent:a:openclaw:openclaw-lark:private:user:ou_u";
+            router.upsert_peer_session(peer(alias, "one"));
+            router.upsert_peer_session(peer(other, "two"));
+            assert!(router
+                .reconcile_protocol_bindings(&configured, &registered)
+                .is_err());
+            assert_eq!(
+                router.peer_session_snapshot(alias).unwrap().session_id,
+                "one"
+            );
+            assert_eq!(
+                router.peer_session_snapshot(other).unwrap().session_id,
+                "two"
+            );
+        }
+    }
+
+    #[test]
+    fn native_and_same_id_plugin_bindings_remain_isolated_and_unchanged() {
+        use crate::im::types::{ImPlatform, ImSourceType};
+        for platform in [
+            ImPlatform::Telegram,
+            ImPlatform::Feishu,
+            ImPlatform::Dingtalk,
+            ImPlatform::OpenClaw("qqbot".into()),
+            ImPlatform::OpenClaw("openclaw-weixin".into()),
+        ] {
+            let mut router = SessionRouter::new_for_agent(PathBuf::from("/synthetic"), "a".into());
+            for (source, sid) in [
+                (ImSourceType::Private, "private"),
+                (ImSourceType::Group, "group"),
+            ] {
+                let key = router.session_key_for_peer(&platform, &source, "same-id");
+                router.upsert_peer_session(peer(&key, sid));
+            }
+            assert_eq!(
+                router
+                    .reconcile_protocol_bindings(&platform, &platform)
+                    .unwrap(),
+                0
+            );
+            assert_eq!(router.active_sessions().len(), 2);
+            let other = SessionRouter::new_for_agent(PathBuf::from("/synthetic"), "other".into());
+            assert_ne!(
+                router.session_key_for_peer(&platform, &ImSourceType::Private, "same-id"),
+                other.session_key_for_peer(&platform, &ImSourceType::Private, "same-id")
+            );
+        }
+    }
+
+    #[test]
+    fn missing_name_cannot_transfer_previous_group_senders_identity() {
+        use crate::im::types::{ImMessage, ImPlatform, ImSourceType};
+        let mut router = SessionRouter::new(PathBuf::from("/tmp/workspace"));
+        let key = "agent:a:telegram:group:g";
+        let mut known = peer(key, "session");
+        known.source_display_name = Some("Team".into());
+        known.last_sender_name = Some("Alice".into());
+        router.upsert_peer_session(known);
+        // The next event is from a different member whose name is unavailable.
+        let mut msg = ImMessage {
+            source_metadata: Default::default(),
+            chat_id: "g".into(),
+            message_id: "m".into(),
+            text: "hello".into(),
+            sender_id: "u".into(),
+            sender_name: None,
+            account_id: None,
+            source_type: ImSourceType::Group,
+            platform: ImPlatform::Telegram,
+            timestamp: chrono::Utc::now(),
+            attachments: vec![],
+            media_group_id: None,
+            is_mention: true,
+            reply_to_bot: false,
+            hint_group_name: None,
+            reply_to_body: None,
+            group_system_prompt: None,
+            request_id: String::new(),
+            delivery_protocol: None,
+        };
+        msg.sender_id = "alice-id".into();
+        msg.sender_name = Some("Alice".into());
+        router.update_peer_metadata_from_message(key, &msg);
+        msg.sender_id = "bob-id".into();
+        msg.sender_name = None;
+        router.update_peer_metadata_from_message(key, &msg);
+        let snapshot = router.peer_session_snapshot(key).unwrap();
+        assert_eq!(snapshot.source_display_name.as_deref(), Some("Team"));
+        assert_eq!(snapshot.last_sender_name, None);
+        msg.hint_group_name = Some("Renamed".into());
+        router.update_peer_metadata_from_message(key, &msg);
+        assert_eq!(
+            router
+                .peer_session_snapshot(key)
+                .unwrap()
+                .source_display_name
+                .as_deref(),
+            Some("Renamed")
+        );
+    }
+
+    #[tokio::test]
+    async fn cold_start_releases_router_for_context_callback_and_preserves_peer_isolation() {
+        let group = "agent:a:openclaw:wecom:group:g";
+        let private = "agent:a:openclaw:wecom:private:u";
+        let mut initial = SessionRouter::new(PathBuf::from("/tmp/workspace"));
+        initial.upsert_peer_session(peer(group, "group-session"));
+        initial.upsert_peer_session(peer(private, "private-session"));
+        let router = Arc::new(tokio::sync::Mutex::new(initial));
+        let info = EnsureSidecarInfo {
+            session_key: group.into(),
+            session_id: "group-session".into(),
+            workspace: PathBuf::from("/tmp/workspace"),
+            prev_count: 7,
+            metadata_birth_pending: false,
+            metadata_indexed: true,
+            runtime_override: None,
+            runtime_source_override: None,
+        };
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            SessionRouter::complete_ensure_sidecar(
+                &router,
+                group,
+                EnsureSidecarPrep::NeedCreate(info.clone()),
+                |_| async {
+                    // Equivalent to the Management API callback required before
+                    // Sidecar readiness: it needs the same channel routing mutex.
+                    let guard = router.lock().await;
+                    assert_eq!(
+                        guard.peer_session_snapshot(group).unwrap().session_id,
+                        "group-session"
+                    );
+                    assert_eq!(
+                        guard.peer_session_snapshot(private).unwrap().session_id,
+                        "private-session"
+                    );
+                    Ok((1234, true))
+                },
+            ),
+        )
+        .await
+        .expect("startup must not hold the callback's router lock")
+        .unwrap();
+        assert_eq!(result, (1234, true));
+        let restored = router.lock().await.peer_session_snapshot(group).unwrap();
+        assert_eq!(restored.session_id, "group-session");
+        assert_eq!(restored.message_count, 7);
+        assert_eq!(restored.sidecar_port, 1234);
+        assert_eq!(
+            router
+                .lock()
+                .await
+                .peer_session_snapshot(private)
+                .unwrap()
+                .sidecar_port,
+            0
+        );
+        let reused = SessionRouter::complete_ensure_sidecar(
+            &router,
+            group,
+            EnsureSidecarPrep::Healthy(1234),
+            |_| async {
+                panic!("healthy Sidecar must not be recreated");
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(reused, (1234, false));
+        let failed = SessionRouter::complete_ensure_sidecar(
+            &router,
+            group,
+            EnsureSidecarPrep::NeedCreate(info),
+            |_| async { Err("synthetic startup failure".into()) },
+        )
+        .await;
+        assert!(failed.is_err());
+        assert_eq!(
+            router
+                .lock()
+                .await
+                .peer_session_snapshot(group)
+                .unwrap()
+                .sidecar_port,
+            1234
+        );
     }
 
     #[test]
@@ -1500,13 +1819,76 @@ mod tests {
     }
 
     #[test]
+    fn surface_stage_uses_current_lease_port_and_rollback_restores_prior_binding() {
+        for (port, current_lease_port) in [(0, 0), (32001, 0), (0, 32002), (32001, 32002)] {
+            let key = "agent:a:openclaw:wecom:group:chat";
+            let mut router = SessionRouter::new(PathBuf::from("/tmp/workspace"));
+            let mut source = peer(key, "session-a");
+            source.sidecar_port = port;
+            router.upsert_peer_session(source.clone());
+            let transition = router
+                .stage_surface_session_migration(key, "session-a", "session-b", current_lease_port)
+                .unwrap();
+            let next = router.peer_session_snapshot(key).unwrap();
+            assert_eq!(
+                next.sidecar_port, current_lease_port,
+                "cache follows the current lease, not the old Router port"
+            );
+            assert_eq!(next.session_id, "session-b");
+            assert!(router.rollback_peer_binding_transition(&transition));
+            let restored = router.peer_session_snapshot(key).unwrap();
+            assert_eq!(restored.session_id, source.session_id);
+            assert_eq!(restored.sidecar_port, source.sidecar_port);
+            assert_eq!(restored.message_count, source.message_count);
+        }
+    }
+
+    #[tokio::test]
+    async fn surface_migrated_channel_lease_is_collected_without_another_message() {
+        let key = "agent:a:openclaw:wecom:group:chat";
+        let manager = crate::sidecar::create_sidecar_manager();
+        let tab = SidecarOwner::Tab("tab-a".to_string());
+        let agent = SidecarOwner::Agent(key.to_string());
+        {
+            let mut state = manager.lock().unwrap();
+            state.insert_test_ready_frontend_sidecar("source", 32001, tab.clone());
+            state.add_session_owner("source", agent.clone());
+            assert!(
+                state.upgrade_session_id_for_surface_migration("source", "target", "tab-a", key)
+            );
+        }
+        let mut router = SessionRouter::new(PathBuf::from("/tmp/workspace"));
+        router.upsert_peer_session(peer(key, "source"));
+        router
+            .stage_surface_session_migration(key, "source", "target", 32001)
+            .unwrap();
+        router.peer_sessions.get_mut(key).unwrap().last_active =
+            Instant::now() - Duration::from_secs(IDLE_TIMEOUT_SECS + 1);
+        assert_eq!(router.collect_idle_sessions(&manager).await, vec![key]);
+        {
+            let state = manager.lock().unwrap();
+            assert!(state.session_has_exact_owner("target", &tab));
+            assert!(!state.session_has_exact_owner("target", &agent));
+        }
+        assert_eq!(router.peer_session_snapshot(key).unwrap().sidecar_port, 0);
+        release_session_sidecar(&manager, "target", &tab)
+            .await
+            .unwrap();
+        assert!(manager.lock().unwrap().get_session_port("target").is_none());
+        assert_eq!(
+            router.peer_session_snapshot(key).unwrap().session_id,
+            "target"
+        );
+    }
+
+    #[test]
     fn surface_stage_requires_the_current_source_binding() {
         let session_key = "agent:a:feishu:private:user";
         let mut router = SessionRouter::new(PathBuf::from("/tmp/workspace"));
         router.upsert_peer_session(peer(session_key, "session-newer"));
 
         let error = router
-            .stage_surface_session_migration(session_key, "session-stale", "session-target")
+            .stage_surface_session_migration(session_key, "session-stale", "session-target", 0)
             .expect_err("stale source must fail closed");
         assert!(error.contains("binding changed"));
         assert_eq!(

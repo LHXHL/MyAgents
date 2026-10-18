@@ -165,6 +165,7 @@ const COMMON_PREFIXES = [
 
 const SESSION_ADMIN_ROUTES = new Set([
   'cron/exit',
+  'im/send-message',
   'im/send-media',
   'im/wake',
   'reload',

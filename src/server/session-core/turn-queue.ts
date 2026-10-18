@@ -44,6 +44,7 @@ export type TurnIdentity = {
 };
 
 export type TurnTerminalOutcome = {
+  channelDeliveryMode?: import('../../shared/channelContext').ChannelDeliveryMode;
   status: 'complete' | 'stopped' | 'error';
   text: string;
   assistantMessagePresent: boolean;

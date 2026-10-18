@@ -3155,6 +3155,44 @@ impl TaskStore {
         Ok(updated)
     }
 
+    /// Refresh application-owned instructions before scheduler admission. A
+    /// recovered Task can already be Running without an active execution;
+    /// ordinary user PATCH remains forbidden in that status. This writes only
+    /// task.md, preserving the Task row (identity, schedule and history).
+    pub(crate) async fn sync_managed_prompt_before_start(
+        &self,
+        id: &str,
+        prompt: &str,
+        _control: &crate::task_scheduler::TaskControlGuard,
+    ) -> Result<(), String> {
+        self.ensure_writable()?;
+        if crate::task_scheduler::get_task_scheduler()
+            .execution_projection(id)
+            .await
+            .is_some()
+        {
+            return Err("cannot refresh a managed prompt during an unresolved execution".into());
+        }
+        let inner = self.inner.read().await;
+        let task = inner.get(id).ok_or_else(|| format!("task not found: {id}"))?;
+        if task.deleted || !is_managed_task(task) {
+            return Err("only live system-managed Tasks own generated prompts".into());
+        }
+        if prompt.trim().is_empty() {
+            return Err("prompt is empty".into());
+        }
+        let dir = task_docs_dir(id)?;
+        let path = dir.join("task.md");
+        match fs::read_to_string(&path) {
+            Ok(current) if current == prompt => return Ok(()),
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("Failed to read managed task prompt: {error}")),
+        }
+        fs::create_dir_all(&dir).map_err(|error| format!("mkdir task dir: {error}"))?;
+        write_atomic_text(&path, prompt)
+    }
+
     // ---- Update fields ----
 
     pub async fn update(&self, input: TaskUpdateInput) -> Result<Task, String> {

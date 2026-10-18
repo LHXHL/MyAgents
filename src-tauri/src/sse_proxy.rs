@@ -136,6 +136,22 @@ impl Default for SseProxyState {
     }
 }
 
+impl SseProxyState {
+    /// A new main Renderer cannot adopt an old JS listener. Retire only its
+    /// transport subscriptions; Session / Companion ownership is unchanged.
+    pub(crate) async fn stop_tab_subscriptions(&self) {
+        let mut connections = self.connections.lock().await;
+        connections.retain(|_, connection| {
+            if matches!(connection.owner, SidecarOwner::Tab(_)) {
+                connection.stop();
+                false
+            } else {
+                true
+            }
+        });
+    }
+}
+
 fn frontend_sidecar_owner(owner_type: &str, owner_id: String) -> Result<SidecarOwner, String> {
     if owner_id.is_empty() {
         return Err("SSE sidecar owner id must not be empty".to_string());
@@ -1306,6 +1322,38 @@ async fn execute_http_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn renderer_replacement_retires_tabs_but_keeps_companion_transport() {
+        let state = SseProxyState::default();
+        let old_tab_running = {
+            let mut connections = state.connections.lock().await;
+            let tab = SseConnection::new(1, "session".into(), SidecarOwner::Tab("tab".into()));
+            tab.running.store(true, Ordering::SeqCst);
+            let running = tab.running.clone();
+            connections.insert("tab".into(), tab);
+            connections.insert(
+                "companion".into(),
+                SseConnection::new(
+                    2,
+                    "session".into(),
+                    SidecarOwner::Companion("companion".into()),
+                ),
+            );
+            running
+        };
+        state.stop_tab_subscriptions().await;
+        assert!(!old_tab_running.load(Ordering::SeqCst));
+        let mut connections = state.connections.lock().await;
+        assert!(!connections.contains_key("tab"));
+        assert!(connections.contains_key("companion"));
+        // The same stable key now admits a fresh subscription (and snapshot).
+        connections.insert(
+            "tab".into(),
+            SseConnection::new(3, "session".into(), SidecarOwner::Tab("tab".into())),
+        );
+        assert_ne!(connections["tab"].generation, 1);
+    }
+
     use crate::sidecar::{
         create_sidecar_manager, DispatchGate, SidecarInstance, GLOBAL_SIDECAR_ID,
     };

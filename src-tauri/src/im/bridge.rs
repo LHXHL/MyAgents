@@ -170,6 +170,8 @@ pub async fn get_bot_ids_using_plugin(plugin_id: &str) -> Vec<String> {
 
 pub struct BridgeAdapter {
     plugin_id: String,
+    /// registerChannel identity; never inferred from the install directory.
+    protocol_id: OnceLock<String>,
     bridge_port: u16,
     client: Client,
     #[allow(dead_code)]
@@ -185,11 +187,19 @@ pub struct BridgeAdapter {
     commands: Vec<(String, String)>,
 }
 
+fn registered_protocol_id(body: &serde_json::Value) -> Option<String> {
+    body["pluginId"]
+        .as_str()
+        .filter(|id| !id.is_empty() && *id != "unknown" && id.trim() == *id && !id.contains(':'))
+        .map(str::to_owned)
+}
+
 impl BridgeAdapter {
     pub fn new(plugin_id: String, bridge_port: u16) -> Self {
         let client = crate::local_http::json_client(Duration::from_secs(30));
         Self {
             plugin_id,
+            protocol_id: OnceLock::new(),
             bridge_port,
             client,
             max_msg_length: 4096,
@@ -206,6 +216,9 @@ impl BridgeAdapter {
         match self.client.get(self.url("/capabilities")).send().await {
             Ok(resp) if resp.status().is_success() => {
                 if let Ok(body) = resp.json::<serde_json::Value>().await {
+                    if let Some(id) = registered_protocol_id(&body) {
+                        let _ = self.protocol_id.set(id);
+                    }
                     if let Some(limit) = body["textChunkLimit"].as_u64() {
                         self.max_msg_length = limit as usize;
                         ulog_info!("[bridge:{}] textChunkLimit = {}", self.plugin_id, limit);
@@ -258,6 +271,16 @@ impl BridgeAdapter {
                 );
             }
         }
+    }
+
+    pub(crate) fn routing_platform(&self) -> Result<crate::im::types::ImPlatform, String> {
+        self.protocol_id
+            .get()
+            .map(|id| crate::im::types::ImPlatform::OpenClaw(id.clone()))
+            .ok_or_else(|| {
+                "Plugin Bridge did not report a registered Channel identity; reconnect the channel."
+                    .into()
+            })
     }
 
     /// All tool groups discovered from plugin (before user filtering).
@@ -431,6 +454,25 @@ impl BridgeAdapter {
 }
 
 impl ImAdapter for BridgeAdapter {
+    async fn peer_names(
+        &self,
+        targets: &super::peer_names::PeerNameTargets,
+    ) -> Vec<super::peer_names::PeerDisplayName> {
+        let result = self
+            .client
+            .post(self.url("/peer-names"))
+            .json(targets)
+            .timeout(Duration::from_secs(4))
+            .send()
+            .await;
+        match result {
+            Ok(response) if response.status().is_success() => {
+                response.json().await.unwrap_or_default()
+            }
+            _ => Vec::new(),
+        }
+    }
+
     async fn verify_connection(&self) -> AdapterResult<String> {
         // Poll /status with retries — loadPlugin() may still be running
         // (health check only verifies HTTP server is up, not that the plugin is loaded)
@@ -467,6 +509,12 @@ impl ImAdapter for BridgeAdapter {
             }
 
             if body["ready"].as_bool() == Some(true) {
+                let id = registered_protocol_id(&body)
+                    .ok_or("Ready Bridge did not report a registered Channel identity")?;
+                let current = self.protocol_id.get_or_init(|| id.clone());
+                if current != &id {
+                    return Err("Bridge registered Channel identity changed during startup".into());
+                }
                 // Don't fall back to pluginName (= npm package name) — that's
                 // the bug we're fixing in v0.2.10 (it surfaced as the bot's
                 // display name in the channel list, e.g. "wecom/wecom-openclaw-plugin").
@@ -1033,6 +1081,20 @@ impl ImStreamAdapter for BridgeAdapter {
                 "requestId": request_id,
                 "finalPayloads": final_payloads,
             }),
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn set_reply_delivery_mode(
+        &self,
+        request_id: &str,
+        mode: super::types::ChannelDeliveryMode,
+    ) -> AdapterResult<()> {
+        self.post_reply_operation(
+            "/delivery-policy",
+            "delivery-policy",
+            &json!({"requestId":request_id,"mode":mode}),
         )
         .await?;
         Ok(())
@@ -2718,4 +2780,63 @@ async fn detect_qr_login_support(pkg_dir: &std::path::Path) -> bool {
         }
     }
     false
+}
+
+#[cfg(test)]
+mod routing_identity_tests {
+    use super::*;
+    #[tokio::test]
+    async fn early_capabilities_wait_for_registered_status_without_guessing_install_id() {
+        let service = axum::Router::new()
+            .route(
+                "/capabilities",
+                axum::routing::get(|| async { axum::Json(json!({"pluginId":"unknown"})) }),
+            )
+            .route(
+                "/status",
+                axum::routing::get(|| async {
+                    axum::Json(json!({"pluginId":"wecom", "ready":true}))
+                }),
+            )
+            .route(
+                "/identity",
+                axum::routing::get(|| async { axum::Json(json!({})) }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server =
+            tauri::async_runtime::spawn(
+                async move { axum::serve(listener, service).await.unwrap() },
+            );
+        let mut adapter = BridgeAdapter::new("wecom-openclaw-plugin".into(), port);
+        adapter.sync_capabilities().await;
+        assert!(adapter.routing_platform().is_err());
+        adapter.verify_connection().await.unwrap();
+        assert_eq!(
+            adapter.routing_platform().unwrap(),
+            crate::im::types::ImPlatform::OpenClaw("wecom".into())
+        );
+        assert_eq!(adapter.plugin_id(), "wecom-openclaw-plugin");
+        let conflicting = BridgeAdapter::new("wecom-openclaw-plugin".into(), port);
+        conflicting.protocol_id.set("different".into()).unwrap();
+        assert!(conflicting.verify_connection().await.is_err());
+        server.abort();
+    }
+
+    #[test]
+    fn protocol_identity_requires_registration_evidence() {
+        for body in [
+            json!({}),
+            json!({"pluginId":"unknown"}),
+            json!({"pluginId":""}),
+            json!({"pluginId":" wecom "}),
+            json!({"pluginId":"openclaw:wecom"}),
+        ] {
+            assert_eq!(registered_protocol_id(&body), None);
+        }
+        assert_eq!(
+            registered_protocol_id(&json!({"pluginId":"wecom"})).as_deref(),
+            Some("wecom")
+        );
+    }
 }

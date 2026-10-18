@@ -120,7 +120,7 @@ Tab API / Global API
 
 WebView 只有已登记的大载荷端点可以原生读取数据面，当前为 `/refs/:id` 与 `/api/attachment/tool/*`。这些端点必须同时满足 CORS、CSP、大小限制和路径安全约束；不得把例外扩展到普通 API。
 
-Rust SSE supervisor 绑定稳定的 `connectionKey + SidecarOwner`，每次连接前重新解析当前 process generation。已恢复历史 Tab 以 REST snapshot 为 baseline，SSE 按连续 revision 增量推进；尚未采用 REST baseline 的 SSE-native 新生会话可在重连时采用有序 cold-history snapshot，详见 [V2 transcript](./tech_docs/session_transcript_v2.md)。新 JSON 事件必须加入 Renderer 白名单，Session-scoped 事件必须携带并校验 `sessionId`。
+Rust SSE supervisor 绑定稳定的 `connectionKey + SidecarOwner`，每次连接前重新解析当前 process generation。历史通过分页 REST snapshot 建立 baseline，SSE 按连续 revision 增量推进；建连状态携带 snapshot revision，缺口由既有 REST restore 恢复，不通过 SSE 重发全量冷历史，详见 [V2 transcript](./tech_docs/session_transcript_v2.md)。新 JSON 事件必须加入 Renderer 白名单，Session-scoped 事件必须携带并校验 `sessionId`。
 
 Node → Rust 的反向调用只经过 localhost Management API。应用级资源由 Rust owner 管理，不能交给某个 Session Sidecar 的内存计数。
 

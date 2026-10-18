@@ -2,12 +2,22 @@ import { normalizeWorkspacePathIdentity } from '../../shared/workspacePath';
 
 export const GLOBAL_SIDEBAR_PREFERENCE_KEY = 'myagents.globalSidebar.v1';
 export const LEGACY_AUTOMATION_HISTORY_KEY = 'myagents.launcher.showAutomationHistorySessions';
+export const GLOBAL_SIDEBAR_DEFAULT_WIDTH = 256;
+export const GLOBAL_SIDEBAR_MIN_WIDTH = 224;
+export const GLOBAL_SIDEBAR_MAX_WIDTH = 480;
+
+export function normalizeGlobalSidebarWidth(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.min(GLOBAL_SIDEBAR_MAX_WIDTH, Math.max(GLOBAL_SIDEBAR_MIN_WIDTH, Math.round(value)))
+    : GLOBAL_SIDEBAR_DEFAULT_WIDTH;
+}
 
 export type GlobalSidebarPreferredMode = 'expanded' | 'rail';
 
 export interface GlobalSidebarPreferenceV1 {
   version: 1;
   preferredMode: GlobalSidebarPreferredMode;
+  expandedWidth: number;
   expandedWorkspaceKeys: string[];
   hasSeededDefaultExpansion: boolean;
   showAutomationSessions: boolean;
@@ -17,6 +27,7 @@ export interface GlobalSidebarPreferenceV1 {
 export const DEFAULT_GLOBAL_SIDEBAR_PREFERENCE: GlobalSidebarPreferenceV1 = {
   version: 1,
   preferredMode: 'expanded',
+  expandedWidth: GLOBAL_SIDEBAR_DEFAULT_WIDTH,
   expandedWorkspaceKeys: [],
   hasSeededDefaultExpansion: false,
   showAutomationSessions: false,
@@ -45,6 +56,7 @@ export function parseGlobalSidebarPreference(value: unknown): GlobalSidebarPrefe
   return {
     version: 1,
     preferredMode: value.preferredMode,
+    expandedWidth: normalizeGlobalSidebarWidth(value.expandedWidth),
     expandedWorkspaceKeys: normalizeWorkspaceKeys(value.expandedWorkspaceKeys),
     hasSeededDefaultExpansion: value.hasSeededDefaultExpansion,
     showAutomationSessions: typeof value.showAutomationSessions === 'boolean'
@@ -54,7 +66,16 @@ export function parseGlobalSidebarPreference(value: unknown): GlobalSidebarPrefe
   };
 }
 
-export function loadGlobalSidebarPreference(storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>): GlobalSidebarPreferenceV1 {
+export function loadGlobalSidebarPreference(storage?: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>): GlobalSidebarPreferenceV1 {
+  try {
+    return readGlobalSidebarPreference(storage ?? window.localStorage);
+  } catch (error) {
+    console.warn('[GlobalSidebar] Failed to read sidebar preference:', error);
+    return { ...DEFAULT_GLOBAL_SIDEBAR_PREFERENCE };
+  }
+}
+
+function readGlobalSidebarPreference(storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>): GlobalSidebarPreferenceV1 {
   const raw = storage.getItem(GLOBAL_SIDEBAR_PREFERENCE_KEY);
   if (raw) {
     try {

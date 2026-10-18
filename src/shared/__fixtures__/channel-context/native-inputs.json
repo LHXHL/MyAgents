@@ -1,0 +1,75 @@
+[
+  {
+    "platform": "telegram",
+    "message": {
+      "message_id": 7,
+      "date": 1700000000,
+      "from": {
+        "id": 100,
+        "is_bot": false,
+        "username": "alice"
+      },
+      "message_thread_id": 9,
+      "reply_to_message": {
+        "message_id": 6,
+        "date": 1699999999,
+        "from": {
+          "id": 101,
+          "first_name": "同名",
+          "is_bot": true
+        },
+        "text": "quoted"
+      }
+    },
+    "expected": {
+      "platformMessageId": "7",
+      "sentAt": "2023-11-14T22:13:20Z",
+      "senderIdType": "user_id",
+      "threadId": "9",
+      "replyToSelf": true
+    }
+  },
+  {
+    "platform": "feishu",
+    "sender": {
+      "sender_type": "user"
+    },
+    "message": {
+      "message_id": "m2",
+      "create_time": "1700000000000",
+      "parent_id": "parent",
+      "thread_id": "thread",
+      "mentions": [
+        {
+          "id": {
+            "open_id": "bot"
+          },
+          "name": "同名"
+        }
+      ]
+    },
+    "expected": {
+      "platformMessageId": "m2",
+      "sentAt": "2023-11-14T22:13:20Z",
+      "senderIdType": "open_id",
+      "replyToSelf": null,
+      "threadId": "thread",
+      "parentId": null
+    }
+  },
+  {
+    "platform": "dingtalk",
+    "message": {
+      "msgId": "m3",
+      "isInAtList": "true"
+    },
+    "expected": {
+      "platformMessageId": "m3",
+      "sentAt": null,
+      "senderIdType": "staff_id",
+      "mentionsSelf": true,
+      "senderIsBot": null,
+      "replyToSelf": null
+    }
+  }
+]

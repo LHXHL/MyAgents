@@ -169,7 +169,9 @@ fn ambiguous_delivery_outcome(message: &PendingInboxMessage, reason: String) -> 
 }
 
 fn ambiguous_handoff_outcome(message: &PendingInboxMessage, reason: String, network_handoff: bool) -> DeliverOutcome {
-    if network_handoff || message.source_kind == InboxSourceKind::ExternalCli {
+    let channel_handoff = message.session_event.as_ref().is_some_and(|event|
+        event["type"] == "send.request" && event["channelHandoff"].is_object());
+    if network_handoff || channel_handoff || message.source_kind == InboxSourceKind::ExternalCli {
         DeliverOutcome::Unconfirmed { reason }
     } else {
         DeliverOutcome::DeliveryFailed { reason }
@@ -851,6 +853,39 @@ mod tests {
                 reason: "busy".to_string()
             }
         ));
+    }
+
+    #[tokio::test]
+    async fn channel_handoff_lost_or_malformed_ack_remains_unknown() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        for response in [None, Some(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nbad".as_slice())] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let server = tauri::async_runtime::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut bytes = Vec::new();
+                loop {
+                    let mut buffer = [0; 4096];
+                    let read = stream.read(&mut buffer).await.unwrap();
+                    if read == 0 { break; }
+                    bytes.extend_from_slice(&buffer[..read]);
+                    if let Some(header_end) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&bytes[..header_end]).to_lowercase();
+                        let length: usize = headers.lines().find_map(|line| line.strip_prefix("content-length: ")).unwrap().parse().unwrap();
+                        if bytes.len() >= header_end + 4 + length { break; }
+                    }
+                }
+                assert!(String::from_utf8_lossy(&bytes).contains("channelHandoff"));
+                if let Some(response) = response { stream.write_all(response).await.unwrap(); }
+            });
+            let mut message = PendingInboxMessage::new_request("source".into(), "Source".into(), "target".into(), "payload".into(), false);
+            message.session_event = Some(serde_json::json!({"type":"send.request","channelHandoff":{"context":"context"}}));
+            let outcome = http_post_drain(port, &message, false).await;
+            assert!(matches!(outcome, DeliverOutcome::Unconfirmed { .. }));
+            assert!(should_start_headless_completion(&outcome));
+            assert!(matches!(drain_ack_outcome(&message, 409, Ok(DrainResponse {accepted:false,reason:None})), DeliverOutcome::Rejected {..}));
+            server.await.unwrap();
+        }
     }
 
     #[test]

@@ -1,4 +1,6 @@
+import { readChannelIdentities, projectConfiguredChannel, projectScopedChannels } from './utils/channel-discovery';
 import { nextAgentNetworkExposureRevision } from "../shared/config-types";
+import { MODEL_ADD_OPTIONS_HELP } from '../shared/modelAddOptions';
 import { resolveAgentConfigMutation, mutationForAgentModelSelection, type AgentModelSelection } from '../shared/agentConfigMutation';
 import { APP_BUILD_IDENTITY, SIDECAR_BUILD_IDENTITY, SIDECAR_STARTED_AT } from './build-identity';
 import { CLAUDE_AGENT_SDK_IMPLEMENTATION_VERSION } from '../shared/integrated-runtimes/identity';
@@ -138,7 +140,6 @@ import { getImCronContext, getSessionCronContext } from './tools/im-cron-tool';
 import { getImMediaContext } from './tools/im-media-tool';
 import { buildReadMeContent } from './tools/generative-ui-tool';
 import { WIDGET_TRIGGER_GUIDANCE } from './system-prompt-cli-tools';
-import { assertSafeFilePath } from './utils/safe-file-path';
 import {
   VALID_RUNTIMES,
   RUNTIME_DISPLAY_NAMES,
@@ -1366,6 +1367,38 @@ export async function handleModelAdd(payload: {
   const { dryRun } = payload;
   const p = payload.provider;
 
+  // Do not turn malformed CLI values into a different protocol or serialize
+  // NaN as null. This is the definition writer, shared by preview and commit.
+  const protocol = p.apiProtocol ?? p.protocol ?? 'anthropic';
+  if (!['anthropic', 'openai'].includes(String(protocol)) || typeof protocol !== 'string') {
+    return { success: false, error: 'apiProtocol must be anthropic or openai' };
+  }
+  if (p.apiProtocol !== undefined && p.protocol !== undefined && p.apiProtocol !== p.protocol) {
+    return { success: false, error: 'Conflicting apiProtocol and protocol' };
+  }
+  if (p.authType !== undefined && (typeof p.authType !== 'string' || !['auth_token', 'api_key', 'both', 'auth_token_clear_api_key'].includes(p.authType))) {
+    return { success: false, error: 'Invalid authType' };
+  }
+  if (protocol !== 'openai' && (p.upstreamFormat !== undefined || p.maxOutputTokens !== undefined || p.maxOutputTokensParamName !== undefined)) {
+    return { success: false, error: 'upstreamFormat and output-token options require apiProtocol=openai' };
+  }
+  if (p.upstreamFormat !== undefined && !['chat_completions', 'responses'].includes(String(p.upstreamFormat))) {
+    return { success: false, error: 'upstreamFormat must be chat_completions or responses' };
+  }
+  for (const key of ['maxOutputTokens', 'timeout'] as const) {
+    if (p[key] !== undefined && ((typeof p[key] !== 'string' && typeof p[key] !== 'number') || !Number.isSafeInteger(Number(p[key])) || Number(p[key]) <= 0)) {
+      return { success: false, error: `${key} must be a positive integer` };
+    }
+  }
+  for (const key of ['id', 'name', 'baseUrl', 'modelSeries', 'primaryModel', 'vendor', 'websiteUrl'] as const) {
+    if (p[key] !== undefined && (typeof p[key] !== 'string' || !p[key].trim())) {
+      return { success: false, error: `${key} must be a non-empty string` };
+    }
+  }
+  if (p.disableNonessential !== undefined && typeof p.disableNonessential !== 'boolean') {
+    return { success: false, error: 'disableNonessential must be a boolean' };
+  }
+
   // Validate required fields
   if (!p.id) return { success: false, error: 'Missing required field: id' };
   if (!isValidId(String(p.id)))
@@ -1421,6 +1454,9 @@ export async function handleModelAdd(payload: {
     },
   );
   const modelIds = models.map((model) => model.model);
+  if (p.primaryModel !== undefined && !modelIds.includes(String(p.primaryModel).trim())) {
+    return { success: false, error: 'primaryModel must be one of models' };
+  }
 
   // Build aliases
   let modelAliases: Record<string, string> | undefined;
@@ -1455,7 +1491,7 @@ export async function handleModelAdd(payload: {
       ...(p.disableNonessential ? { disableNonessential: true } : {}),
     },
     authType: String(p.authType ?? 'auth_token'),
-    ...(p.protocol === 'openai' || p.apiProtocol === 'openai'
+    ...(protocol === 'openai'
       ? {
           apiProtocol: 'openai' as const,
           ...(p.maxOutputTokens
@@ -1647,6 +1683,7 @@ export async function handleAgentList(
     const registry = await resolvePersistedAgentWorkspaceRegistry();
     const lifecycle = normalizeAgentLifecycleFilter(payload.lifecycle);
     const currentWorkspacePath = getCurrentWorkspacePath();
+    const channelIdentities = await readChannelIdentities();
     const agents = filterAgentIdentities(registry.agentProjections, lifecycle)
       .map((identity) => {
         const { agent, project, workspacePath } = identity;
@@ -1664,12 +1701,7 @@ export async function handleAgentList(
           association: identity.association,
           isCurrent: isCurrentAgentIdentity(identity, currentWorkspacePath),
           channelCount: (agent.channels ?? []).length,
-          channels: (agent.channels ?? []).map((channel) => ({
-            id: channel.id,
-            type: channel.type,
-            name: channel.name,
-            enabled: channel.enabled,
-          })),
+          channels: (agent.channels ?? []).map(channel => projectConfiguredChannel(channel, channelIdentities)),
         };
       });
     const { discoverAgents } = await import('./agent-network/discovery');
@@ -2430,22 +2462,18 @@ export async function handleAgentSet(payload: {
   );
 }
 
-export function handleAgentChannelList(payload: {
+export async function handleAgentChannelList(payload: {
   agentId: string;
-}): AdminResponse {
+}): Promise<AdminResponse> {
   const config = loadConfig();
   const agent = (config.agents ?? []).find((a) => a.id === payload.agentId);
   if (!agent)
     return { success: false, error: `Agent '${payload.agentId}' not found` };
 
+  const identities = await readChannelIdentities();
   return {
     success: true,
-    data: (agent.channels ?? []).map((ch) => ({
-      id: ch.id,
-      type: ch.type,
-      name: ch.name,
-      enabled: ch.enabled,
-    })),
+    data: (agent.channels ?? []).map(channel => projectConfiguredChannel(channel, identities)),
   };
 }
 
@@ -3171,7 +3199,7 @@ ERROR RECOVERY
     effect:
       'Validates the provider and, unless --dry-run is set, persists its provider definition.',
     options:
-      '  --dry-run              Validate and preview without persisting provider files or config\n  See myagents model --help for protocol and model options.',
+      `${MODEL_ADD_OPTIONS_HELP}\n  --dry-run               Validate and preview without persisting provider files or config`,
     mutation:
       '--dry-run does not write or persist provider configuration. Without it, this mutates app configuration.',
     output: 'The normalized provider preview or the created provider ID.',
@@ -3301,19 +3329,7 @@ Commands:
   set-default <id>         Set default provider
 
 Options for 'add':
-  --id            Provider ID (required)
-  --name          Display name (required)
-  --base-url      API endpoint URL (required)
-  --models        Model IDs (repeatable, at least one)
-  --model-names   Display names for models (repeatable)
-  --primary-model Default model (default: first in --models)
-  --auth-type     auth_token | api_key | both (default: auth_token)
-  --protocol      anthropic | openai (default: anthropic)
-  --upstream-format  chat_completions | responses (openai only)
-  --max-output-tokens  Max output limit (openai only)
-  --aliases       SDK alias mapping: sonnet=model,opus=model,haiku=model
-  --vendor        Vendor name
-  --website-url   Provider website`,
+${MODEL_ADD_OPTIONS_HELP}`,
 
   config: `myagents config — Read/write application config
 
@@ -4450,17 +4466,112 @@ Related:
     recovery: 'Use myagents task <leaf> --help for exact input/output details.',
   }),
 
+  'im/send-message': `myagents im send-message — Send text and/or local images/files
+
+Usage (choose exactly one input flag):
+  myagents im send-message --input-file <absolute JSON path>
+  myagents im send-message --input-file -                  # JSON from stdin
+  myagents im send-message --input-json '<JSON>'
+  Add --json for machine-readable output.
+
+Input JSON:
+  context       Background for the receiving Session (required for other conversations).
+  text          Message body. Non-empty text or at least one attachment is required.
+  attachments   Up to 32 items: [{"path":"/absolute/path","caption":"optional"}].
+                Local files only; paths must be inside the workspace or allowed
+                temporary roots. Images <= 10 MiB; files <= 50 MiB; platform limits apply.
+  target        Optional {"type":"user"|"chat","id":"platform ID","idType":"optional"}.
+                Omit to use this Session's default conversation. An explicit target
+                changes this send only, and must use the same bound connection.
+  channelId     Required with target when the Session has no default binding.
+                Must belong to this Agent; a bound Session cannot switch connections.
+
+Use myagents im channels to discover connections, default target and supported ID types.
+Session identity and permissions come from the App; do not supply sessionId or credentials.
+Both automatic-reply and tool-send modes support this command. A different conversation receives a Session handoff, not an immediate platform send.
+This is not a status query. Save the first receipt and inspect it; do not rerun to check status.
+Write arbitrary/long content to a JSON file to avoid shell interpolation.
+
+Examples (JSON file contents):
+  {"text":"Report ready"}
+  {"text":"Report ready","attachments":[{"path":"/workspace/report.pdf"}]}
+  {"channelId":"connection-id","target":{"type":"user","id":"recipient-id","idType":"open_id"},"text":"Hello","context":"The group asked me to contact this member."}
+  IDs/types are examples; use the discovered connection's actual values.
+
+Results:
+  connection, target, items[] (text/attachment, index, status, messageIds or error).
+  Direct status: sent | failed | partial | unknown.
+  Handoff: action=handoff, status=accepted|failed|unknown, eventId, targetSessionId, connection, conversation.
+  Item status: sent | failed | unknown | not_attempted.
+  sent means platform acceptance, not read. unknown may already have arrived.
+  Never blindly resend accepted or uncertain items. A transport failure stops later items.
+  To retain a receipt: myagents im send-message --input-file /absolute/message.json --json > /absolute/receipt.json
+  Inspect that saved file to confirm status; rerunning send-message would send again.
+  Exit 0 when direct items are sent or the target Session accepts the handoff; failed/partial/unknown exit nonzero.
+
+向其他会话发送（由目标 Session 转达）
+
+省略 target 时，消息直接发送到当前 Session 绑定的会话。
+指定的 target 如果是其他私聊、群聊或频道，本命令先把消息和背景交给那个会话的 Session，
+由它告知收件人并承接后续回复；本次调用不会直接向那个会话外发。
+
+已有渠道绑定时的最小示例（如企微私聊）：
+  {"target":{"type":"user","id":"收件用户ID"},"text":"待转达内容","context":"联系对方的原因"}
+channelId 从当前绑定取得；目标类型仅支持一种 ID 格式时，idType 自动补齐。
+
+必须同时填写：
+  target.id  收件用户或会话的真实平台 ID；type/idType 按连接支持的格式填写。
+  text       希望告知收件人的内容。
+  context    事情背景：为什么联系对方，以及对方 Session 需要知道的上下文。
+
+仅发送图片/文件到其他会话时，也必须填写 text 和 context。
+context 不会作为消息正文自动转发。来源/目标 Session、平台、会话名称和类型由产品补充。
+无需自己编写 system-reminder 或提供 Session ID。
+
+channelId 表示 Bot 连接 ID，不是群聊 ID。已有绑定时只能使用当前连接；
+无绑定时必须显式填写所属 Agent 的 channelId 和 target。
+显式 target 若解析为当前绑定会话，仍直接发送，不向自己交接。
+
+返回 accepted 只表示目标 Session 已接纳转达请求，不表示外部消息已经发送。
+保留首次回执；unknown 时不要盲目重发。交接不会自动回传目标私聊的完整回答，
+也不会修改用户白名单、群授权或后续默认收件人。
+直接发送返回 sent 表示平台接受，不代表已读；partial/unknown 时不要重发已接受或可能已接受的部分。
+已通过命令发送的内容，不要在自动回推的回答中重复发送。
+需要查询连接与支持的目标 ID 类型时，使用 myagents im channels。
+
+示例 JSON：
+{
+  "target": { "type": "user", "id": "wecom-user-example", "idType": "userid" },
+  "text": "明天下午三点开会，请确认是否能参加。",
+  "context": "项目复盘会时间待确认；群内要求单独征询该成员。"
+}
+
+将 JSON 保存后执行：
+  myagents im send-message --input-file /absolute/path/message.json
+
+Full reference: myagents im readme`,
+
   im: `myagents im — IM Bot capabilities (run 'myagents im readme' for long-form docs)
 
 Commands:
-  channels                            List configured IM bots (works anywhere)
+  channels                            Discover Agent connections, target types and default target
+  send-message --input-file <path> | --input-json <json>
+                                      Send text and/or local attachments; - reads stdin
   send-media --file <path> [--caption <text>]
-                                      Send a file to the current IM chat (IM session only)
+                                      Compatibility alias for one attachment
   wake [--text <text>]                Trigger a heartbeat wake (IM session only)
   readme                              Full reference + when-to-use guidance
 
 Use 'myagents im channels' to discover bot ids for --notificationBotChannelId
-on 'myagents task create-direct / update'.`,
+on 'myagents task create-direct / update'.
+
+Read recorded visible Session history: myagents session get <sessionId>
+Find Session IDs with myagents session list --agent <agentId>; see session get --help.
+This reads MyAgents records, not the platform's complete chat history.
+
+Identity: channelId (botId in the global listing) identifies a connection.
+platform is the registered protocol; pluginId identifies the installed plugin.
+A stopped/unregistered plugin has platform=null; do not guess from pluginId.`,
 
   record: `myagents record — Manage unified text and audio Records
 
@@ -4718,7 +4829,13 @@ OUTPUT
   archivedAt, isCurrent, channelCount, channels. Human output marks the current
   Project-selected Agent with *. Online network Agents are merged with local
   Agents; remote agentId is a qualified ma-agent:1 reference. Remote rows omit
-  local paths. networkStatus/complete report incomplete discovery; local results
+  local paths and local settings. Human output puts long selectors on a separate
+  Agent ID line; unknown remote settings are not inferred as disabled or zero.
+  channels[].platform is the registered protocol, pluginId is the installation
+  identity; legacy type is a configuration value, not a platform identifier.
+  platform=null means the plugin protocol is not currently known. Match connections
+  by their id/channelId, not by installation names.
+  networkStatus/complete report incomplete discovery; local results
   remain available when the network fails. --archived is local only.
   Use description, deviceName and isLocal to choose where work should execute;
   copy the full returned agentId, including all qualified reference components.
@@ -6550,6 +6667,19 @@ export async function handleImWake(payload: {
  * to IM. Works in any session — does not require an active IM context.
  */
 export async function handleImChannels(): Promise<AdminResponse> {
+  if (process.env.MYAGENTS_SIDECAR_ID) {
+    try {
+      const { readChannelScope } = await import('./tools/channel-messaging');
+      const [scope, identities] = await Promise.all([readChannelScope(), readChannelIdentities()]);
+      const data = scope ? { ...scope, channels: projectScopedChannels(
+        (scope.channels ?? []) as Array<Record<string, unknown>>, identities,
+      ) } : { channels: [], defaultTarget: null };
+      return { success: true, data,
+        hint: 'These connections belong to this Session’s Agent. targetTypes and mediaTypes describe supported destinations and content; defaultTarget is the exact Session binding.' };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
   const resp = await managementApi('/api/im/channels');
   if (!resp.ok) {
     return mgmtError(resp, 'Failed to list IM channels');
@@ -6571,59 +6701,15 @@ export async function handleImChannels(): Promise<AdminResponse> {
   };
 }
 
-export async function handleImSendMedia(payload: {
-  filePath?: string;
-  caption?: string;
-}): Promise<AdminResponse> {
-  if (!payload.filePath) {
-    return {
-      success: false,
-      error: 'Missing required field: --file <absolute-path>',
-    };
-  }
-  const ctx = getImMediaContext();
-  if (!ctx) {
-    return {
-      success: false,
-      error:
-        'No IM context in this session. This command only works inside an IM Bot / Agent Channel session.',
-    };
-  }
-  // Path traversal guard: prompt-injected AI on an external runtime could be
-  // steered into `myagents im send-media --file ~/.ssh/id_rsa` and exfiltrate
-  // secrets to the chat peer. assertSafeFilePath canonicalises (dereferencing
-  // symlinks) and requires the real path to live under workspace / tmp / the
-  // myagents scratch dir. Any other location is rejected with a clear error.
-  const { agentDir } = getAgentState();
-  let safePath: string;
-  try {
-    safePath = assertSafeFilePath(payload.filePath, {
-      workspacePath: agentDir,
-    });
-  } catch (err) {
-    return {
-      success: false,
-      error: err instanceof Error ? err.message : String(err),
-    };
-  }
-  const resp = await managementApi('/api/im/send-media', 'POST', {
-    botId: ctx.botId,
-    chatId: ctx.chatId,
-    platform: ctx.platform,
-    filePath: safePath,
-    caption: payload.caption,
-  });
-  if (resp.ok) {
-    return {
-      success: true,
-      data: {
-        fileName: (resp as Record<string, unknown>).fileName,
-        fileSize: (resp as Record<string, unknown>).fileSize,
-      },
-      hint: 'File sent to IM chat.',
-    };
-  }
-  return mgmtError(resp, 'Failed to send media');
+export async function handleImSendMessage(payload: unknown): Promise<AdminResponse> {
+  const { sendChannelMessage } = await import('./tools/channel-messaging');
+  const result = await sendChannelMessage(payload, getAgentState().agentDir);
+  return { success: result.status === 'sent' || result.status === 'accepted', data: result, ...(result.error ? { error: result.error } : {}) };
+}
+
+/** Published compatibility alias. Resolution, validation and transport are shared. */
+export async function handleImSendMedia(payload: { filePath?: string; caption?: string }): Promise<AdminResponse> {
+  return handleImSendMessage({ attachments: [{ path: payload.filePath, caption: payload.caption }] });
 }
 
 // ---------------------------------------------------------------------------
@@ -6851,46 +6937,61 @@ DO NOT
   Only the \`myagents task\` canonical surface or compatible \`myagents cron\`
   commands can create tasks inside MyAgents.`;
 
-const README_IM = `myagents im — IM Bot capabilities
+const README_IM = `myagents im — Channel messaging
 
-WHAT
-  Commands that act on the current IM chat (Telegram / Feishu / DingTalk /
-  OpenClaw plugin channels). Most commands only work inside an IM Bot
-  session or Agent Channel session; \`channels\` works anywhere.
+Read recorded visible Session history with myagents session get <sessionId>.
+Find IDs with myagents session list --agent <agentId>; see myagents session get --help
+for pagination. This reads MyAgents records, not the platform's complete chat history.
+Connection identity is channelId (legacy global alias: botId). platform is the
+registered protocol, pluginId the installation identity; platform=null means unknown.
 
-COMMANDS
+Use the current command execution tool to run the MyAgents CLI:
+  myagents im send-message --input-file <absolute JSON path>
+  myagents im send-message --input-json '<JSON>'
+  myagents im send-message --input-file -
+
+The request contains text and/or attachments [{path, caption?}]. All attachment
+paths must be absolute, inside this workspace or allowed temporary roots.
+Images are limited to 10 MiB and files to 50 MiB; platform limits also apply.
+Write arbitrary or long content to a JSON file rather than interpolating it
+into a shell command. Use exactly one input flag; - reads JSON from stdin.
+
+Without target, send to the exact current Session binding. An explicit target
+{type: "user" | "chat", id, idType?} can address another supported recipient on
+the same connection without changing the binding. Other conversations require text and context:
+their own Session receives this handoff and tells the recipient. The tool does not send
+directly to that platform destination. See myagents im send-message --help.
+When unbound, both channelId
+and target are required. Discover this Agent's available connections, supported
+ID types and defaultTarget with myagents im channels. Do not guess by nickname.
+
+This capability works for any existing trigger and in both delivery modes.
+In tool_only mode, ordinary Session output stays in the desktop; only explicit
+sends reach channel users. In auto mode, avoid repeating sent content in an
+ordinary reply that will also be forwarded.
+Every send-message invocation sends again. Keep its first JSON receipt and read
+that saved result to check status; never rerun a send command just to inspect it.
+
+Handoff receipts report action=handoff, accepted/failed/unknown, eventId and targetSessionId.
+accepted means queued, not consumed or sent; no automatic full reply is returned to the source.
+Direct results report connection, target and per-item sent/failed/unknown/not_attempted
+status. The overall status can also be partial. sent means accepted, not read;
+unknown may already have arrived. Do not blindly resend accepted or uncertain
+items. Invalid targets and locally detectable attachment errors fail before
+sending any item; a later transport failure stops subsequent items.
+
+Example JSON:
+  {"text":"Report ready","attachments":[{"path":"/tmp/report.csv"}]}
+
+Other commands:
   send-media --file <path> [--caption <text>]
-      Send a file to the current chat. Images (jpg/png/gif/webp/svg — max
-      10 MB) are sent as native photos; everything else (pdf/doc/xls/csv/json/
-      audio/video/archives) as a file upload (max 50 MB).
-      Write the file first using normal file-writing tools, then call this
-      with the absolute path. Use for things the user explicitly wants to
-      receive — not for intermediate work files. IM session only.
-
+      Published compatibility alias for one attachment to the default target.
   wake [--text <text>]
-      Trigger a heartbeat wake on the current IM bot. Use this when you've
-      done work that produced new state and want to drive the next reasoning
-      cycle yourself instead of waiting for the user. Optional --text adds
-      a contextual hint into the wake message. IM session only.
-
+      Request the existing heartbeat wake for the bound channel.
   channels
-      List configured IM channels (Telegram / Feishu / DingTalk / OpenClaw
-      plugin bots) the user has set up. Useful before creating a cron task
-      that should deliver results to a specific channel. Works in any
-      session — does not require an active IM context.
-
-EXAMPLES
-  # Generate a CSV and send it
-  myagents im send-media --file /tmp/report.csv --caption "Today's numbers"
-
-  # Send a generated chart image
-  myagents im send-media --file /tmp/chart.png
-
-  # Discover available IM channels
-  myagents im channels --json
-
-  # Wake yourself with a hint
-  myagents im wake --text "build finished, time to summarize"`;
+      Session: scoped Agent connections and exact default target.
+      App administration: configured channels for notification settings.
+`;
 
 const README_WIDGET = `myagents widget — Generative UI widget design guidelines
 

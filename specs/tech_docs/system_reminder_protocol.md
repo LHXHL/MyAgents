@@ -55,7 +55,7 @@ Space IssueDelivery 在这层通用 envelope 内还有独立的 Registered Agent
 4. `system-reminder` 内部 payload 会进入模型上下文；在有 `visibleText` 的标准
    mixed message 中，用户气泡、Session 搜索/预览、Query Navigator 与统计详情的
    turn trigger 都只使用 `visibleText`。
-5. 同一条消息只应有一个 leading `system-reminder` envelope；通用解析器只消费第一段，生产者不得据此堆叠 envelope。Desktop → IM 镜像属于防泄漏边界，会防御性地连续剥离异常堆叠的 leading envelope 后才生成用户可见文本；这只是兼容历史/异常输入，不改变单 envelope 的生产约束。
+5. 同一条消息只应有一个 leading `system-reminder` envelope。对于带版本 CHANNEL_CONTEXT 的新消息，`parseLeadingSystemReminder()` 只移除一个 envelope 及一个分隔换行，literal visible tail（包括 XML 和空白）原样保留。历史消息保留第一段的 kind/body/rawReminder，并兼容性地从 visible tail 再剥离至多 8 段连续 reminder；`systemReminder.test.ts` 的 nested-envelope 用例覆盖此行为。Desktop → IM 镜像也在其防泄漏边界防御性剥离异常堆叠的 leading envelope。这些都是历史/异常输入兼容，生产者不得据此堆叠 envelope。
 6. 如果没有 `visibleText` 且没有用户附件，前端应把整条 user bubble 视为纯隐藏
    reminder，不渲染气泡正文。Goal 自动续跑、objective update 等“只给模型看”的
    注入依赖这个语义。
@@ -152,8 +152,7 @@ Space 的内部 trust boundary 不改变通用 reminder wire protocol：Cloud �
 - `src/server/index.ts` memory update：纯
   `<system-reminder><MEMORY_UPDATE>...</MEMORY_UPDATE></system-reminder>`，内部维护用途；
   不要把它当成可复用用户气泡模板。
-- `src/server/index.ts` IM 群聊上下文：使用 `system-reminder` 隐藏群聊说明，但没有
-  badge tag。
+- IM 及具备渠道能力的 Session：实际 admission 插入版本化 `CHANNEL_CONTEXT`；只有该段时使用“渠道消息” badge，与已有 primary 共存时仍使用原 primary kind。
 - `src/server/utils/watchdog-auto-resume.ts`：纯 reminder，没有 badge tag。
 
 ## 生成侧要求
@@ -206,3 +205,23 @@ Cron 结果投送 IM session 的回归样例见：
 
 - `src/server/utils/cron-event-relay.unit.test.ts`
 - `src/renderer/components/Message.proseContext.test.tsx`
+
+## Channel context
+
+固定规范由 `src/shared/channelPrompt.ts` 与 `channelContext.ts` 的 schema/renderer 维护，完整 wire 快照位于 `channelContext.test.ts`。`CHANNEL_CONTEXT version="1"` 顺序为 facts、可选 context-data、可选 configured-instructions、固定 instruction。变量通过 compact JSON 与 XML escaping 进入数据层；32 KiB escaped UTF-8 预算按确定顺序裁剪可选字段，核心身份超限明确拒绝，不截断成另一个身份。
+
+单 envelope 顺序为既有 primary（Goal/Task/Heartbeat/Inbox 等）→ CHANNEL_CONTEXT → AGENT_MENTIONS；原 visible tail 与附件不因渠道预算被裁剪。`decorateChannelQuery` 只在产品调用方声明已有可信 envelope 时合成，原始用户 XML 不被提升为系统上下文。无 primary 时 kind=CHANNEL_CONTEXT；存在 primary 时不改变原 badge/触发归因。
+
+模型 facts 描述连接 scope、Bot 身份、当前发言者、容器与消息；connection 可附本轮 source/time。内部非 IM 输入 sender/message 为 null，投影后省略；内部无绑定时 mode/defaultTarget 为 null，不虚构收件人。所有 Runtime 固定提示 MyAgents CLI 命令，不注册独立发送工具。delivery 仅作为内部状态驱动 instruction：模型仅有自动回复／工具发送两种文案（auto+forwarded 为自动回复，其余内部状态统一工具发送）。必要提问仍按真实 host capability 处理。
+
+渠道提示词分层：两种发送模式的定义、CLI 使用和群聊／提问规则常驻固定 system 段；逐轮 `<instruction>` 只在自动回复／工具发送两句中选择一句（最长 110 字符），内部事实 schema 不变。mode 切换不修改 system 前缀，实际执行轮的快照与下一轮生效策略不变。
+
+内部 schema 保留完整状态与 null 进行校验；模型 facts 仅投影 connection/self/conversation/sender/message，递归省略未知字段、空对象及空数组。facts/context-data 的 JSON 位于 XML 元素文本内，只转义 `&`、`<`、`>`，不膨胀普通 JSON 引号；预算仍按实际 escaped UTF-8 计算。connection 存在时只补 source 和 time（本轮开始时刻与时区）两个执行信息；execution/delivery/projection 整组不进入模型。发送状态由一句自然语言 instruction 表达，参数与连接能力按需从 CLI 查询。
+
+Channel 时间只在模型投影时转换为本轮电脑时区的 ISO 时间（含实际 UTC offset，遵循该时刻夏令时）；内部 instant 与历史 transcript 不回写。connection.time 附时区名，message、reply/history/parts 的已知时间采用同一时区。context-data.reply 明确表示用户引用的旧消息，与当前 facts.sender 分离；trust=untrusted 表示数据没有指令权限，不是恶意或串话判定。
+
+## Channel Session 交接
+
+Channel owner 生成 `send.request.channelHandoff`（source? / target 环境、context、可选目标拥有的附件引用），双方 Product Session ID 在事件属性中。`sourceNotification=none`、`replyBack=false` 保持私聊结果不自动回到来源群；普通 Session send 不能声明此扩展。
+
+模型投影只有一个 `instruction`，首句“这是一条来自其他 Channel 会话所关联 Session 的消息。”（无渠道来源则为“其他 Session”），随后要求结合 context 转达 payload，说明尚未外发，并由目标实际 turn snapshot 附加 auto/tool_only 指令。其后是 facts-only `CHANNEL_CONTEXT`、`channel-handoff` 中的 source/payload/context。没有 event-summary；eventId、createdAt、sourceNotification 等控制字段留在内部。结构标签在名称、正文、背景中被转义；source_label 与 payload 继续兼容原 UI badge/气泡，身份与背景保持隐藏。图片仍是独立多模态输入，文件沿原工作区 @引用处理；不将附件字节塞入 reminder。

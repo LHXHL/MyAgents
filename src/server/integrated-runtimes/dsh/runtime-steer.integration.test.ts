@@ -6,6 +6,7 @@ import { PRESET_PROVIDERS } from '../../../shared/config-types';
 import { RuntimeSteerUnavailableError, type UnifiedEvent } from '../../runtimes/types';
 import { DshRuntime } from './runtime';
 import { DshAttachmentRegistry } from './attachments';
+import { compileDshProductExtensionPlane } from './extension-compiler';
 import { dshSessionOwnedPaths } from './owned-paths';
 import type { DshRpcObject } from './protocol-types';
 
@@ -77,9 +78,10 @@ describe('DSH native collaboration boundaries', () => {
     try {
       const liveSource = { revision: 'live-extensions', workspacePath,
         skills: [], commands: [], agents: [], mcpServers: [], dynamicTools: [] };
+      const liveRevision = compileDshProductExtensionPlane(liveSource).snapshot.revision;
       expect(await runtime.replaceDshExtensions(process, liveSource)).toMatchObject({
-        state: 'applied', desiredRevision: 'myagents-dsh-v3:live-extensions',
-        effectiveRevision: 'myagents-dsh-v3:live-extensions',
+        state: 'applied', desiredRevision: liveRevision,
+        effectiveRevision: liveRevision,
       });
       expect(fixture.request.mock.calls.filter(call => call[0] === 'extension/replace')).toHaveLength(2);
       const publication = vi.spyOn(DshAttachmentRegistry.prototype, 'publishJson');
@@ -88,7 +90,7 @@ describe('DSH native collaboration boundaries', () => {
         .rejects.toThrow('synthetic disk failure');
       expect(fixture.request.mock.calls.filter(call => call[0] === 'extension/replace')).toHaveLength(2);
       expect(await runtime.reconcileDshExtensions(process)).toBeNull();
-      expect(fixture.extensionRevision).toBe('myagents-dsh-v3:live-extensions');
+      expect(fixture.extensionRevision).toBe(liveRevision);
       events.length = 0;
       await fixture.notify({
         runtimeGeneration: 'generation-1', productSessionId: 'session-steer-reject',

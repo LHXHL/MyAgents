@@ -47,7 +47,7 @@ interface ResolvedTool {
   group: string;
   ownerOnly: boolean;
   parameters: Record<string, unknown>;
-  execute: (toolCallIdOrArgs: unknown, paramsOrUserId?: unknown) => Promise<unknown>;
+  factory: CapturedTool['factory'];
 }
 
 export function createMcpHandler(
@@ -81,9 +81,6 @@ export function createMcpHandler(
           const name = String(tool.name || ct.name || 'unknown');
           const description = String(tool.description || '');
           const parameters = (tool.parameters || tool.inputSchema || {}) as Record<string, unknown>;
-          const execute = typeof tool.execute === 'function'
-            ? (tool.execute as ResolvedTool['execute'])
-            : async () => ({ error: 'Tool has no execute method' });
 
           // Generic protocol: use plugin-declared group if present.
           // Fallback: Feishu → name-based inference; other plugins → 'default' group.
@@ -96,7 +93,7 @@ export function createMcpHandler(
             group: inferredGroup,
             ownerOnly: !!(tool as Record<string, unknown>).ownerOnly,
             parameters,
-            execute,
+            factory: ct.factory,
           });
         }
       } catch (err) {
@@ -135,6 +132,7 @@ export function createMcpHandler(
     args: Record<string, unknown>,
     userId?: string,
     isOwner?: boolean,
+    context?: { accountId?: string },
   ): Promise<unknown> {
     const all = resolveAllTools();
     const tool = all.find((t) => t.name === toolName);
@@ -147,7 +145,14 @@ export function createMcpHandler(
     }
     // OpenClaw plugin execute signature: execute(toolCallId, params)
     // First arg is a call ID (plugins ignore it with _), second is actual parameters
-    return tool.execute(userId || '', args);
+    // Factories may close over an account. Schema discovery is Session-stable,
+    // but execution must resolve against this call's identity, never its cache.
+    const result = tool.factory({ config: pluginConfig, ...pluginConfig,
+      agentAccountId: context?.accountId, messageChannel: pluginBrand });
+    const current = (Array.isArray(result) ? result : [result])
+      .find(candidate => candidate && String(candidate.name || tool.name) === toolName);
+    if (!current || typeof current.execute !== 'function') throw new Error('Plugin tool unavailable for current account');
+    return (current.execute as (id: string, args: Record<string, unknown>) => Promise<unknown>)(userId || '', args);
   }
 
   /**

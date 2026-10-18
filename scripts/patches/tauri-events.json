@@ -1,0 +1,20 @@
+{
+  "apiVersion": "2.11.1",
+  "nativeVersion": "2.11.2",
+  "nativeFile": "src/event/mod.rs",
+  "nativeSha256": "1fc4118465affe5d10afa4d4d2e891ac95fc550bc2517ddd7657d13e666f6b3a",
+  "files": {
+    "event.js": {
+      "original": "f00d22c559ce7e58a85d860e35fd60d20826f13d7f534a5f3548a7ef94446e84",
+      "repaired": "72fdb666396b6ed96535d4cfa6e4a6a517fd5297ef550da732de0bdd63a7e93d",
+      "from": "    return invoke('plugin:event|listen', {\n        event,\n        target,\n        handler: transformCallback(handler)\n    }).then((eventId) => {\n        return async () => _unlisten(event, eventId);\n    });",
+      "to": "    // Keep the allocated callback independent of the asynchronously installed\n    // native event descriptor. Both rejection and early cancellation own it.\n    const handlerId = transformCallback(handler);\n    try {\n        const eventId = await invoke('plugin:event|listen', {\n            event,\n            target,\n            handler: handlerId\n        });\n        return async () => {\n            window.__TAURI_INTERNALS__.unregisterCallback(handlerId);\n            await _unlisten(event, eventId);\n        };\n    } catch (error) {\n        window.__TAURI_INTERNALS__.unregisterCallback(handlerId);\n        throw error;\n    }"
+    },
+    "event.cjs": {
+      "original": "5280f1625a6bf86fcb4b6aee2a532ba8868a7d38c1e3763058e50c5f078b14a6",
+      "repaired": "b3fbd0271e6ca1884d34582026bbc8f06e89a7198d2adedc7bc5e164aa53952b",
+      "from": "    return core.invoke('plugin:event|listen', {\n        event,\n        target,\n        handler: core.transformCallback(handler)\n    }).then((eventId) => {\n        return async () => _unlisten(event, eventId);\n    });",
+      "to": "    // Keep the allocated callback independent of the asynchronously installed\n    // native event descriptor. Both rejection and early cancellation own it.\n    const handlerId = core.transformCallback(handler);\n    try {\n        const eventId = await core.invoke('plugin:event|listen', {\n            event,\n            target,\n            handler: handlerId\n        });\n        return async () => {\n            window.__TAURI_INTERNALS__.unregisterCallback(handlerId);\n            await _unlisten(event, eventId);\n        };\n    } catch (error) {\n        window.__TAURI_INTERNALS__.unregisterCallback(handlerId);\n        throw error;\n    }"
+    }
+  }
+}

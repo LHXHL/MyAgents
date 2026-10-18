@@ -1,7 +1,9 @@
+import { peerDisplayName } from '@/utils/peerDisplayName';
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { CheckIcon, CloseIcon, TrashIcon } from '@/components/icons';
 import ConfirmDialog from '@/components/ConfirmDialog';
+import { getPlatformLabel } from '@/utils/platformLabel';
 import type { GroupPermission } from '../../../../shared/types/im';
 
 export default function GroupPermissionList({
@@ -56,9 +58,9 @@ export default function GroupPermissionList({
                             className="flex items-center justify-between rounded-lg border border-[var(--warning)]/20 bg-[var(--warning)]/5 px-3 py-2"
                         >
                             <div className="min-w-0 flex-1">
-                                <p className="truncate text-sm font-medium text-[var(--ink)]">{g.groupName}</p>
+                                <p className="truncate text-sm font-medium text-[var(--ink)]">{peerDisplayName(g.groupId, g.groupName)}</p>
                                 <p className="text-xs text-[var(--ink-muted)]">
-	                                    {g.platform === 'telegram' ? 'Telegram' : g.platform === 'dingtalk' ? '钉钉' : '飞书'}
+                                    {getPlatformLabel(g.platform)}
                                     {g.addedBy && ` · ${t('agentSettings.imComponents.addedBy', { name: g.addedBy })}`}
                                 </p>
                             </div>
@@ -97,9 +99,9 @@ export default function GroupPermissionList({
                             className="group flex items-center justify-between rounded-lg bg-[var(--paper-inset)] px-3 py-2"
                         >
                             <div className="min-w-0 flex-1">
-                                <p className="truncate text-sm text-[var(--ink)]">{g.groupName}</p>
+                                <p className="truncate text-sm text-[var(--ink)]">{peerDisplayName(g.groupId, g.groupName)}</p>
                                 <p className="text-xs text-[var(--ink-muted)]">
-                                    {g.platform === 'telegram' ? 'Telegram' : g.platform === 'dingtalk' ? '钉钉' : '飞书'}
+                                    {getPlatformLabel(g.platform)}
                                 </p>
                             </div>
                             <button
@@ -126,7 +128,7 @@ export default function GroupPermissionList({
                 <ConfirmDialog
                     title={t('agentSettings.imComponents.removeGroupTitle')}
                     message={t('agentSettings.imComponents.removeGroupMessage', {
-                        name: approved.find(g => g.groupId === confirmRemove)?.groupName ?? confirmRemove,
+                        name: peerDisplayName(confirmRemove, approved.find(g => g.groupId === confirmRemove)?.groupName),
                     })}
                     confirmText={t('agentSettings.imComponents.removeGroupConfirm')}
                     cancelText={t('agentSettings.botRegistry.cancel')}

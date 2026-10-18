@@ -134,7 +134,6 @@ type TauriSseEnvelope = {
 };
 
 // Reconnection configuration
-const RECONNECT_MAX_ATTEMPTS = 3;
 const RECONNECT_BASE_DELAY_MS = 1000;
 const RECONNECT_MAX_DELAY_MS = 10000;
 
@@ -153,8 +152,8 @@ export class SseConnection {
 
     // Reconnection state
     private reconnectAttempts = 0;
-    // A reopened transport (or an earlier ref) does not prove that the full
-    // snapshot loaded. Bound payload recovery for this logical connection.
+    // A reopened transport (or an earlier ref) does not prove successful
+    // payload delivery. Preserve backoff across those short-lived transports.
     private payloadRecoveryAttempts = 0;
     private connecting: Promise<void> | null = null;
     private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -237,7 +236,7 @@ export class SseConnection {
         if (this.payloadAbort) {
             // A stalled data-plane read must not create an unbounded second queue.
             if (this.pendingEvents.length >= 10_000 || this.pendingBytes + data.length * 2 > 32 * 1024 * 1024) {
-                void this.recoverPayloadDelivery(this.deliveryEpoch);
+                void this.recoverPayloadDelivery(this.deliveryEpoch, 'queue-capacity');
                 return;
             }
             this.pendingEvents.push({ eventName, data });
@@ -257,16 +256,23 @@ export class SseConnection {
         // Bound a missing/hung ref using the existing connection retry path.
         const timeout = setTimeout(() => abort.abort(), 30_000);
         void (async () => {
+            let failure = 'port-unavailable';
             try {
                 const port = sessionId ? await getSessionPort(sessionId) : null;
                 if (epoch !== this.deliveryEpoch) return;
                 if (!port) throw new Error('SSE ref Sidecar is unavailable');
+                failure = 'ref-fetch';
                 const response = await fetch(`http://127.0.0.1:${port}/refs/${parsed.ref.id}`, { signal: abort.signal });
-                if (!response.ok) throw new Error(`SSE payload ref returned ${response.status}`);
+                if (!response.ok) {
+                    failure = `ref-http-${response.status}`;
+                    throw new Error('SSE payload ref unavailable');
+                }
+                failure = 'ref-body';
                 const body = await response.text();
                 if (epoch !== this.deliveryEpoch || !this.shouldReconnect) return;
                 // Validate before admission: a corrupt ref must not become a null
                 // business event followed by deltas against an absent baseline.
+                failure = 'ref-json';
                 JSON.parse(body);
                 this.payloadAbort = null;
                 this.handleSseEvent(eventName, body);
@@ -277,15 +283,15 @@ export class SseConnection {
                 }
             } catch {
                 if (epoch === this.deliveryEpoch && this.shouldReconnect) {
-                    await this.recoverPayloadDelivery(epoch);
+                    await this.recoverPayloadDelivery(epoch, abort.signal.aborted ? 'ref-timeout' : failure);
                 }
             } finally { clearTimeout(timeout); }
         })();
     }
 
-    private async recoverPayloadDelivery(epoch: number): Promise<void> {
+    private async recoverPayloadDelivery(epoch: number, reason: string): Promise<void> {
         if (epoch !== this.deliveryEpoch || !this.shouldReconnect) return;
-        console.warn(`[SSE ${this.connectionId}] Full payload unavailable; reconnecting for a fresh snapshot`);
+        console.warn(`[SSE ${this.connectionId}] Full payload unavailable; reconnecting for a fresh snapshot reason=${reason} pendingEvents=${this.pendingEvents.length} pendingBytes=${this.pendingBytes}`);
         const starting = this.connecting;
         const disconnected = this.disconnect(); // Revokes this queue synchronously.
         const recoveryEpoch = this.deliveryEpoch;
@@ -298,11 +304,6 @@ export class SseConnection {
         // A user disconnect or a replacement connection during teardown wins.
         if (recoveryEpoch !== this.deliveryEpoch) return;
         this.payloadRecoveryAttempts++;
-        if (this.payloadRecoveryAttempts > RECONNECT_MAX_ATTEMPTS) {
-            this.isReconnecting = false;
-            this.notifyStatus('failed');
-            return;
-        }
         this.shouldReconnect = true;
         this.reconnectAttempts = Math.max(this.reconnectAttempts, this.payloadRecoveryAttempts - 1);
         this.scheduleReconnect();
@@ -609,13 +610,8 @@ export class SseConnection {
      * Schedule a reconnection attempt with exponential backoff
      */
     private scheduleReconnect(): void {
-        if (this.reconnectAttempts >= RECONNECT_MAX_ATTEMPTS) {
-            console.error(`[SSE ${this.connectionId}] Max reconnection attempts (${RECONNECT_MAX_ATTEMPTS}) reached`);
-            this.isReconnecting = false;
-            this.notifyStatus('failed');
-            return;
-        }
-
+        // A transient ref failure cannot retire a still-owned subscription.
+        // Retry with capped backoff until the surface explicitly disconnects.
         this.isReconnecting = true;
         this.reconnectAttempts++;
 

@@ -360,6 +360,34 @@ describe.runIf(nativeSmokeEnabled)(
       }
     }, 120_000);
 
+
+    it('replaces changed Host tools under unchanged product discovery without revision collisions', async () => {
+      const fixture = await createNativeHostFixture('host-tool-revisions');
+      const registry = new DshAttachmentRegistry(fixture.executionEnvironment.attachmentStagingRoot);
+      await registry.initialize();
+      const host = fixture.createHost({ ...fixture.hostHandlers,
+        'host/attachment/acquire': params => registry.acquire(params),
+        'host/attachment/release': params => { registry.release(params); return { ok: true }; },
+      });
+      try {
+        await host.start();
+        for (const description of ['First catalog', 'Changed catalog', null]) {
+          const plane = compileDshProductExtensionPlane({ revision: 'unchanged-product-discovery',
+            skills: [], commands: [], agents: [], mcpServers: [],
+            dynamicTools: description ? [{ name: 'fixture_echo', description, inputSchema: { type: 'object', properties: {} } }] : [],
+            hostToolDispatcher: { descriptors: [], dispatch: async () => ({ success: true, contentItems: [] }), dispose() {} },
+          });
+          const reference = await registry.publishJson(plane.snapshot);
+          expect(await host.request('extension/replace', { snapshotAttachment: reference })).toMatchObject({
+            state: 'applied', effectiveRevision: plane.snapshot.revision,
+          });
+        }
+      } finally {
+        await host.stop(); registry.close();
+        await rm(fixture.temporaryRoot, { recursive: true, force: true });
+      }
+    }, 60_000);
+
     it('applies a complete oversized Skill snapshot through an attachment before Session binding', async () => {
       const fixture = await createNativeHostFixture('large-extensions');
       const registry = new DshAttachmentRegistry(fixture.executionEnvironment.attachmentStagingRoot);

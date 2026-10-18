@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_GLOBAL_SIDEBAR_PREFERENCE,
   GLOBAL_SIDEBAR_PREFERENCE_KEY,
+  normalizeGlobalSidebarWidth,
+  saveGlobalSidebarPreference,
   LEGACY_AUTOMATION_HISTORY_KEY,
   loadGlobalSidebarPreference,
   parseGlobalSidebarPreference,
@@ -22,6 +24,32 @@ function memoryStorage(initial: Record<string, string> = {}) {
 }
 
 describe('globalSidebarPreference', () => {
+  it.each([undefined, null, '300', NaN, Infinity, -Infinity])('defaults invalid width %s', (value) => {
+    expect(normalizeGlobalSidebarWidth(value)).toBe(256);
+  });
+
+  it.each([[200, 224], [360, 360], [420, 420], [600, 480], [301.6, 302], [256, 256]])('normalizes width %s to %s', (input, expected) => {
+    expect(normalizeGlobalSidebarWidth(input)).toBe(expected);
+  });
+
+  it('upgrades old preferences without losing existing choices', () => {
+    const old = { version: 1, preferredMode: 'rail', hasSeededDefaultExpansion: true,
+      expandedWorkspaceKeys: ['/work/a'], showAutomationSessions: true, sessionView: 'favorites' };
+    expect(parseGlobalSidebarPreference(old)).toEqual({ ...old, expandedWidth: 256 });
+    expect(parseGlobalSidebarPreference({ ...old, expandedWidth: 'broken' })).toEqual({ ...old, expandedWidth: 256 });
+    const storage = memoryStorage();
+    expect(saveGlobalSidebarPreference(storage, { ...DEFAULT_GLOBAL_SIDEBAR_PREFERENCE, expandedWidth: 312 })).toBe(true);
+    expect(loadGlobalSidebarPreference(storage).expandedWidth).toBe(312);
+  });
+
+  it('keeps the sidebar usable when storage cannot be read or written', () => {
+    const storage = memoryStorage();
+    storage.getItem.mockImplementation(() => { throw new Error('blocked'); });
+    expect(loadGlobalSidebarPreference(storage)).toEqual(DEFAULT_GLOBAL_SIDEBAR_PREFERENCE);
+    storage.setItem.mockImplementation(() => { throw new Error('full'); });
+    expect(saveGlobalSidebarPreference(storage, DEFAULT_GLOBAL_SIDEBAR_PREFERENCE)).toBe(false);
+  });
+
   it('fails soft on malformed or unsupported persisted values', () => {
     expect(parseGlobalSidebarPreference({ version: 2 })).toBeNull();
     const storage = memoryStorage({ [GLOBAL_SIDEBAR_PREFERENCE_KEY]: '{broken' });

@@ -533,6 +533,7 @@ export function snapshotCurrentTurnTerminalOutcome(
   return {
     status,
     text: getCurrentTurnText(),
+    channelDeliveryMode: currentTurnSourceItem?.channelDelivery.mode,
     assistantMessagePresent: currentTurnAssistantMessagePresent,
     ...(details.durationMs !== undefined
       ? { durationMs: Math.max(0, details.durationMs) }

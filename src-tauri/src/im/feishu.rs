@@ -976,6 +976,43 @@ impl FeishuAdapter {
 
     // ===== Message operations =====
 
+    /// Explicit tool sends carry a typed recipient. Automatic replies continue
+    /// using the existing chat-id APIs; a user open_id must never masquerade as one.
+    pub(crate) async fn send_channel_content(
+        &self,
+        target: &super::channel_messaging::ChannelTarget,
+        text: Option<&str>,
+        file: Option<(Vec<u8>, &str, bool)>,
+    ) -> Result<Option<String>, String> {
+        let (message_type, content) = if let Some((data, filename, image)) = file {
+            if image {
+                (
+                    "image",
+                    json!({"image_key": self.upload_image(data, filename).await?}),
+                )
+            } else {
+                let ext = std::path::Path::new(filename)
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("stream");
+                (
+                    "file",
+                    json!({"file_key": self.upload_file(data, filename, Self::ext_to_feishu_file_type(ext)).await?}),
+                )
+            }
+        } else {
+            ("post", markdown_to_feishu_post(text.unwrap_or_default()))
+        };
+        let url = format!(
+            "{}/im/v1/messages?receive_id_type={}",
+            FEISHU_API_BASE, target.id_type
+        );
+        let response = self.api_call("POST", &url, Some(&json!({
+            "receive_id":target.id,"msg_type":message_type,"content":serde_json::to_string(&content).map_err(|error| error.to_string())?
+        }))).await?;
+        Ok(response["data"]["message_id"].as_str().map(String::from))
+    }
+
     /// Send a rich-text (post) message and return the message_id.
     /// Automatically converts Markdown to Feishu Post format.
     /// Always uses Post format — for streaming drafts and explicit Post-only paths.
@@ -1535,7 +1572,25 @@ impl FeishuAdapter {
         // Sender name: fetch via user name cache (GET /contact/v3/users/{open_id})
         let sender_name_str = self.get_user_name(&sender_id).await;
 
+        let group_name = if source_type == ImSourceType::Group {
+            tokio::time::timeout(
+                std::time::Duration::from_millis(2500),
+                self.get_chat_info(&chat_id),
+            )
+            .await
+            .ok()
+            .and_then(Result::ok)
+        } else {
+            None
+        };
+
         Some(ImMessage {
+            source_metadata: super::inbound_metadata::feishu(
+                message,
+                sender,
+                self.bot_open_id.read().await.clone(),
+                is_at_mention,
+            ),
             chat_id,
             message_id,
             text: combined_text,
@@ -1549,7 +1604,7 @@ impl FeishuAdapter {
             media_group_id: None,
             is_mention,
             reply_to_bot,
-            hint_group_name: None,
+            hint_group_name: group_name,
             reply_to_body: None,
             group_system_prompt: None,
             request_id: String::new(),
@@ -2156,7 +2211,7 @@ impl FeishuAdapter {
                     Ok(name) => name,
                     Err(e) => {
                         ulog_warn!("[feishu] Failed to get chat info for {}: {}", chat_id, e);
-                        "Unknown Group".to_string()
+                        chat_id.clone()
                     }
                 };
 
@@ -2189,11 +2244,32 @@ impl FeishuAdapter {
     }
 
     /// Get chat/group name by chat_id.
+    /// open_id and p2p chat_id are different identifiers. Resolve using a read,
+    /// and fail closed if the platform cannot expose the mapping to this bot.
+    pub(crate) async fn resolve_channel_chat(&self, target: &super::channel_messaging::ChannelTarget) -> Result<(String, super::types::ImSourceType, Option<String>), String> {
+        let chat_id = if target.target_type == "user" {
+            let mut url = reqwest::Url::parse("https://open.feishu.cn/open-apis/chat/v3/p2p/id").map_err(|e| e.to_string())?;
+            url.query_pairs_mut().append_pair("open_id", &target.id);
+            let result = self.api_call("GET", url.as_str(), None).await?;
+            result["open_chat_id"].as_str().or(result["data"]["open_chat_id"].as_str())
+                .filter(|id| !id.is_empty()).ok_or("Cannot resolve Feishu open_id to the inbound p2p chat_id; no message was sent")?.to_string()
+        } else { target.id.clone() };
+        let mut url = reqwest::Url::parse("https://open.feishu.cn/open-apis/im/v1/chats/").map_err(|e| e.to_string())?;
+        url.path_segments_mut().map_err(|_| "Invalid Feishu URL")?.pop_if_empty().push(&chat_id);
+        let result = self.api_call("GET", url.as_str(), None).await?;
+        let kind = match result["data"]["chat_mode"].as_str() {
+            Some("p2p") => super::types::ImSourceType::Private,
+            Some("group") => super::types::ImSourceType::Group,
+            _ => return Err("Cannot resolve Feishu conversation kind; no message was sent".into()),
+        };
+        Ok((chat_id, kind, result["data"]["name"].as_str().map(str::to_string)))
+    }
+
     async fn get_chat_info(&self, chat_id: &str) -> Result<String, String> {
         let url = format!("{}/im/v1/chats/{}", FEISHU_API_BASE, chat_id);
         let resp = self.api_call("GET", &url, None).await?;
-        let name = resp["data"]["name"].as_str().unwrap_or("Unknown Group");
-        Ok(name.to_string())
+        super::inbound_metadata::nonempty(&resp["data"]["name"])
+            .ok_or_else(|| "Chat name unavailable".into())
     }
 
     /// Get user display name by open_id, with LRU cache (1000 entries, 24h TTL).
@@ -2219,11 +2295,7 @@ impl FeishuAdapter {
         match self.api_call("GET", &url, None).await {
             Ok(resp) => {
                 let user = &resp["data"]["user"];
-                let name = user["nickname"]
-                    .as_str()
-                    .or_else(|| user["en_name"].as_str())
-                    .or_else(|| user["name"].as_str())
-                    .map(|s| s.to_string());
+                let name = super::inbound_metadata::feishu_display_name(user);
                 if let Some(ref n) = name {
                     let mut cache = self.user_name_cache.lock().await;
                     // Evict oldest entry if at capacity
@@ -2443,10 +2515,10 @@ impl FeishuAdapter {
                     groups.insert(msg.chat_id.clone());
                     drop(groups); // Release lock before async call
 
-                    let chat_title = match self.get_chat_info(&msg.chat_id).await {
-                        Ok(name) => name,
-                        Err(_) => "Unknown Group".to_string(),
-                    };
+                    let chat_title = msg
+                        .hint_group_name
+                        .clone()
+                        .unwrap_or_else(|| msg.chat_id.clone());
                     ulog_info!(
                         "[feishu] New group detected from message: {} ({})",
                         chat_title,
@@ -2498,6 +2570,42 @@ impl FeishuAdapter {
 // ── ImAdapter trait implementation ─────────────────────────
 
 impl super::adapter::ImAdapter for FeishuAdapter {
+    async fn peer_names(
+        &self,
+        targets: &super::peer_names::PeerNameTargets,
+    ) -> Vec<super::peer_names::PeerDisplayName> {
+        use super::peer_names::{PeerDisplayName, PeerKind};
+        let mut names = Vec::new();
+        // Bound the entire startup pass, preserving successes before a slow lookup.
+        let _ = tokio::time::timeout(Duration::from_secs(4), async {
+            for (kind, ids) in [
+                (PeerKind::Group, &targets.groups),
+                (PeerKind::User, &targets.users),
+            ] {
+                for id in ids {
+                    let lookup = async {
+                        if kind == PeerKind::Group {
+                            self.get_chat_info(id).await.ok()
+                        } else {
+                            self.get_user_name(id).await
+                        }
+                    };
+                    if let Ok(Some(name)) =
+                        tokio::time::timeout(Duration::from_millis(2500), lookup).await
+                    {
+                        names.push(PeerDisplayName {
+                            id: id.clone(),
+                            kind,
+                            name,
+                        });
+                    }
+                }
+            }
+        })
+        .await;
+        names
+    }
+
     async fn verify_connection(&self) -> super::adapter::AdapterResult<String> {
         let name = self.get_bot_info().await?;
         Ok(name)

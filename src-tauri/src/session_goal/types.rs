@@ -140,6 +140,8 @@ pub struct GoalTurnAuthority {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct GoalDeliveryOutboxItem {
+    #[serde(default)]
+    pub channel_delivery_mode: crate::im::types::ChannelDeliveryMode,
     pub id: String,
     pub text: String,
     pub created_at: DateTime<Utc>,
@@ -303,6 +305,7 @@ pub struct GoalTurnFinalizationRequest {
     pub duration_ms: u64,
     pub consumed_tokens: u64,
     pub channel_delivery_expected: bool,
+    pub channel_delivery_mode: crate::im::types::ChannelDeliveryMode,
 }
 
 #[derive(Debug, Clone)]
@@ -326,6 +329,18 @@ fn default_true() -> bool {
 #[cfg(test)]
 mod tests {
     use super::SessionGoal;
+
+    #[test]
+    fn delivery_mode_is_persisted_and_legacy_outbox_defaults_to_auto() {
+        let old =
+            serde_json::json!({"id":"receipt","text":"result","createdAt":"2026-10-17T00:00:00Z"});
+        let mut item: super::GoalDeliveryOutboxItem = serde_json::from_value(old).unwrap();
+        assert!(item.channel_delivery_mode.allows_automatic());
+        item.channel_delivery_mode = crate::im::types::ChannelDeliveryMode::ToolOnly;
+        let restored: super::GoalDeliveryOutboxItem =
+            serde_json::from_value(serde_json::to_value(item).unwrap()).unwrap();
+        assert!(!restored.channel_delivery_mode.allows_automatic());
+    }
 
     #[test]
     fn legacy_goal_shape_defaults_terminal_totals_to_zero() {
