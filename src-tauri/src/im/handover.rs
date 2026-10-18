@@ -3,7 +3,7 @@
 //! Two Tauri commands surface here:
 //!
 //! * [`cmd_session_new_with_surface_migration`] — desktop user clicks "+新对话"
-//!   on a channel-bound session. The exact participating Tab + Agent owners,
+//!   on a channel-bound session. The Tab and any attached matching Agent owner,
 //!   Router binding, and Node Runtime move together to a fresh `session_id`.
 //!   This is deliberately different from IM `/new`, which only rotates the
 //!   Agent binding and leaves every other owner on the source Session.
@@ -369,8 +369,8 @@ pub struct NewSessionResult {
 
 /// Desktop "+新对话" on a channel-bound session.
 ///
-/// Rust admits this operation only when the source Sidecar has exactly the
-/// participating `Tab(tabId) + Agent(sessionKey)` owners. Router projection is
+/// Rust verifies the Router binding and admits only the participating Tab
+/// plus its Channel execution lease, if attached. Router projection is
 /// staged durably before Node mutation, then the same target identity is
 /// adopted by SidecarManager and the SessionEngine facade.
 #[tauri::command]
@@ -478,7 +478,7 @@ pub async fn cmd_session_new_with_surface_migration<R: Runtime>(
         return Err("Cannot migrate a Session with a persistent Goal or task owner".to_string());
     }
 
-    let sidecar_port = {
+    let (sidecar_port, channel_sidecar_port) = {
         let mut manager_guard = manager.lock().map_err(|error| error.to_string())?;
         if !manager_guard.surface_session_migration_is_admissible(
             &oldSessionId,
@@ -490,19 +490,28 @@ pub async fn cmd_session_new_with_surface_migration<R: Runtime>(
                     .to_string(),
             );
         }
-        manager_guard
+        let port = manager_guard
             .get_session_port(&oldSessionId)
-            .ok_or_else(|| "Source Sidecar is not ready for surface migration".to_string())?
+            .ok_or_else(|| "Source Sidecar is not ready for surface migration".to_string())?;
+        let channel_port = if manager_guard
+            .session_has_exact_owner(&oldSessionId, &SidecarOwner::Agent(sessionKey.clone()))
+        {
+            port
+        } else {
+            0
+        };
+        (port, channel_port)
     };
-    if prior.sidecar_port != sidecar_port {
-        return Err("Router and SidecarManager disagree on the source Sidecar".to_string());
-    }
 
     // Stage and durably project B while the Router is fenced. If persistence
     // fails, exact compare-and-rollback restores A before any Runtime identity
     // changes.
-    let transition =
-        router.stage_surface_session_migration(&sessionKey, &oldSessionId, &new_session_id)?;
+    let transition = router.stage_surface_session_migration(
+        &sessionKey,
+        &oldSessionId,
+        &new_session_id,
+        channel_sidecar_port,
+    )?;
     if let Err(error) = health
         .persist_active_sessions_snapshot(router.active_sessions())
         .await

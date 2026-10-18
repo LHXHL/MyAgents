@@ -114,21 +114,17 @@ where
                     .to_string(),
             );
         }
-        let admissible = manager
-            .lock()
-            .map_err(|error| error.to_string())?
-            .agent_binding_rotation_is_admissible(&peer.session_id, session_key);
-        if !admissible {
-            return Err(format!(
-                "Agent owner no longer controls Session {}",
-                short_session_id(&peer.session_id)
-            ));
-        }
         if peer_binding_source_requires_freeze(metadata_disposition) {
             // This detached Router is only a transport helper; it never owns bindings.
             let transport = { router.lock().await.http_client().clone() };
-            if peer.sidecar_port > 0 {
-                let response = transport.post(format!("http://127.0.0.1:{}/api/session/freeze-current", peer.sidecar_port))
+            // The Router owns the binding, not process liveness. A restored
+            // binding can have port 0 while a desktop Tab has resumed its Session.
+            let live_port = manager
+                .lock()
+                .map_err(|error| error.to_string())?
+                .get_session_port(&peer.session_id);
+            if let Some(port) = live_port {
+                let response = transport.post(format!("http://127.0.0.1:{port}/api/session/freeze-current"))
                     .json(&json!({"metadataBirthPending":peer.metadata_birth_pending,"metadataIndexed":peer.metadata_indexed}))
                     .send().await.map_err(|e| format!("Failed to freeze old Session: {e}"))?;
                 if !response.status().is_success() {
@@ -3234,7 +3230,12 @@ mod tests {
         indexed_router
             .lock()
             .await
-            .upsert_peer_session(rotation_peer(indexed_key, &indexed_id, port));
+            .upsert_peer_session(rotation_peer(indexed_key, &indexed_id, 0));
+        manager.lock().unwrap().insert_test_ready_frontend_sidecar(
+            &indexed_id,
+            port,
+            SidecarOwner::Tab("desktop-tab".to_string()),
+        );
         let indexed_dir = tempfile::tempdir().expect("indexed health tempdir");
         let indexed_health = Arc::new(HealthManager::new(indexed_dir.path().join("state.json")));
 
@@ -3250,6 +3251,15 @@ mod tests {
         .await
         .expect("indexed source should freeze then rotate");
         assert_eq!(freeze_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            manager.lock().unwrap().get_session_port(&indexed_id),
+            Some(port),
+            "old desktop Session remains live"
+        );
+        assert_ne!(
+            indexed_health.get_state().await.active_sessions[0].session_id,
+            indexed_id
+        );
 
         server.abort();
     }

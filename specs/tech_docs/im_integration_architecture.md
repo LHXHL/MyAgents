@@ -102,7 +102,9 @@ Sidecar暂时不可用时，普通入站消息可以进入bounded durable buffer
 
 private和group使用不同、稳定的peer session key。每个binding记录Product Session id、workspace和当前Sidecar信息；Sidecar真正的存活权由`SidecarOwner::Agent(sessionKey)`表达。
 
-IM与Desktop可以共享同一个Product Session，但owner保持独立。Tab关闭只释放Tab，Channel轮换只释放目标Agent owner；两边都不能reset或迁移对方的owner。
+IM与Desktop可以共享同一个Product Session，但owner保持独立。Tab关闭只释放Tab，Channel轮换只释放目标Agent owner；两边都不能reset或迁移无关使用方的owner。
+
+peer binding 是持久关联，Agent owner 是当前进程的执行租约：重启恢复或空闲释放后，binding 可以存在而 Agent owner 不存在。桌面「新对话」由 Router 校验当前 binding，SidecarManager 允许当前 Tab 单独、或连同对应 Agent 租约一起迁移；其它 owner 与 recovering 实例仍禁止整进程迁移。当前端口只由 SidecarManager 提供，迁移时按实际 Agent 租约更新 Router 端口：已持有则保留当前端口以继续空闲回收，未持有则为 0，下次 Channel ensure 重新关联执行租约与 consumer。私聊 `/new` 只轮换 binding，不要求旧 Agent 租约仍在；活跃来源从 SidecarManager 获取端口完成 freeze，保留其它使用方和历史。
 
 `/new` 仅支持私聊，在 per-peer fence 内处理：
 

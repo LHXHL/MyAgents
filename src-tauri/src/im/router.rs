@@ -820,15 +820,15 @@ impl SessionRouter {
         transition
     }
 
-    /// Stage the desktop Tab + Agent migration after owner admission. Unlike
-    /// `/new`, the same live Sidecar port follows the exact participating
-    /// surfaces and Node is given this exact target identity before the command
-    /// reports success.
+    /// Stage desktop surface migration after binding and live-owner admission.
+    /// Cache only the Manager-proven Channel lease port. Dormant bindings keep
+    /// port 0 for the next ensure; attached leases remain eligible for idle release.
     pub fn stage_surface_session_migration(
         &mut self,
         session_key: &str,
         expected_old_session_id: &str,
         target_session_id: &str,
+        channel_sidecar_port: u16,
     ) -> Result<PeerBindingTransition, String> {
         let prior = self
             .peer_sessions
@@ -843,6 +843,7 @@ impl SessionRouter {
         }
         let next = PeerSession {
             session_id: target_session_id.to_string(),
+            sidecar_port: channel_sidecar_port,
             message_count: 0,
             metadata_birth_pending: false,
             metadata_indexed: true,
@@ -1264,15 +1265,15 @@ pub fn parse_session_key(session_key: &str) -> (ImSourceType, String) {
 mod tests {
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
     use super::{
         parse_session_key, peer_binding_source_requires_freeze,
         reconcile_peer_metadata_with_lookup, EnsureSidecarInfo, EnsureSidecarPrep,
-        PeerMetadataDisposition, SessionRouter,
+        PeerMetadataDisposition, SessionRouter, IDLE_TIMEOUT_SECS,
     };
     use crate::im::types::{ImActiveSession, PeerSession};
-    use crate::sidecar::{SidecarManager, SidecarOwner};
+    use crate::sidecar::{release_session_sidecar, SidecarManager, SidecarOwner};
 
     fn peer(session_key: &str, session_id: &str) -> PeerSession {
         let (source_type, source_id) = parse_session_key(session_key);
@@ -1567,13 +1568,76 @@ mod tests {
     }
 
     #[test]
+    fn surface_stage_uses_current_lease_port_and_rollback_restores_prior_binding() {
+        for (port, current_lease_port) in [(0, 0), (32001, 0), (0, 32002), (32001, 32002)] {
+            let key = "agent:a:openclaw:wecom:group:chat";
+            let mut router = SessionRouter::new(PathBuf::from("/tmp/workspace"));
+            let mut source = peer(key, "session-a");
+            source.sidecar_port = port;
+            router.upsert_peer_session(source.clone());
+            let transition = router
+                .stage_surface_session_migration(key, "session-a", "session-b", current_lease_port)
+                .unwrap();
+            let next = router.peer_session_snapshot(key).unwrap();
+            assert_eq!(
+                next.sidecar_port, current_lease_port,
+                "cache follows the current lease, not the old Router port"
+            );
+            assert_eq!(next.session_id, "session-b");
+            assert!(router.rollback_peer_binding_transition(&transition));
+            let restored = router.peer_session_snapshot(key).unwrap();
+            assert_eq!(restored.session_id, source.session_id);
+            assert_eq!(restored.sidecar_port, source.sidecar_port);
+            assert_eq!(restored.message_count, source.message_count);
+        }
+    }
+
+    #[tokio::test]
+    async fn surface_migrated_channel_lease_is_collected_without_another_message() {
+        let key = "agent:a:openclaw:wecom:group:chat";
+        let manager = crate::sidecar::create_sidecar_manager();
+        let tab = SidecarOwner::Tab("tab-a".to_string());
+        let agent = SidecarOwner::Agent(key.to_string());
+        {
+            let mut state = manager.lock().unwrap();
+            state.insert_test_ready_frontend_sidecar("source", 32001, tab.clone());
+            state.add_session_owner("source", agent.clone());
+            assert!(
+                state.upgrade_session_id_for_surface_migration("source", "target", "tab-a", key)
+            );
+        }
+        let mut router = SessionRouter::new(PathBuf::from("/tmp/workspace"));
+        router.upsert_peer_session(peer(key, "source"));
+        router
+            .stage_surface_session_migration(key, "source", "target", 32001)
+            .unwrap();
+        router.peer_sessions.get_mut(key).unwrap().last_active =
+            Instant::now() - Duration::from_secs(IDLE_TIMEOUT_SECS + 1);
+        assert_eq!(router.collect_idle_sessions(&manager).await, vec![key]);
+        {
+            let state = manager.lock().unwrap();
+            assert!(state.session_has_exact_owner("target", &tab));
+            assert!(!state.session_has_exact_owner("target", &agent));
+        }
+        assert_eq!(router.peer_session_snapshot(key).unwrap().sidecar_port, 0);
+        release_session_sidecar(&manager, "target", &tab)
+            .await
+            .unwrap();
+        assert!(manager.lock().unwrap().get_session_port("target").is_none());
+        assert_eq!(
+            router.peer_session_snapshot(key).unwrap().session_id,
+            "target"
+        );
+    }
+
+    #[test]
     fn surface_stage_requires_the_current_source_binding() {
         let session_key = "agent:a:feishu:private:user";
         let mut router = SessionRouter::new(PathBuf::from("/tmp/workspace"));
         router.upsert_peer_session(peer(session_key, "session-newer"));
 
         let error = router
-            .stage_surface_session_migration(session_key, "session-stale", "session-target")
+            .stage_surface_session_migration(session_key, "session-stale", "session-target", 0)
             .expect_err("stale source must fail closed");
         assert!(error.contains("binding changed"));
         assert_eq!(
