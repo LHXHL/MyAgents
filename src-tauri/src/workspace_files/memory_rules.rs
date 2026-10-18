@@ -46,19 +46,39 @@ pub fn default_update_memory_content() -> &'static str {
 
 pub fn ensure_memory_rule_substrate_for_workspace(
     workspace_path: &str,
-) -> Result<MemoryRuleSubstrateResult, String> {
+) -> Result<Option<MemoryRuleSubstrateResult>, String> {
     let workspace_root = validate_workspace_root(workspace_path)?;
     ensure_memory_rule_substrate(&workspace_root)
 }
 
+/// An existing memory Markdown file opts the workspace out of the entire
+/// default rule set. None means skipped; it does not promise SOUL/USER exist.
 pub fn ensure_memory_rule_substrate(
     workspace_root: &Path,
-) -> Result<MemoryRuleSubstrateResult, String> {
+) -> Result<Option<MemoryRuleSubstrateResult>, String> {
     let claude_dir = resolve_inside_workspace(workspace_root, ".claude")?;
     ensure_plain_dir(&claude_dir, ".claude")?;
 
     let rules_dir = resolve_inside_workspace(workspace_root, ".claude/rules")?;
     ensure_plain_dir(&rules_dir, ".claude/rules")?;
+
+    // Inspect direct regular files only, without reading user content or
+    // following links. Custom layouts (e.g. 06-MEMORY.md) own their rule set.
+    for entry in
+        fs::read_dir(&rules_dir).map_err(|e| format!("read .claude/rules failed: {}", e))?
+    {
+        let entry = entry.map_err(|e| format!("read rule entry failed: {}", e))?;
+        let filename = entry.file_name().to_string_lossy().to_ascii_lowercase();
+        if filename.contains("memory")
+            && filename.ends_with(".md")
+            && entry
+                .file_type()
+                .map_err(|e| format!("read rule file type failed: {}", e))?
+                .is_file()
+        {
+            return Ok(None);
+        }
+    }
 
     let soul = ensure_rule_file(
         &rules_dir,
@@ -85,13 +105,13 @@ pub fn ensure_memory_rule_substrate(
         },
     )?;
 
-    Ok(MemoryRuleSubstrateResult { soul, user, memory })
+    Ok(Some(MemoryRuleSubstrateResult { soul, user, memory }))
 }
 
 #[tauri::command]
 pub async fn cmd_ensure_memory_rule_substrate(
     workspace_path: String,
-) -> Result<MemoryRuleSubstrateResult, String> {
+) -> Result<Option<MemoryRuleSubstrateResult>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         ensure_memory_rule_substrate_for_workspace(&workspace_path)
     })
@@ -247,10 +267,78 @@ mod tests {
     use crate::workspace_files::test_support::make_test_workspace;
 
     #[test]
+    fn existing_memory_markdown_skips_all_default_rules() {
+        for (filename, content) in [
+            ("06-MEMORY.md", "custom memory"),
+            ("project-MeMoRy.MD", "mixed case"),
+            ("memory.md", ""),
+            ("04-MEMORY.md", "existing default"),
+        ] {
+            let dir = make_test_workspace("memory_rules_custom");
+            let rules = dir.join(".claude/rules");
+            fs::create_dir_all(&rules).unwrap();
+            fs::write(rules.join(filename), content).unwrap();
+
+            // Both direct callers and UPDATE_MEMORY preparation must respect
+            // the workspace's existing scheme on every subsequent invocation.
+            ensure_memory_rule_substrate(&dir).unwrap();
+            ensure_update_memory_file_for_workspace(&dir.to_string_lossy()).unwrap();
+            ensure_memory_rule_substrate(&dir).unwrap();
+
+            assert_eq!(fs::read_dir(&rules).unwrap().count(), 1, "{filename}");
+            assert_eq!(fs::read_to_string(rules.join(filename)).unwrap(), content);
+            assert!(dir.join("UPDATE_MEMORY.md").is_file());
+            fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn only_direct_memory_markdown_files_skip_defaults() {
+        let dir = make_test_workspace("memory_rules_nonmatching");
+        let rules = dir.join(".claude/rules");
+        fs::create_dir_all(rules.join("nested")).unwrap();
+        fs::create_dir(rules.join("directory-memory.md")).unwrap();
+        fs::write(rules.join("nested/MEMORY.md"), "nested").unwrap();
+        fs::write(rules.join("memory.txt"), "wrong extension").unwrap();
+        fs::write(rules.join("notes.md"), "memory in body only").unwrap();
+        fs::write(dir.join("MEMORY.md"), "outside rules").unwrap();
+
+        ensure_memory_rule_substrate(&dir).unwrap();
+
+        for filename in ["02-SOUL.md", "03-USER.md", "04-MEMORY.md"] {
+            assert!(rules.join(filename).is_file(), "{filename}");
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn memory_symlinks_do_not_count_as_workspace_initialization() {
+        let dir = make_test_workspace("memory_rules_symlinks");
+        let rules = dir.join(".claude/rules");
+        fs::create_dir_all(&rules).unwrap();
+        fs::write(dir.join("custom.md"), "linked content").unwrap();
+        std::os::unix::fs::symlink(dir.join("custom.md"), rules.join("linked-memory.md")).unwrap();
+        std::os::unix::fs::symlink(dir.join("missing.md"), rules.join("broken-memory.md")).unwrap();
+
+        assert!(ensure_memory_rule_substrate(&dir).unwrap().is_some());
+        for filename in ["02-SOUL.md", "03-USER.md", "04-MEMORY.md"] {
+            assert!(rules.join(filename).is_file());
+        }
+        assert_eq!(
+            fs::read_to_string(dir.join("custom.md")).unwrap(),
+            "linked content"
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn ensure_memory_rule_substrate_creates_numbered_files() {
         let dir = make_test_workspace("memory_rules_create");
 
-        let result = ensure_memory_rule_substrate(&dir).expect("ensure substrate");
+        let result = ensure_memory_rule_substrate(&dir)
+            .expect("ensure substrate")
+            .expect("initialize defaults");
 
         assert_eq!(result.soul.filename, "02-SOUL.md");
         assert_eq!(result.user.filename, "03-USER.md");
@@ -263,7 +351,7 @@ mod tests {
     }
 
     #[test]
-    fn ensure_memory_rule_substrate_prefers_numbered_existing_file() {
+    fn existing_memory_rules_are_preserved_without_filling_missing_siblings() {
         let dir = make_test_workspace("memory_rules_existing");
         let rules = dir.join(".claude/rules");
         fs::create_dir_all(&rules).expect("mkdir rules");
@@ -272,8 +360,12 @@ mod tests {
 
         let result = ensure_memory_rule_substrate(&dir).expect("ensure substrate");
 
-        assert_eq!(result.memory.filename, "04-MEMORY.md");
-        assert!(!result.memory.created);
+        assert!(result.is_none());
+        assert_eq!(fs::read_dir(&rules).unwrap().count(), 2);
+        assert_eq!(
+            fs::read_to_string(rules.join("MEMORY.md")).unwrap(),
+            "plain"
+        );
         assert_eq!(
             fs::read_to_string(rules.join("04-MEMORY.md")).expect("read numbered"),
             "numbered"
