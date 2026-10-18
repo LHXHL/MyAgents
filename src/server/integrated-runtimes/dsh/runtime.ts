@@ -1162,8 +1162,9 @@ export class DshRuntime implements AgentRuntime {
         withLogContext({ sessionId: options.sessionId, runtime: 'dsh' }, () => {
           console.error(`[dsh] phase=${admissionPhase} ${redactDshDiagnosticLine(error.message)}`);
         });
-        // Transport failure ends this process generation. The shared lifecycle
-        // owner must release running state so queued input can resume it.
+        // Transport failure or native recovery-required fencing ends this
+        // generation. The shared lifecycle owner releases running state so
+        // later input can resume through native receipt reconciliation.
         emitProductEvent({ kind: 'session_complete', subtype: 'error', result: redactDshDiagnosticLine(error.message) });
       },
     });

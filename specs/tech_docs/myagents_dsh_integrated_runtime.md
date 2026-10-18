@@ -56,6 +56,8 @@ DSH 使用应用内置的单一 Node，不回退系统 Node。Node/npm 组合由
 
 进程状态与 turn activity 分开。pre-warm 可建立真实 idle Runtime，但不能制造 running turn。transport/process failure 必须通过 `session_complete` 交给共享 lifecycle owner 释放该 generation；仅发 error status 会留下无法恢复的 running/process 状态。
 
+原生 RPC 的结构化 `session_recovery_required` 表示当前 generation 已被持久化 owner 隔离，不能作为普通单次请求失败继续复用。ProcessHost 与 transport failure 一样退休该 generation，并通过既有 `session_complete` 交回共享 lifecycle；原请求保留失败，不在 Host 重试。后续输入仍恢复同一个 native Session，经现有 mutation / turn receipts 对账准入，不自动换绑或清空历史。普通 RPC 校验错误不退休进程；错误文本不能代替结构化 code。
+
 进程诊断不受 Product history/reconciliation 准入控制。DSH adapter 使用捕获的 Product Session 日志 scope，将脱敏 stderr、transport failure 和每次子进程退出事实直接交给现有 UnifiedLogger；旧 generation 的业务接收器退休后，仍可记录其尾部诊断。stderr 在流结束/关闭时排出无换行尾段；单行超过 16,384 字符时只记录省略提示，避免截断凭据表示后脱敏失效。退出记录分别保留原始 code/signal 与 Host 最近尝试的终止 signal/reason；优雅 shutdown 的 signal 为 null，Host 终止尝试不是原生自退出原因的证明，EOF 也不能证明原生恢复已损坏。业务事件仍必须等待原生绑定与历史对账成功。
 
 ## 4. 数据与持久化

@@ -260,6 +260,7 @@ function harness(
   });
   return {
     host,
+    clientRecord,
     child,
     order,
     diagnostics,
@@ -279,6 +280,66 @@ function harness(
 }
 
 describe("DSH RuntimeProcessHost", () => {
+  it.each(['configApply', 'turnStart'])('retires a fenced generation rejected by %s without retrying the request', async method => {
+    const test = harness();
+    await test.host.start();
+    const error = new TestProtocolError('session_recovery_required', 'product-operation durability became uncertain');
+    const call = vi.fn().mockRejectedValue(error);
+    test.clientRecord[method] = call;
+    const request = method === 'configApply' ? 'config/apply' : 'turn/start';
+    await expect(test.host.request(request, {} as never)).rejects.toBe(error);
+    expect(test.host.state).toBe('failed');
+    expect(test.failures).toEqual([error]);
+    expect(test.child.killedSignals).toEqual(['SIGTERM']);
+    expect(test.exits).toEqual([{ code: 0, signal: 'SIGTERM', hostTermination: { reason: 'runtime_recovery_required', signal: 'SIGTERM' } }]);
+    await expect(test.host.request(request, {} as never)).rejects.toThrow('protocol is not ready');
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(test.order).toContain('dispose-host-handlers');
+    expect(test.order).toContain('dispose-notifications');
+    await test.host.stop();
+  });
+
+  it.each(['invalid_params', 'turn_not_active', undefined])('keeps ordinary request failures (%s) local to the request', async code => {
+    const test = harness();
+    await test.host.start();
+    const message = 'session_recovery_required';
+    const error = code ? new TestProtocolError(code, message) : new Error(message);
+    test.clientRecord.configApply = vi.fn().mockRejectedValue(error);
+    await expect(test.host.request('config/apply', {} as never)).rejects.toBe(error);
+    expect(test.host.state).toBe('protocol-ready');
+    expect(test.failures).toEqual([]);
+    await expect(test.host.request('session/read', {})).resolves.toEqual({});
+    await test.host.stop();
+  });
+
+  it('reports a concurrent recovery fence and transport failure once', async () => {
+    const test = harness();
+    await test.host.start();
+    const error = new TestProtocolError('session_recovery_required', 'durability uncertain');
+    test.clientRecord.configApply = vi.fn().mockRejectedValue(error);
+    const results = await Promise.allSettled([
+      test.host.request('config/apply', {} as never),
+      test.host.request('config/apply', {} as never),
+    ]);
+    test.fatal(new Error('EOF after termination'));
+    expect(results).toEqual([{ status: 'rejected', reason: error }, { status: 'rejected', reason: error }]);
+    expect(test.failures).toEqual([error]);
+    expect(test.child.killedSignals).toEqual(['SIGTERM']);
+    expect(test.order.filter(value => value === 'dispose-host-handlers')).toHaveLength(1);
+    await test.host.stop();
+  });
+
+  it('retires a recovery-required generation through the native subagent request entry too', async () => {
+    const test = harness();
+    await test.host.start();
+    const error = new TestProtocolError('session_recovery_required', 'durability uncertain');
+    test.clientRecord.subagentList = vi.fn().mockRejectedValue(error);
+    await expect(test.host.requestNativeSubagent('subagent/list', {})).rejects.toBe(error);
+    expect(test.host.state).toBe('failed');
+    expect(test.failures).toEqual([error]);
+    await test.host.stop();
+  });
+
   it('redacts quoted credentials, bearer material and URL userinfo before bounding output', () => {
     const redacted = redactDshDiagnosticLine('{"apiKey":"private key value","token":"private-token"} authorization=Bearer private-bearer https://private-user:private-pass@example.test/path');
     expect(redacted).not.toMatch(/private-/);

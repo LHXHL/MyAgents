@@ -224,8 +224,9 @@ fn runtime_identity_from_legacy_agent(
     }
 }
 
-/// Look up the `runtime` field from the agent config in ~/.myagents/config.json
-/// matching the given workspace path. Returns None for "builtin" (the default).
+/// Resolve the Agent runtime selected by the workspace's Project.agentId.
+/// A resolved builtin identity is explicit, not absence: callers only use the
+/// distribution default when no unambiguous Agent identity was found.
 /// Used for NEW sessions (the agent config decides the default runtime for new conversations)
 /// and for IM/Agent sidecar paths that don't have a session_id yet.
 pub(crate) fn resolve_agent_runtime_identity_from_config(
@@ -280,7 +281,6 @@ fn resolve_agent_runtime_identity_from_values(
     }
 
     resolve_agent_runtime_identity_by_id_from_value(cfg, agent_id)
-        .filter(|identity| identity.runtime != "builtin")
 }
 
 fn resolve_agent_runtime_identity_by_id_from_value(
@@ -806,6 +806,32 @@ mod tests {
         )
         .expect("Project.agentId should select the Agent config");
         assert_eq!(identity.runtime, "codex");
+    }
+
+    #[test]
+    fn workspace_lookup_preserves_sdk_identity_against_dsh_default() {
+        for agent in [
+            serde_json::json!({ "id": "selected", "runtime": "builtin", "providerId": "deepseek" }),
+            serde_json::json!({ "id": "selected", "runtimePreference": { "family": "integrated", "id": "claude-agent-sdk" } }),
+            serde_json::json!({ "id": "selected", "providerId": "anthropic-api" }),
+            serde_json::json!({ "id": "selected", "providerId": "anthropic-sub" }),
+        ] {
+            let config = serde_json::json!({
+                "defaultIntegratedRuntime": "dsh",
+                "agents": [agent]
+            });
+            let projects = serde_json::json!([
+                { "id": "project", "path": "/repo/current", "agentId": "selected" }
+            ]);
+            let identity = resolve_agent_runtime_identity_from_values(
+                &config,
+                &projects,
+                std::path::Path::new("/repo/current"),
+            )
+            .expect("a resolved SDK identity is not an absent Agent selection");
+            assert_eq!(identity.runtime, "builtin");
+            assert_eq!(identity.runtime_source, None);
+        }
     }
 
     #[test]
