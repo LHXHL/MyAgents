@@ -1101,45 +1101,25 @@ export function createExternalSessionEngine(): SessionEngine {
       return handleExternalDesktopInteractionScenarioChange(scenario);
     },
 
-    async resetForNewDesktopSession(workspacePath) {
+    async transitionDesktopSession(workspacePath, options) {
       await awaitExternalSessionStarting();
       const lease = tryAcquireExternalSessionMutationLease();
       if (!lease) {
         return { success: false, error: 'Wait for the current Session operation to finish' };
       }
       try {
-        if (hasExternalRuntimeProcess()) {
-          await stopExternalSession();
+        if (getCurrentProductSessionId() !== options.sourceSessionId) {
+          return { success: false, error: 'Session identity changed before new conversation' };
         }
-        const newSessionId = await resetProductSessionBinding({ workspacePath, hasInitialPrompt: false });
-        await publishCurrentProductSessionMetadata(sessionId => {
-          const created = createExternalProductSessionMetadata(sessionId, workspacePath, 'desktop');
-          Object.assign(created.metadata, buildExternalFreezeSnapshotPatch());
-          return created;
-        });
-        broadcast('chat:init', { agentDir: workspacePath, sessionState: 'idle', hasInitialPrompt: false });
-        const restored = await restoreExternalSessionState(newSessionId, workspacePath, { type: 'desktop' });
-        if (!restored.success) return { success: false, error: restored.error };
-        return { success: true, sessionId: newSessionId };
-      } finally {
-        lease.release();
-      }
-    },
-
-    async migrateBoundSurfaceSession(workspacePath, options) {
-      await awaitExternalSessionStarting();
-      const lease = tryAcquireExternalSessionMutationLease();
-      if (!lease) {
-        return { success: false, error: 'Wait for the current Session operation to finish' };
-      }
-      try {
-        const freeze = await freezeCurrentProductSessionMetadata({
-          workspacePath,
-          snapshotPatch: buildExternalFreezeSnapshotPatch(),
-          allowMissingMetadata: options?.metadataBirthPending === true || options?.metadataIndexed === false,
-        });
-        if (!freeze.success) {
-          return { success: false, error: freeze.error ?? 'Failed to freeze current Session before surface migration' };
+        if (options.channelBound) {
+          const freeze = await freezeCurrentProductSessionMetadata({
+            workspacePath,
+            snapshotPatch: buildExternalFreezeSnapshotPatch(),
+            allowMissingMetadata: options.metadataBirthPending === true || options.metadataIndexed === false,
+          });
+          if (!freeze.success) {
+            return { success: false, error: freeze.error ?? 'Failed to freeze current Session before migration' };
+          }
         }
         if (hasExternalRuntimeProcess()) {
           const stopped = await stopExternalSession();
@@ -1154,13 +1134,14 @@ export function createExternalSessionEngine(): SessionEngine {
           allowLazySessionMaterialization: true,
         });
 
-        // The target binding is committed above. Metadata publication and
-        // pre-warm are recoverable preparation, not transaction admission;
-        // reporting a failure after identity changed would make Rust roll back
-        // a migration that Node already accepted.
+        // Identity + durable metadata form the commit acknowledged to Rust.
+        // Optional runtime pre-warm follows it and cannot invalidate that commit.
+        await publishCurrentProductSessionMetadata(sessionId => {
+          const created = createExternalProductSessionMetadata(sessionId, workspacePath, options.channelBound ? 'agent-channel' : 'desktop');
+          if (!options.channelBound) Object.assign(created.metadata, buildExternalFreezeSnapshotPatch());
+          return created;
+        });
         try {
-          await publishCurrentProductSessionMetadata(sessionId =>
-            createExternalProductSessionMetadata(sessionId, workspacePath, 'agent-channel'));
           broadcast('chat:init', { agentDir: workspacePath, sessionState: 'idle', hasInitialPrompt: false });
           const restored = await restoreExternalSessionState(options.targetSessionId, workspacePath, { type: 'desktop' });
           if (!restored.success) {

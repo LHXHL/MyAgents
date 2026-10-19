@@ -45,7 +45,7 @@ export interface ChatRenderBinding {
     historyEntrySource?: HistoryEntrySource,
   ) => Promise<void>;
   onOpenHistoryTag?: (tag: string) => void;
-  onNewSession: (tabId: string) => Promise<boolean>;
+  onNewSession: (tabId: string, sourceSessionId: string) => Promise<boolean>;
   onLaunchRuntimeBackedProviderSession: (
     project: Project,
     sessionBirthHint: LaunchSessionBirthHint & {
@@ -109,7 +109,7 @@ const ChatTabRenderer = memo(function ChatTabRenderer({
             onOpenSessionInNewTab={(sessionId, title) =>
               binding.onOpenHistorySession(tab.id, sessionId, title, 'chat_dropdown_new_tab')
             }
-            onNewSession={() => binding.onNewSession(tab.id)}
+            onNewSession={(sourceSessionId) => binding.onNewSession(tab.id, sourceSessionId)}
             onLaunchRuntimeBackedProviderSession={binding.onLaunchRuntimeBackedProviderSession}
             startupError={binding.startupError?.(tab.id)}
             onRetryStartup={async () => { await binding.onRetryStartup?.(tab.id); }}

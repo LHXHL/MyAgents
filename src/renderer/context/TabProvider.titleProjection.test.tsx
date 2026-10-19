@@ -42,7 +42,10 @@ const sseHarness = vi.hoisted(() => {
 
 const tauriHarness = vi.hoisted(() => ({
   proxyFetch: vi.fn(),
+  newDesktopSession: vi.fn(),
 }));
+
+vi.mock('@/api/sessionHandoverClient', () => ({ newDesktopSession: tauriHarness.newDesktopSession }));
 
 vi.mock('@/api/SseConnection', () => ({
   createSseConnection: () => sseHarness.connection,
@@ -77,6 +80,7 @@ vi.mock('@/utils/frontendLogger', () => ({
 }));
 
 vi.mock('@/api/tauriClient', () => ({
+  releaseTabSession: vi.fn(async () => false),
   getTabServerUrl: vi.fn(async () => 'http://127.0.0.1:1234'),
   sessionSidecarFetch: vi.fn(async (
     _sessionId: string,
@@ -332,6 +336,7 @@ describe('TabProvider session title projection', () => {
   });
 
   it('restores the established title marker when reset is rejected', async () => {
+    tauriHarness.newDesktopSession.mockRejectedValue(new Error('reset rejected'));
     tauriHarness.proxyFetch.mockResolvedValue(new Response(JSON.stringify({
       success: false,
       error: 'reset rejected',
@@ -346,9 +351,8 @@ describe('TabProvider session title projection', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: 'reset' }));
 
-    await waitFor(() => expect(tauriHarness.proxyFetch).toHaveBeenCalledWith(
-      '/chat/reset',
-      expect.objectContaining({ method: 'POST' }),
+    await waitFor(() => expect(tauriHarness.newDesktopSession).toHaveBeenCalledWith(
+      { oldSessionId: 'pending-title', tabId: 'tab-title' },
     ));
     await waitFor(() => expect(screen.getByTestId('session-title').textContent).toBe('已有标题'));
 

@@ -182,7 +182,11 @@ Retry 的 `model` / `reasoningEffort` 是与普通发送一致的可选发送意
 
 响应必须区分会话提交、重发接纳和文件恢复结果：文件已恢复而记录修改失败不能说文件未变；会话已提交而 Runtime restore 失败不能说完全没执行。传输失败时前端回读权威历史，不用旧消息快照覆盖、不自动重发；明确的校验/能力拒绝直接展示原因。Fork 调用方用稳定的 `targetSessionId`，metadata 的 `forkOrigin` 关联来源；丢失响应后查询同一目标或重试同一身份，已发布目标返回已有结果。查询尚未确认目标只表示待确认，不证明此前失败；打开 Tab 失败也不删除已发布分支。这不承诺跨进程崩溃的 exactly-once 执行。
 
-Stop/Reset 的结果也由 SessionEngine 决定。Stop 的回执或超时不代表 turn 已结束；前端等待执行事件，缺失时读取 `/api/session-state`，并丢弃已被更新执行事件、恢复或连接代际取代的读结果。Reset 成功返回前由 adapter 通过既有 publisher 发布新 identity 的 desktop 元数据和当前执行配置快照，并等待 writer 的 `flushForMutation` 确认磁盘可见；保证尚未发送首条消息也能绑定 Task/Goal、重启后仍能恢复模型配置。前端只有在后端确认新 identity 后才采用新空会话；拒绝时保留历史，丢响应时回读真实 binding。App 打开新 Tab 失败须与「可在当前空会话 reset」区分，不能用失败触发破坏性的 fallback。
+Stop/Reset 的结果也由 SessionEngine 决定。Stop 的回执或超时不代表 turn 已结束；前端等待执行事件，缺失时读取 `/api/session-state`，并丢弃已被更新执行事件、恢复或连接代际取代的读结果。Reset 成功返回前由 adapter 通过既有 publisher 发布新 identity 的 desktop 元数据和当前执行配置快照，并等待 writer 的 `flushForMutation` 确认磁盘可见；保证尚未发送首条消息也能绑定 Task/Goal、重启后仍能恢复模型配置。
+
+桌面新对话统一调用 Rust `cmd_new_desktop_session`，前端的 Channel 状态轮询仅供展示，不能决定 reset 路径。Rust 从 Router 查询 source 的当前 binding，并在 peer / projection / Session lifecycle fence 下校验实际 owners；无 Channel 时由同一 lifecycle owner 校验 Tab 和持久 owner，并直接调用既有 BackgroundCompletion admission，前端只消费已接管结果，不再二次探测忙碌状态。`pending-*` 仅是 Manager bootstrap key：Rust 在 pinned generation 上读取 Runtime 的 canonical identity，再由 adapter 在 mutation boundary 核对它；不能把临时 key 当作 Product Session ID。Node 的 `/api/session/new-conversation` 在 adapter mutation boundary 内核对 expected source，完成 reset 和 durable publication 后才回执成功；`/chat/reset` 不再接受无 Rust admission 的切换。
+
+Runtime 成功前 Manager 与 Router 保持 source，成功后才发布 target。超时、坏回执或写盘失败不等于取消：Rust 持有精确 generation 的 dispatch lease，关闭 admission、终止并确认旧 writer 退出后，才通过已有 recovery 保留原 owners；不能用一次 session-state 读到 source 或 target 就推定整个 mutation 已结束。前端只采用 Rust 已提交的 identity，拒绝时保留历史。App 打开新 Tab 失败须与「可在当前空会话 reset」区分，不能用失败触发破坏性的 fallback。
 
 ## 5. Goal 与跨 Session 协作
 

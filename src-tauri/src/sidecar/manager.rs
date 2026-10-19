@@ -2014,6 +2014,14 @@ impl SidecarManager {
         self.upgrade_session_id_for_desktop_owner(old_session_id, new_session_id, &owner)
     }
 
+    pub(crate) fn desktop_session_migration_is_admissible(
+        &self,
+        session_id: &str,
+        tab_id: &str,
+    ) -> bool {
+        self.active_session_has_exact_owners(session_id, &[SidecarOwner::Tab(tab_id.to_string())])
+    }
+
     pub fn upgrade_session_id_for_desktop_owner(
         &mut self,
         old_session_id: &str,

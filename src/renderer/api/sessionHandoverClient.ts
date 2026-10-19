@@ -3,9 +3,9 @@
  * commands (PRD 0.2.14).
  *
  * Two operations:
- *   1. migrateChannelToNewSession — when desktop user clicks "+新对话" on a
- *      channel-bound session, the participating Tab and channel binding move
- *      together. This is intentionally different from IM `/new`, which only
+ *   1. newDesktopSession — when desktop user clicks "+新对话", Rust resolves
+ *      the current binding and moves the participating Tab and any Channel
+ *      binding together. This is intentionally different from IM `/new`, which only
  *      rotates the channel binding.
  *
  *   2. handoverSessionToChannel — when desktop user clicks the 📤 button on
@@ -25,31 +25,16 @@ async function getInvoke() {
     return cachedInvoke;
 }
 
-export interface MigrateChannelArgs {
-  oldSessionId: string;
-  /** Exact desktop owner participating in the joint migration. */
-  tabId: string;
-  /** session_key from `peer_sessions`, format `agent:{agentId}:{platform}:{type}:{id}` */
-  sessionKey: string;
+export interface NewDesktopSessionResult {
+    newSessionId: string | null;
+    backgroundCompletionStarted: boolean;
 }
 
-/**
- * Migrate exactly `Tab(tabId) + Agent(sessionKey)` from `oldSessionId` to a
- * freshly generated Session. Rust rejects any additional owner before Node
- * changes Runtime identity.
- */
-export async function migrateChannelToNewSession(args: MigrateChannelArgs): Promise<string | null> {
-    if (!isTauriEnvironment()) return null;
+/** Rust resolves the binding and admits the exact Tab before any Runtime reset. */
+export async function newDesktopSession(args: { oldSessionId: string; tabId: string }): Promise<NewDesktopSessionResult> {
+    if (!isTauriEnvironment()) throw new Error('New conversations require the desktop Session lifecycle');
     const invoke = await getInvoke();
-    const result = await invoke<{ newSessionId: string }>(
-        'cmd_session_new_with_surface_migration',
-        {
-            oldSessionId: args.oldSessionId,
-            tabId: args.tabId,
-            sessionKey: args.sessionKey,
-        },
-    );
-    return result?.newSessionId ?? null;
+    return invoke<NewDesktopSessionResult>('cmd_new_desktop_session', args);
 }
 
 export interface HandoverArgs {

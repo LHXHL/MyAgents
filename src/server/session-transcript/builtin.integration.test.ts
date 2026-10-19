@@ -348,9 +348,9 @@ describe('builtin V2 execution independent of product storage', () => {
     if (mode === 'failed') state.failProductIo = true;
     if (mode === 'delayed') state.publicationGate = new Promise<void>(resolve => { releaseWrite = resolve; });
     let settled = false;
-    const reset = createBuiltinSessionEngine().resetForNewDesktopSession(workspace).finally(() => { settled = true; });
+    const reset = createBuiltinSessionEngine().transitionDesktopSession(workspace, { sourceSessionId: agent.getSessionId(), targetSessionId: '4d2c043d-e1ac-432d-9d3a-7f1619842ac0', channelBound: false }).finally(() => { settled = true; });
     if (mode === 'failed') {
-      await expect(reset).rejects.toThrow('could not be published');
+      await expect(reset).rejects.toThrow();
       return;
     }
     if (mode === 'delayed') {

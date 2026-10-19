@@ -1,3 +1,6 @@
+import { newDesktopSession } from '@/api/sessionHandoverClient';
+import { releaseTabSession } from '@/api/tauriClient';
+import { transitionDesktopSession } from './desktopSessionTransition';
 import { LOG_SESSION_HEADER } from '../../shared/types/log';
 import { messageCompletionParams } from '@/analytics/conversation';
 import type { AskUserQuestionAnswers } from '../../shared/types/askUserQuestion';
@@ -1631,21 +1634,8 @@ export default function TabProvider({
     loadingOlderRef.current = false;
   }, []);
 
-  /**
-   * Local-only session swap for the IM-handover "新对话保留绑定" flow.
-   *
-   * The Rust handover (`cmd_session_new_with_surface_migration`) has already
-   * migrated the exact Tab + Agent owners and minted `newSessionId` through
-   * the surface-migration endpoint. Calling resetSession()
-   * here would post `/chat/reset` and mint a SECOND id — leaving the binding
-   * pointing at the migrate-minted id while the tab adopts the second mint
-   * (the v0.2.14 "tag disappears after 新对话" bug).
-   *
-   * This helper does the local UI clear (mirrors resetSession step 1) and
-   * notifies the parent to update Tab.sessionId. The session-aware SSE
-   * useEffect re-labels the same owner-resolved subscription; no backend call
-   * or transport replacement is made.
-   */
+  /** Adopt the identity already committed by Rust. Keep the existing owner-resolved
+   * SSE transport and clear only this Tab's presentation of the previous Session. */
   const adoptMigratedSession = useCallback(
     async (
       newSessionId: string,
@@ -1664,7 +1654,7 @@ export default function TabProvider({
       isNewSessionRef.current = true;
       resetBirthPendingRef.current = false;
 
-      // Mirror resetSession's local clear (kept in lockstep to avoid drift).
+      // Clear the previous Session projection only after Rust has committed.
       setPendingDesktopMessages([]);
       setHistoryMessages([]);
       resetPaginationState();
@@ -1799,47 +1789,21 @@ export default function TabProvider({
     ],
   );
 
-  const resetSession = useCallback(async (): Promise<boolean> => {
+  const resetSession = useCallback(async (options?: { onBackgroundCompletion?: (sourceSessionId: string) => Promise<boolean> }): Promise<boolean> => {
     const sourceId = currentSessionIdRef.current;
-    try {
-      const response = await postJson<{
-        success: boolean;
-        sessionId?: string;
-        error?: string;
-      }>('/chat/reset');
-      if (!response.success || !response.sessionId) {
-        throw new Error(response.error || 'Session reset failed');
-      }
-      if (
-        currentSessionIdRef.current !== sourceId &&
-        currentSessionIdRef.current !== response.sessionId
-      ) {
-        return false;
-      }
-      const adopted = await adoptMigratedSession(response.sessionId, { newConversation: true });
-      if (adopted) {
-        setPendingSessionBirth(tabId, birthContextForSurface('new_chat_button'));
-      }
-      return adopted;
-    } catch (error) {
-      console.error(`[TabProvider ${tabId}] resetSession error:`, error);
-      if (currentSessionIdRef.current !== sourceId) return false;
-      try {
-        const state = await apiGetJson<{ sessionId?: string }>('/api/session-state');
-        if (
-          state.sessionId &&
-          state.sessionId !== sourceId &&
-          currentSessionIdRef.current === sourceId
-        ) {
-          await adoptMigratedSession(state.sessionId, { newConversation: true });
-        }
-      } catch (reconcileError) {
-        console.warn(`[TabProvider ${tabId}] resetSession reconciliation failed:`, reconcileError);
-      }
-      setAgentError(error instanceof Error ? error.message : String(error));
-      return false;
-    }
-  }, [tabId, postJson, apiGetJson, adoptMigratedSession, setAgentError]);
+    if (!sourceId) return false;
+    const success = await transitionDesktopSession({
+      sessionId: sourceId,
+      tabId,
+      newDesktopSession,
+      onBackgroundCompletion: options?.onBackgroundCompletion,
+      adoptMigratedSession,
+      releaseMigratedTabOwner: releaseTabSession,
+      reportError: message => { setAgentError(message); toast?.error(message); },
+    });
+    if (success) setPendingSessionBirth(tabId, birthContextForSurface('new_chat_button'));
+    return success;
+  }, [tabId, adoptMigratedSession, setAgentError, toast]);
 
   const trackSessionNewForBirth = useCallback(
     (

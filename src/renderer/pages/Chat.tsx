@@ -105,7 +105,6 @@ import CronTaskSettingsModal, {
   type CronInitialConfig,
   type CronSettingsResult,
 } from '@/components/cron/CronTaskSettingsModal';
-import { transitionChannelBoundSession } from '@/pages/chatChannelSession';
 import { useTabState, useTabActive } from '@/context/TabContext';
 import { useChatScrollController } from '@/hooks/useChatScrollController';
 import { useChatScrollModel } from '@/hooks/useChatScrollModel';
@@ -140,7 +139,6 @@ import {
 } from '@/api/cronTaskClient';
 import { updateSession as patchSessionMetadata } from '@/api/sessionClient';
 import {
-  releaseTabSession,
   sessionHasPersistentOwners,
 } from '@/api/tauriClient';
 import {
@@ -574,7 +572,7 @@ interface ChatProps {
   /** Native shown/not-minimized lifecycle; focus is intentionally independent. */
   windowPresentation: MainWindowPresentation;
   /** Called when user starts a new session. Returns true if handled externally (background completion started). */
-  onNewSession?: () => Promise<boolean>;
+  onNewSession?: (sourceSessionId: string) => Promise<boolean>;
   /** Opens a persisted Session through App's canonical new/jump/revive path. */
   onOpenSession?: (
     sessionId: string,
@@ -6102,29 +6100,6 @@ export default function Chat({
     return out;
   }, [currentAgent, agentStatuses, t]);
 
-  /**
-   * Migrate the current channel binding to a new session id, then reset the
-   * tab onto the new session. Pulled out of `handleNewSession` so the
-   * SessionMenuButton's "新会话（保留绑定）" submenu item can drive the
-   * exact same flow without re-running the unbound fallback paths.
-   */
-  const newSessionKeepingBinding = useCallback(async (): Promise<boolean> => {
-    const boundChannel = surfaces.channel;
-    if (!boundChannel || !sessionId) return false;
-    const { migrateChannelToNewSession } = await import(
-      '@/api/sessionHandoverClient'
-    );
-    return await transitionChannelBoundSession({
-      sessionId,
-      tabId,
-      boundChannel,
-      migrateChannelToNewSession,
-      adoptMigratedSession,
-      releaseMigratedTabOwner: releaseTabSession,
-      reportError: (message) => toastRef.current.error(message),
-    });
-  }, [surfaces.channel, sessionId, tabId, adoptMigratedSession]);
-
   const showIntroductionOverlay = shouldShowIntroductionOverlay({
     content: introductionContent,
     historyMessageCount: historyMessages.length,
@@ -6135,42 +6110,12 @@ export default function Chat({
     showStartupOverlay,
   });
 
-  // Internal handler for starting a new session
-  // If AI is running, App.tsx handles it via background completion (returns true).
-  // If AI is idle, falls back to resetSession (reuses Sidecar).
-  // PRD 0.2.14: when current session is IM-channel-bound, migrate the binding
-  // to the new session so the IM channel keeps routing here. Unlike IM `/new`,
-  // this is an explicit Tab + Agent joint migration.
-  const handleNewSession = useCallback(async (): Promise<boolean> => {
-    if (surfaces.channel && sessionId) {
-      return await newSessionKeepingBinding();
-    }
-
-    if (onNewSession) {
-      const handled = await onNewSession();
-      if (handled) {
-        // App.tsx started background completion and created new Sidecar
-        // TabProvider will detect sessionId change and reconnect
-        return true;
-      }
-    }
-
-    // Fallback: AI is idle, reset session within existing Sidecar
-    console.log('[Chat] Starting new session...');
-    const success = await resetSession();
-    if (success) {
-      console.log('[Chat] New session started');
-    } else {
-      console.error('[Chat] Failed to start new session');
-    }
-    return success;
-  }, [
-    onNewSession,
-    resetSession,
-    surfaces.channel,
-    sessionId,
-    newSessionKeepingBinding,
-  ]);
+  // Channel discovery and idle/reset admission belong to Rust. A display
+  // snapshot may lag migration or startup and cannot select a mutation path.
+  const handleNewSession = useCallback(
+    () => resetSession({ onBackgroundCompletion: onNewSession }),
+    [onNewSession, resetSession],
+  );
 
   return (
     <BrowserPanelContext.Provider value={browserPanelCtx}>

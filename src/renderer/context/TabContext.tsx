@@ -215,23 +215,9 @@ export interface TabContextValue extends TabState {
     retryCurrentSessionRestore: (targetMessageId?: string) => Promise<CurrentSessionRestoreResult>;
     /** Prepend the next page of older messages. Safe to call repeatedly — guarded internally. */
     loadOlderMessages: (options?: LoadOlderMessagesOptions) => Promise<void>;
-    resetSession: () => Promise<boolean>;
-    /**
-     * Soft session swap for the IM-handover "新对话保留绑定" flow.
-     *
-     * Used when the Rust handover (`cmd_session_new_with_surface_migration`)
-     * has ALREADY migrated the exact Tab + Agent owners and minted a fresh
-     * session_id through the proof-bearing surface-migration endpoint. The renderer
-     * MUST NOT call `resetSession()` afterwards — that would POST `/chat/reset`
-     * and mint yet another session id, leaving the channel binding pointing
-     * at the migrate-minted id while the tab adopts the second mint
-     * (PRD 0.2.14 cross-bugfix; manifests as "tag disappears after 新对话").
-     *
-     * This helper does the local UI clear that resetSession does, swaps
-     * `currentSessionId` to `newSessionId`, and notifies the parent via
-     * `onSessionIdChange` so the SSE auto-reconnect effect picks up the new
-     * session. No backend call is made.
-     */
+    resetSession: (options?: { onBackgroundCompletion?: (sourceSessionId: string) => Promise<boolean> }) => Promise<boolean>;
+    /** Adopt the identity already committed by Rust's desktop-new lifecycle.
+     * No backend reset or owner rekey is performed by this projection helper. */
     adoptMigratedSession: (newSessionId: string, options?: AdoptMigratedSessionOptions) => Promise<boolean>;
 
     // Tab-scoped API functions (use this Tab's Sidecar)

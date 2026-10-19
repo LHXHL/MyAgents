@@ -3063,16 +3063,16 @@ export default function App({ rendererAttachment = COLD_RENDERER_ATTACHMENT }: {
   /**
    * Handle "New Session" from Chat component.
    * If AI is running, starts background completion on old session and creates new Sidecar.
-   * Returns true if handled (Chat should NOT call resetSession), false if AI is idle (Chat falls back to resetSession).
+   * Consumes Rust background admission; false means this Tab already moved away.
    */
   const handleNewSession = useCallback(
-    async (tabId: string): Promise<boolean> => {
+    async (tabId: string, sourceSessionId: string): Promise<boolean> => {
       const currentTab = tabWorkspaceController
         .getSnapshot()
         .tabs.find((t) => t.id === tabId);
       if (
         currentTab?.view !== 'chat' ||
-        !currentTab.sessionId ||
+        currentTab.sessionId !== sourceSessionId ||
         !currentTab.agentDir
       ) {
         return false;
@@ -3080,12 +3080,9 @@ export default function App({ rendererAttachment = COLD_RENDERER_ATTACHMENT }: {
 
       const oldSessionId = currentTab.sessionId;
 
-      // Check if AI is running → start background completion
-      const bgResult = await startBackgroundCompletion(oldSessionId);
-      if (!bgResult.started) {
-        // AI is idle → let Chat handle it via resetSession (more efficient, reuses Sidecar)
-        return false;
-      }
+      // Rust already attached BackgroundCompletion under Session lifecycle
+      // admission. Do not sample activity again: completion in this window
+      // does not revoke the user's request to open a new conversation.
 
       // AI is running → release old Sidecar (BG owner keeps it alive), create new one
       console.log(
