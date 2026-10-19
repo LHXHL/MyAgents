@@ -291,7 +291,9 @@ export function useChatScrollController({
       const scrollerTop = getScrollerRect(scroller).top;
       const nextOffset = scope.getBoundingClientRect().top - scrollerTop;
       const delta = nextOffset - anchor.offsetFromViewportTop;
-      if (Math.abs(delta) >= 1) {
+      // Even a zero offset completes the index-mounting transaction. Otherwise
+      // a late size/smooth callback can replay its coarse start alignment.
+      if (restoreIntent.mountRequested || Math.abs(delta) >= 1) {
         virtuosoRef.current?.scrollBy({ top: delta, behavior: options?.behavior ?? 'auto' });
       }
       return true;
@@ -365,6 +367,10 @@ export function useChatScrollController({
       }
       navigationVersionRef.current += 1;
       admittedPresentationGenerationRef.current = null;
+      // Revoking our callbacks is not enough: Virtuoso owns subscriptions and
+      // native motion from an earlier index request. Stop those while retaining
+      // follow/reading intent for the continuity snapshot below.
+      virtuosoRef.current?.scrollBy({ top: 0, behavior: 'auto' });
       if (!hasEverAdmittedRef.current) return;
       pendingAnchorRef.current = null;
       const follow = followEnabledRef.current !== false;
@@ -423,7 +429,14 @@ export function useChatScrollController({
       presentationGeneration: snapshot.presentationGeneration,
     };
     setAnchorRestoreTick(tick => tick + 1);
-  }, [followEnabledRef, performScrollToBottom, rememberTrustedAnchor]);
+  }, [followEnabledRef, performScrollToBottom, rememberTrustedAnchor, virtuosoRef]);
+
+  useLayoutEffect(() => {
+    // Capture the exact virtualizer before ref detachment/replacement. Cleanup
+    // runs before the next Session's layout effects can start a new pin.
+    const viewport = virtuosoRef.current;
+    return () => viewport?.scrollBy({ top: 0, behavior: 'auto' });
+  }, [sessionId, virtuosoRef]);
 
   const committedSessionIdRef = useRef(sessionId ?? null);
   useLayoutEffect(() => {
@@ -493,12 +506,14 @@ export function useChatScrollController({
         if (!root) return;
         const el = root.querySelector<HTMLElement>(`[data-tool-id="${escapeCssIdentifier(toolId)}"]`);
         if (!el) return;
+        // The mounted tool now owns precise placement; retire its index stage.
+        pauseAutoScroll();
         el.scrollIntoView({ behavior: 'smooth', block: 'center' });
         el.classList.add('agent-status-flash');
         window.setTimeout(() => el.classList.remove('agent-status-flash'), 1500);
       });
     });
-  }, [scrollerRef, scrollToMessage]);
+  }, [pauseAutoScroll, scrollerRef, scrollToMessage]);
 
   const onRowLayoutChanged = useCallback((messageId: string, reason: RowLayoutChangeReason) => {
     if (!isActiveRef.current || !isCurrentViewportAdmitted()) return;

@@ -1,6 +1,9 @@
 // react-virtuoso 4.18.3: a newer pixel scroll must cancel the older index
 // navigation's listRefresh / smooth-target retry subscriptions. Otherwise upward
 // user input stops the native animation but a late measurement replays the jump.
+// Only imperative pixel calls revoke the index owner; its internal scrollTo
+// output must keep its measurement transaction alive. Native motion owns its
+// own completion timer and must retire it even on same-offset takeover.
 // WebKit also clamps scrollTop while React removes range items before updating
 // the list padding. Project the virtualizer's existing totalListHeight + deviation
 // as an absolute, non-measuring viewport child, keeping the scroll extent intact
@@ -15,7 +18,7 @@ import { fileURLToPath } from 'node:url';
 const patches = {
   "index.mjs": {
     "original": "92312b36ddbba75a6b162389962cb8890bf7faed340bc63201dcd1d439ed1729",
-    "repaired": "b46cc9dd63ddb26bd84a59cfb0c31c71a9b462a0845fc964c08998c44219eca8",
+    "repaired": "76e9dda9cc0cea2bd62dc4334796145298dd1aeec2950b7e1784a925a4759f7e",
     "changes": [
       [
         "      scrollTo: d,\n      smoothScrollTargetReached: m,",
@@ -32,13 +35,44 @@ const patches = {
       [
         "style: Jt(r), children: t",
         "style: Jt(r), children: [t, !s && G(\"div\", { \"data-virtuoso-scroll-extent\": true, \"aria-hidden\": true, style: { position: \"absolute\", top: 0, height: scrollExtent, width: 1, pointerEvents: \"none\" } })]"
+      ],
+      [
+        "      scrollTargetReached: w,",
+        "      cancelScrollToIndex: S,\n      scrollTargetReached: w,"
+      ],
+      [
+        "    { scrollToIndex: y },",
+        "    { scrollToIndex: y, cancelScrollToIndex },"
+      ],
+      [
+        "      scrollToIndex: y,",
+        "      scrollToIndex: y,\n      cancelScrollToIndex,"
+      ],
+      [
+        "      const y = f[e.methods[S]];",
+        "      if (S === \"scrollTo\") f.cancelScrollToIndex?.();\n      const y = f[e.methods[S]];"
+      ],
+      [
+        "    const w = p.behavior === \"smooth\";",
+        "    const w = p.behavior === \"smooth\", wasSmooth = l.current !== null;\n    if (c.current !== null) clearTimeout(c.current);\n    c.current = null;\n    l.current = null;"
+      ],
+      [
+        "      t({ scrollHeight: h, scrollTop: f, viewportHeight: R }), w && e(!0);",
+        "      if (wasSmooth) T.scrollTo(s === !0 ? { left: f, behavior: \"auto\" } : { top: f, behavior: \"auto\" });\n      t({ scrollHeight: h, scrollTop: f, viewportHeight: R }), w && e(!0);"
+      ],
+      [
+        "  function x(p) {\n    s === !0",
+        "  function x(p) {\n    if (c.current !== null) clearTimeout(c.current);\n    c.current = null;\n    l.current = null;\n    s === !0"
       ]
     ],
-    "previous": "a0e01cf265391f9d99d0baa496b6f75d93caf6c5e8217f4f3912667029fbc1a7"
+    "previous": [
+      "a0e01cf265391f9d99d0baa496b6f75d93caf6c5e8217f4f3912667029fbc1a7",
+      "b46cc9dd63ddb26bd84a59cfb0c31c71a9b462a0845fc964c08998c44219eca8"
+    ]
   },
   "index.cjs": {
     "original": "47bb8592d307cb2847ceec6d5a0a8661004a99344a42c46c30007d0f120b71b7",
-    "repaired": "a45404b8f7a090805439919cf418149a32b0a923d56475a4ae278cc35c183571",
+    "repaired": "8c5e4b3d957a88ae7a8861e5db62708eb622f289959e06e02a0038546bc6861f",
     "changes": [
       [
         "scrollingInProgress:c,scrollTo:d,smoothScrollTargetReached:m,viewportHeight:I",
@@ -55,9 +89,40 @@ const patches = {
       [
         "style:Zt(r),children:t",
         "style:Zt(r),children:[t,!s&&V.jsx(\"div\",{\"data-virtuoso-scroll-extent\":true,\"aria-hidden\":true,style:{position:\"absolute\",top:0,height:scrollExtent,width:1,pointerEvents:\"none\"}})]"
+      ],
+      [
+        "{scrollTargetReached:w,scrollToIndex:T,topListHeight:E}",
+        "{cancelScrollToIndex:S,scrollTargetReached:w,scrollToIndex:T,topListHeight:E}"
+      ],
+      [
+        "{scrollToIndex:y},k,",
+        "{scrollToIndex:y,cancelScrollToIndex},k,"
+      ],
+      [
+        "scrollToIndex:y,statefulTotalCount:",
+        "scrollToIndex:y,cancelScrollToIndex,statefulTotalCount:"
+      ],
+      [
+        "a[S]=H=>{const y=f[e.methods[S]];",
+        "a[S]=H=>{if(S===\"scrollTo\")f.cancelScrollToIndex?.();const y=f[e.methods[S]];"
+      ],
+      [
+        "const w=p.behavior===\"smooth\";let E,h,f;",
+        "const w=p.behavior===\"smooth\",wasSmooth=l.current!==null;if(c.current!==null)clearTimeout(c.current);c.current=null;l.current=null;let E,h,f;"
+      ],
+      [
+        "p.top===f){t({scrollHeight:h,scrollTop:f,viewportHeight:E})",
+        "p.top===f){if(wasSmooth)T.scrollTo(s===!0?{left:f,behavior:\"auto\"}:{top:f,behavior:\"auto\"});t({scrollHeight:h,scrollTop:f,viewportHeight:E})"
+      ],
+      [
+        "function I(p){s===!0&&(p={...p.behavior",
+        "function I(p){if(c.current!==null)clearTimeout(c.current);c.current=null;l.current=null;s===!0&&(p={...p.behavior"
       ]
     ],
-    "previous": "6bf9bd817e5ba78198f9b83370d65b8ea6b04c02b999ec98acf925779f867af6"
+    "previous": [
+      "6bf9bd817e5ba78198f9b83370d65b8ea6b04c02b999ec98acf925779f867af6",
+      "a45404b8f7a090805439919cf418149a32b0a923d56475a4ae278cc35c183571"
+    ]
   }
 };
 const digest = source => createHash('sha256').update(source).digest('hex');
@@ -70,7 +135,7 @@ export function patchReactVirtuoso(directory, check = false) {
   const pending = Object.entries(patches).flatMap(([name, patch]) => {
     const path = resolve(directory, 'dist', name), source = readFileSync(path, 'utf8');
     if (digest(source) === patch.repaired) return [];
-    if (digest(source) !== patch.original && digest(source) !== patch.previous) throw new Error('Unexpected react-virtuoso bytes: ' + name);
+    if (digest(source) !== patch.original && !patch.previous.includes(digest(source))) throw new Error('Unexpected react-virtuoso bytes: ' + name);
     if (check) throw new Error('Chat scroll repair is missing. Run npm run postinstall.');
     const result = patch.changes.reduce((text, [from, to]) => text.includes(to) ? text : text.replace(from, to), source);
     if (digest(result) !== patch.repaired) throw new Error('Chat scroll repair mismatch: ' + name);

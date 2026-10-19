@@ -8,12 +8,14 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { createServer } from 'vite';
 import { chromium, webkit } from 'playwright';
+import { verifyScrollOwnership } from './chat-scroll-ownership-cases.mjs';
 import { patchReactVirtuoso } from './patch-react-virtuoso.mjs';
 
 const repo = resolve(import.meta.dirname, '..');
 patchReactVirtuoso(resolve(repo, 'node_modules/react-virtuoso'), true);
 const output = await mkdtemp(resolve(tmpdir(), 'myagents-scroll-verification-'));
 const engine = process.argv[2] ?? 'webkit';
+const ownershipOnly = process.argv.includes('--ownership-only');
 const followOnly = process.argv.includes('--follow-only');
 assert.ok(['webkit', 'chrome', 'chromium'].includes(engine), 'Choose webkit, chrome or chromium');
 const entryId = repo + '/src/renderer/__scroll_audit.tsx';
@@ -38,6 +40,8 @@ const mixedHistory=Array.from({length:300},(_,i)=>mk('h'+i,i%20!==1?'Short user 
 ].join(nl),i%20!==1?'user':'assistant'));
 const history=seedMode?mixedHistory:Array.from({length:25},(_,i)=>mk('h'+i,('History paragraph '+i+' with stable lines. ').repeat(15)));
 function Fixture(){
+ const [active,setActive]=useState(true);
+ const [session,setSession]=useState('audit');
  const [loaded,setLoaded]=useState(seedMode!=='deferred');
  const [sm,setSm]=useState(mk('stream','Streaming start.'));
  const [loading,setLoading]=useState(true);
@@ -46,10 +50,10 @@ function Fixture(){
  const [height,setHeight]=useState(640);
  const [spacer,setSpacer]=useState(176);
  const rootRef=useRef(null);
- const model=useChatScrollModel({historyMessages:loaded?history:[],streamingMessage:loaded?sm:null,sessionId:'audit'});
- const ctrl=useChatScrollController({messages:model.data,isActive:true,sessionId:'audit',rootRef});
+ const model=useChatScrollModel({historyMessages:loaded?history:[],streamingMessage:loaded?sm:null,sessionId:session});
+ const ctrl=useChatScrollController({messages:model.data,isActive:active,sessionId:session,rootRef});
  const search=useChatSearch({active:searchOpen,messages:model.data,scrollerRef:ctrl.scrollerRef,scrollToMessage:ctrl.scrollToMessage,pauseAutoScroll:ctrl.pauseAutoScroll});
- useLayoutEffect(()=>{window.audit={ctrl,search,load:()=>setLoaded(true),seed:model.heightEstimateSeed,
+ useLayoutEffect(()=>{window.audit={ctrl,search,setActive,setSession,setLoaded,load:()=>setLoaded(true),seed:model.heightEstimateSeed,
  readState:()=>new Promise(resolve=>ctrl.virtuosoRef.current.getState(resolve)),setSearchOpen,setLoading,setHeight,setSpacer,setPermission,
  showDisclosure:()=>setSm(prev=>({...prev,content:[{type:'thinking',thinking:'Expanded thinking content with many lines. '.repeat(100),isComplete:true},{type:'text',text:'Disclosure tail.'}]})),
  growDisclosure:()=>setSm(prev=>({...prev,content:prev.content.map(block=>block.type==='text'?{...block,text:block.text+' Later output below the open content. '.repeat(20)}:block)})),append:text=>setSm(prev=>({...prev,content:prev.content+text})),replace:text=>setSm(prev=>({...prev,content:text})),snapshot:()=>{
@@ -60,7 +64,7 @@ function Fixture(){
   return {top:el?.scrollTop,height:el?.scrollHeight,viewport:el?.clientHeight,gap:el?el.scrollHeight-el.scrollTop-el.clientHeight:null,follow:ctrl.followEnabledRef.current,statusY:status?.getBoundingClientRect().top,statusH:status?.getBoundingClientRect().height,anchor:anchor?.dataset.messageId,anchorY:anchor?anchor.getBoundingClientRect().top-er.top:null};
  }}});
  return <div ref={rootRef} style={{height,width:760,display:'flex',flexDirection:'column',position:'relative',overflow:'hidden'}}>
- <MessageList firstItemIndex={100000} messages={model.data} streamingMessage={loaded?sm:null} isLoading={loading} sessionState={loading?'running':'idle'} isStreaming={loading} sessionId="audit"
+ <MessageList firstItemIndex={100000} messages={model.data} streamingMessage={loaded?sm:null} isLoading={loading} sessionState={loading?'running':'idle'} isStreaming={loading} sessionId={session} isActive={active}
  heightEstimateSeed={model.heightEstimateSeed} layoutByMessageId={model.layoutByMessageId} virtuosoRef={ctrl.virtuosoRef}
  onScrollerRef={ctrl.attachScroller} followEnabledRef={ctrl.followEnabledRef} scrollToBottom={ctrl.scrollToBottom} handleAtBottomChange={ctrl.handleAtBottomChange}
  onViewportAdmissionChanged={ctrl.onViewportAdmissionChanged} onItemsRendered={ctrl.onItemsRendered} isViewportRecoveryFenced={ctrl.isViewportRecoveryFenced}
@@ -105,6 +109,8 @@ try {
   page.on('pageerror', error => errors.push(error.message));
   const address = server.httpServer.address();
   const fixtureUrl = `http://127.0.0.1:${address.port}/__scroll_audit`;
+  await verifyScrollOwnership(page, fixtureUrl, output);
+  if (!ownershipOnly) {
   const seedEvidence = {};
   for (const mode of followOnly ? [] : ['immediate', 'deferred']) {
     await page.goto(`${fixtureUrl}?seed=${mode}`);
@@ -377,6 +383,7 @@ try {
   await writeFile(resolve(output, 'samples.json'), JSON.stringify(await page.evaluate(() => window.samples)));
   await writeFile(resolve(output, 'results.json'), JSON.stringify(evidence, null, 2));
   console.log(`Chat scroll ${engine}: smooth/rapid follow, active cancellation, reduced motion, ${followOnly ? 'height seeds skipped (--follow-only), ' : 'height seeds, '}reading, footer/viewport growth, navigation and terminal checks passed. Evidence: ${output}`);
+  }
 } finally {
   clearTimeout(deadline);
   if (page && !page.isClosed()) {

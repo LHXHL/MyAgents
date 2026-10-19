@@ -49,7 +49,7 @@ App 的 Tab memo comparator 只让 active Chat 响应 presentation 对象变化�
 
 ### admission true → false
 
-- 清除旧 layout compensation 与 bottom pin。
+- 清除旧 layout compensation 与 bottom pin；经 Virtuoso `scrollBy({top:0, behavior:"auto"})` 撤销库内索引测量/完成订阅和原生运动，不改变 follow/reading 意图。Session effect cleanup 同样撤销其捕获的精确 virtualizer，发生在新 Session layout pin 前；不能只让应用回调过期而留下库内操作。
 - 若 follow 为 `true` / `force`，保存 `follow=true`。
 - 若用户正在阅读历史，保存该 Session 最近一次可信的 `{messageId, offsetFromViewportTop}`。可信 anchor 在 admitted viewport 的 scroll / atBottom(false) 上持续更新，因此可见失焦期间的 hover-scroll 自然覆盖旧位置。
 - 创建单调 transaction id 并开启 recovery fence。重复 unavailable 信号不覆盖第一次捕获的用户意图。
@@ -59,7 +59,7 @@ App 的 Tab memo comparator 只让 active Chat 响应 presentation 对象变化�
 - Session identity 已改变：丢弃旧事务，由新 Session 的既有 initial pin owner 接管。
 - follow 用户：只调用一次 `scrollToBottom('auto')`，随后关闭 fence。
 - 历史阅读用户且目标 row 已挂载：只用 Virtuoso `scrollBy` 修正相对 offset，随后关闭 fence。
-- 目标 row 尚未挂载：在 fence 内只调用一次 `scrollToIndex({align:'start'})` 请求挂载；最终 offset 等待 Virtuoso `itemsRendered` 后结算。`align:start` 是内部 mounting step，不是可见最终状态。
+- 目标 row 尚未挂载：在 fence 内只调用一次 `scrollToIndex({align:'start'})` 请求挂载；最终 offset 等待 Virtuoso `itemsRendered` 后结算，即使 offset 已为零也必须结束索引挂载阶段。`align:start` 是内部 mounting step，不是可见最终状态。
 - 目标 message 已删除：结束事务，不猜相邻位置。
 
 所有 callback 都核对当前 Session、presentation generation 与 pending transaction identity。发送消息/回到底部、搜索、工具定位，以及 `useVirtuosoScroll` 已识别的 wheel/touch/scrollbar/viewport-key 输入优先级更高，会取消未完成的 continuity transaction。恢复 fence 内禁止普通跟随对齐；恢复后已经到底时不得再次发出滚动命令。
@@ -85,9 +85,9 @@ Virtuoso 的 Footer 必须使用模块级稳定组件类型，动态内容通过
 
 主动展开消息/工具详情也是阅读意图，`onRowLayoutChanged` 在 direct-toggle 分支暂停跟随；不能再依赖展开后的几何离底来推断用户意图。搜索已挂载命中的快速路径也先调用控制器的 `pauseAutoScroll()`，再定位文字范围。
 
-`scrollToMessage()` 返回本次导航是否仍有效的只读判断，供搜索的延迟 Range 定位和工具的延迟细定位共用。控制器的一份 navigation version 只在新输入/导航或生命周期失效时更新；Session、presentation generation 和 admission 也必须仍匹配。它与 continuity transaction 的序号分开，因为自动的行布局补偿不能取代用户导航意图。旧回调不得在用户滚动、切换 Session 或不可呈现之后重新发起滚动。
+`scrollToMessage()` 返回本次导航是否仍有效的只读判断，供搜索的延迟 Range 定位和工具的延迟细定位共用。控制器的一份 navigation version 只在新输入/导航或生命周期失效时更新；Session、presentation generation 和 admission 也必须仍匹配。搜索 Range / 工具 DOM 细定位在目标已挂载且 navigation 仍有效后，再调用既有 pauseAutoScroll 结束自己的索引挂载阶段，随后才执行细定位；仅在导航开始前取消前任不足以完成这次交接。它与 continuity transaction 的序号分开，因为自动的行布局补偿不能取代用户导航意图。旧回调不得在用户滚动、切换 Session 或不可呈现之后重新发起滚动。
 
-搜索、工具/Query 定位与 rewind/retry 调用 `pauseAutoScroll()` 后保持阅读模式，直到用户回到底部；不以固定500/2000ms定时器恢复过去的跟随决定。新的阅读输入还通过 Virtuoso 的 `scrollBy({top:0, behavior:'auto'})` 取消进行中的原生平滑滚动。react-virtuoso 4.18.3 原版的 index 定位会在动画停止后继续响应尺寸变化并重试旧目标；`scripts/patch-react-virtuoso.mjs` 在库的 scrollToIndex owner 内让新的 scrollBy 清除旧的测量/动画订阅及超时，两个模块格式一起校验并修复。版本固定为4.18.3，安装时应用，开发/构建/typecheck前验证；升级时必须重跑真实浏览器取消定位回归并评估移除补丁。
+搜索、工具/Query 定位与 rewind/retry 调用 `pauseAutoScroll()` 后保持阅读模式，直到用户回到底部；不以固定500/2000ms定时器恢复过去的跟随决定。新的阅读输入还通过 Virtuoso 的 `scrollBy({top:0, behavior:'auto'})` 取消进行中的原生平滑滚动。react-virtuoso 4.18.3 原版的 index 定位会在动画停止后继续响应尺寸变化并重试旧目标；`scripts/patch-react-virtuoso.mjs` 在库的 scrollToIndex owner 内让新的 scrollBy，以及 imperative handle 的外部 scrollTo，清除旧的测量/动画订阅及超时。索引 owner 自身也发布 scrollTo，因此取消必须在外部命令入口完成，不能订阅公共输出而把当前索引事务自身取消。原生运动 adapter 在新 scrollTo/scrollBy 时同时撤销旧 smooth 完成计时器；新像素目标等于当前位置也必须停止旧动画，不能当作无操作跳过。两个模块格式一起校验并修复。版本固定为4.18.3，安装时应用，开发/构建/typecheck前验证；升级时必须重跑真实浏览器取消定位回归并评估移除补丁。
 
 同一补丁还修正 element viewport 的垂直滚动范围投影。React 替换可见行时会先移除旧行、再更新 list padding；WebKit 可按中间状态缩小的 scrollHeight 钳制位置，即使最终总高度没有变化。Viewport 中一个绝对定位、无交互且对辅助技术隐藏的节点直接投影库已有的 `totalListHeight + deviation`，在提交期间维持模型声明的滚动范围。它位于测量列表之外，不持有高度缓存，不参与行/header/footer 测量，不改变 viewport 自身尺寸；自然内容可以超出它，行缩短也仍触发列表 ResizeObserver 并更新模型。禁止给测量列表设置固定高度或 min-height，否则可能屏蔽缩小通知、留下空白。Window/custom scroll parent 已有库级模型高度投影，horizontal 路径保持原行为。不能用原生 scroll 事件无限追底补偿中间状态回退，那会使可见范围在两段历史间持续震荡。
 
@@ -127,3 +127,5 @@ MessageList 的呈现准入与 recovery fence 继续由现有 owner 裁决；不
 停止后稳定性回归：`node scripts/verify-agent-status-scroll.mjs webkit`（或 `chrome`）使用真实状态卡、输入浮层、消息与滚动控制器，覆盖完成历史、实时结束、跨三个旧淡出周期的零高度/位置变化，以及长尾滚轮可达性。
 
 连续输出回归：`npm run verify:chat-scroll -- webkit` 和 `npm run verify:chat-scroll -- chrome` 使用真实 Message/Markdown/controller/Virtuoso、合成对话及离线本地 Vite；覆盖立即/延迟历史加载后的稳定到底、多帧中间位置、快速输出的有界落后、进行中动画的输入取消、reduced-motion，以及阅读、搜索、footer 与 viewport 变化、长尾缩短后的高度回收与零多余空白；测试会输出临时录像、截图与几何快照目录。Node 补丁测试覆盖两个模块格式、幂等、从旧补丁升级与版本/字节不匹配。
+
+滚动所有权回归：`node scripts/verify-chat-scroll.mjs chrome --ownership-only`（或 `webkit`）记录真实库索引指令和原生滚动指令，验证 auto/smooth 索引向像素跟随交接后无旧索引重放、suspension / Session 撤销和同位置接管仍停止原生动画。完整 scroll 验证默认包含这些用例。该回归确认旧命令越权问题，不等于已复现用户现场的持续白屏闪烁。

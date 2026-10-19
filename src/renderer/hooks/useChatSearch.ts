@@ -615,6 +615,9 @@ export function useChatSearch({
     const tryPaintAndScroll = (): boolean => {
       const scope = findMessageScope(scroller, pos.messageId);
       if (!scope) return false;
+      // Mounting is complete. Release that index transaction before native
+      // Range positioning, including when no geometric correction is needed.
+      pauseAutoScrollRef.current();
       const ranges = buildRangesInScope(scope, queryRef.current);
       const target = ranges[pos.occInMessage] ?? null;
       paintAllAndCurrent(target);
@@ -632,7 +635,6 @@ export function useChatSearch({
       return true;
     };
 
-    pauseAutoScrollRef.current();
     if (tryPaintAndScroll()) return;
 
     // Off-screen: ask the scroll controller to mount the row, then retry.
