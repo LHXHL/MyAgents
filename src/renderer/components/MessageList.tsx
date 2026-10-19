@@ -626,7 +626,9 @@ const MessageList = memo(function MessageList({
       if (Number.isFinite(knownSize) && knownSize > 0) return knownSize;
     }
     const rectField = field === 'offsetWidth' ? 'width' : 'height';
-    const measuredSize = Math.round(element.getBoundingClientRect()[rectField]);
+    // Preserve layout precision: rounding each row accumulates into a wrong
+    // index target. Virtuoso quantizes only the final scroll extent.
+    const measuredSize = element.getBoundingClientRect()[rectField];
     // A mounted row always has positive layout size. Some WebViews can briefly report
     // zero while updating a long virtualized list; feeding that transient geometry into
     // Virtuoso corrupts its size model and can move the viewport far from the anchor.

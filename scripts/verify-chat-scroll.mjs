@@ -161,6 +161,34 @@ try {
     assert.notEqual(state.follow, false, `${label}: follow was disabled`);
     return state;
   };
+  const geometry = async label => {
+    const measured = await page.evaluate(() => {
+      const list = document.querySelector('[data-testid="virtuoso-item-list"]');
+      const footer = list.nextElementSibling;
+      const viewport = list.parentElement;
+      const extent = viewport.querySelector('[data-virtuoso-scroll-extent]');
+      return {
+        rows: [...list.children].map(row => ({
+          index: Number(row.dataset.index), known: Number(row.dataset.knownSize),
+          actual: row.getBoundingClientRect().height,
+        })),
+        footerHeight: footer.getBoundingClientRect().height,
+        naturalEnd: footer.getBoundingClientRect().bottom - viewport.getBoundingClientRect().top,
+        projectedEnd: extent.getBoundingClientRect().height,
+        scrollHeight: window.audit.ctrl.scrollerRef.current.scrollHeight,
+        endPadding: parseFloat(list.style.paddingBottom),
+      };
+    });
+    assert.ok(measured.rows.some(row => !Number.isInteger(row.actual)), `${label}: fractional fixture lost coverage`);
+    for (const row of measured.rows) {
+      assert.equal(row.known, row.actual, `${label}: row ${row.index} lost measurement precision`);
+    }
+    assert.equal(measured.naturalEnd, measured.projectedEnd, `${label}: model and natural layout disagree`);
+    assert.equal(measured.naturalEnd, measured.scrollHeight, `${label}: native extent disagrees`);
+    assert.ok(measured.endPadding >= 0 && measured.endPadding < 1, `${label}: tail padding accumulated`);
+    evidence[`${label}Geometry`] = measured;
+    return measured;
+  };
   const sameAnchor = (before, after, label) => {
     assert.equal(after.follow, false, `${label}: reading was overridden`);
     assert.equal(after.anchor, before.anchor, `${label}: anchor changed`);
@@ -181,6 +209,7 @@ try {
   });
   await page.waitForTimeout(400);
   const initial = await bottom('initial');
+  await geometry('initial');
   const status = await page.locator('[data-chat-status-row]').elementHandle();
   for (let i = 0; i < 80; i++) {
     await append(` New content ${i} grows while loading stays true.`);
@@ -188,6 +217,7 @@ try {
   }
   await page.waitForTimeout(300);
   const streamed = await bottom('streamed');
+  await geometry('streamed');
   assert.equal(streamed.statusY, initial.statusY);
   assert.ok(await status.evaluate(el => el === document.querySelector('[data-chat-status-row]')));
 
@@ -377,6 +407,30 @@ try {
       - (footer.getBoundingClientRect().bottom - viewport.getBoundingClientRect().top);
   });
   assert.ok(Math.abs(blankTail) <= 1, `scroll extent left ${blankTail}px beyond natural footer`);
+
+  await geometry('shrunkTail');
+
+  // A fractional footer belongs to the same extent model as fractional rows.
+  // Its own ResizeObserver must not round away the fraction or consume the
+  // trailing extent padding and feed that padding back into its measurement.
+  // The composer spacer helper intentionally ceils its input, so a fractional
+  // prop would silently lose coverage. Exercise actual fractional CSS geometry.
+  await page.addStyleTag({ content: '[data-chat-footer-spacer] { height: 216.375px !important; }' });
+  await page.evaluate(() => window.audit.setLoading(true));
+  await page.waitForTimeout(500);
+  const fractionalFooter = await bottom('fractionalFooter');
+  const footerGeometry = await geometry('fractionalFooter');
+  assert.ok(!Number.isInteger(footerGeometry.footerHeight), 'fractional Footer fixture lost coverage');
+  await append(' Fractional footer streaming content.'.repeat(40));
+  await page.waitForTimeout(500);
+  const fractionalGrowth = await bottom('fractionalGrowth');
+  await geometry('fractionalGrowth');
+  assert.equal(fractionalGrowth.statusY, fractionalFooter.statusY);
+  await page.evaluate(() => window.audit.replace('Short again.'));
+  await page.waitForTimeout(500);
+  const fractionalShrink = await bottom('fractionalShrink');
+  await geometry('fractionalShrink');
+  assert.equal(fractionalShrink.statusY, fractionalFooter.statusY);
 
   assert.deepEqual(errors, []);
   await page.evaluate(() => { window.record = false; });

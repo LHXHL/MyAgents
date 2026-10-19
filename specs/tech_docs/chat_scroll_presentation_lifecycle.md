@@ -91,6 +91,14 @@ Virtuoso 的 Footer 必须使用模块级稳定组件类型，动态内容通过
 
 同一补丁还修正 element viewport 的垂直滚动范围投影。React 替换可见行时会先移除旧行、再更新 list padding；WebKit 可按中间状态缩小的 scrollHeight 钳制位置，即使最终总高度没有变化。Viewport 中一个绝对定位、无交互且对辅助技术隐藏的节点直接投影库已有的 `totalListHeight + deviation`，在提交期间维持模型声明的滚动范围。它位于测量列表之外，不持有高度缓存，不参与行/header/footer 测量，不改变 viewport 自身尺寸；自然内容可以超出它，行缩短也仍触发列表 ResizeObserver 并更新模型。禁止给测量列表设置固定高度或 min-height，否则可能屏蔽缩小通知、留下空白。Window/custom scroll parent 已有库级模型高度投影，horizontal 路径保持原行为。不能用原生 scroll 事件无限追底补偿中间状态回退，那会使可见范围在两段历史间持续震荡。
 
+### 行高精度与最终滚动范围
+
+行、Header、Footer 的真实 `getBoundingClientRect()` 尺寸保留小数；不能逐项 `Math.round()`。已复现的 5px 末尾偏差来自 14 行各丢失 0.34375px，末行丢失 0.390625px：模型总高 5882px，真实内容高 5887.203125px，`scrollToIndex(LAST/end)` 因此落到实际底部上方 5px。没有尺寸变化时不会再发生结算，增加重试或空 React 更新只会掩盖模型错误。
+
+浏览器的原生滚动范围还会取整；仅保留行高精度，连续输出时 Footer 仍会因总高度的小数余量而发生不足 1px 的位移。锁定版本补丁在 Virtuoso 的垂直 element viewport 布局边界统一处理：令 `E = totalListHeight + deviation`，既有 extent 节点投影 `ceil(E)`，主列表既有 trailing padding 增加 `ceil(E) - E`。这只是当前总高度的无状态布局投影，余量小于 1px；不改变每行尺寸，不持有另一个高度缓存。余量位于被测量的行和 Footer 外，因而不会反馈进入尺寸模型；真实内容缩短仍正常触发测量与范围回收。Window/custom scroll parent 和 horizontal 不采用该 element viewport 尾部投影。
+
+真实浏览器回归同时检查每个已挂载行的模型尺寸严格等于 DOM 尺寸、自然内容末端严格等于 extent 投影及原生 scrollHeight；初始定位、连续输出、收缩及小数 Footer 均覆盖。状态栏位置的严格相等断言保留，不能用扩大容差替代一致的几何模型。
+
 MessageList 将 `followOutput` 固定为 `false`，因为 react-virtuoso 4.18.3 的同数量尺寸增长/viewport缩小路径只检查原始prop是否为false，并不会调用function形式的策略。自动跟随由 MessageList 的 `useChatFollowMotion` / `alignFollowingViewport` 统一处理：React layout commit、Virtuoso `totalListHeightChanged` 和 scroller resize 都更新同一运动循环；每帧读取当前 scrollHeight，通过 Virtuoso `scrollTo({top, behavior:"auto"})` 的像素 API 移动，不直接写 scrollTop，也不为每次更新重新启动原生 smooth。
 
 该 hook 只持有当前 viewport 生命周期内的帧句柄、位置和速度，不持有第二份 follow / reading 意图。连续增长采用按实际帧间隔计算的临界阻尼（无回弹），重复尺寸通知只更新目标，保留当前速度。尺寸通知可能早于虚拟列表 padding / Footer 的 DOM 提交，因此通知即使暂时读到离底为零，也合并为下一帧的一次几何结算；已结算后不空转轮询。小于等于 1px 的尾差直接结算，停止后不再调度帧。初次可布局、Session / presentation generation 改变、恢复 fence 解除、显式 force 定位、内容收缩和 reduced-motion 使用即时对齐；离底超过 max(480px, viewport height) 的突增也立即追上，避免长距离动画积压。缩放或卡顿后的单帧积分最多使用 50ms。

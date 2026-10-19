@@ -9,7 +9,20 @@ const installed = resolve(import.meta.dirname, '../node_modules/react-virtuoso')
 const names = ['index.mjs', 'index.cjs'];
 const sources = names.map(name => readFileSync(resolve(installed, 'dist', name), 'utf8'));
 // Reconstruct each previously shipped byte contract, independently of the installer.
-const extentRepair = source => source
+const navigationRepair = source => source
+  .replace("  const extent = A(\"totalListHeight\") + a;\n  const endPadding = !r && !s && !h ? Math.ceil(extent) - extent : 0;\n  const E = A(\"EmptyPlaceholder\"), y = A(\"ScrollSeekPlaceholder\") ?? rr,", "  const E = A(\"EmptyPlaceholder\"), y = A(\"ScrollSeekPlaceholder\") ?? rr,")
+  .replace("paddingBottom: n.offsetBottom + endPadding,", "paddingBottom: n.offsetBottom,")
+  .replace("height: Math.ceil(scrollExtent), width: 1", "height: scrollExtent, width: 1")
+  .replace("const e = A(\"HeaderComponent\"), n = Ct(\"headerHeight\"), o = A(\"HeaderFooterTag\"), r = kt(\n    H.useMemo(\n      () => (i) => {\n        n(i.getBoundingClientRect().height);", "const e = A(\"HeaderComponent\"), n = Ct(\"headerHeight\"), o = A(\"HeaderFooterTag\"), r = kt(\n    H.useMemo(\n      () => (i) => {\n        n(Et(i, \"height\"));")
+  .replace("const e = A(\"FooterComponent\"), n = Ct(\"footerHeight\"), o = A(\"HeaderFooterTag\"), r = kt(\n    H.useMemo(\n      () => (i) => {\n        n(i.getBoundingClientRect().height);", "const e = A(\"FooterComponent\"), n = Ct(\"footerHeight\"), o = A(\"HeaderFooterTag\"), r = kt(\n    H.useMemo(\n      () => (i) => {\n        n(Et(i, \"height\"));")
+  .replace("T = v((u, g) => u.getBoundingClientRect()[Fo[g]])", "T = v((u, g) => Et(u, Fo[g]))")
+  .replace("const extent=A(\"totalListHeight\")+a;const endPadding=!r&&!s&&!h?Math.ceil(extent)-extent:0;const H=A(\"EmptyPlaceholder\"),y=A(\"ScrollSeekPlaceholder\")??nr,", "const H=A(\"EmptyPlaceholder\"),y=A(\"ScrollSeekPlaceholder\")??nr,")
+  .replace("paddingBottom:n.offsetBottom+endPadding,", "paddingBottom:n.offsetBottom,")
+  .replace("height:Math.ceil(scrollExtent),width:1", "height:scrollExtent,width:1")
+  .replace("const e=A(\"HeaderComponent\"),n=Ct(\"headerHeight\"),o=A(\"HeaderFooterTag\"),r=kt(b.useMemo(()=>i=>{n(i.getBoundingClientRect().height)", "const e=A(\"HeaderComponent\"),n=Ct(\"headerHeight\"),o=A(\"HeaderFooterTag\"),r=kt(b.useMemo(()=>i=>{n(Et(i,\"height\"))")
+  .replace("const e=A(\"FooterComponent\"),n=Ct(\"footerHeight\"),o=A(\"HeaderFooterTag\"),r=kt(b.useMemo(()=>i=>{n(i.getBoundingClientRect().height)", "const e=A(\"FooterComponent\"),n=Ct(\"footerHeight\"),o=A(\"HeaderFooterTag\"),r=kt(b.useMemo(()=>i=>{n(Et(i,\"height\"))")
+  .replace("v((u,g)=>u.getBoundingClientRect()[Lo[g]])", "v((u,g)=>Et(u,Lo[g]))");
+const extentRepair = source => navigationRepair(source)
   .replace("      cancelScrollToIndex: S,\n      scrollTargetReached: w,", "      scrollTargetReached: w,")
   .replace("    { scrollToIndex: y, cancelScrollToIndex },", "    { scrollToIndex: y },")
   .replace("      scrollToIndex: y,\n      cancelScrollToIndex,", "      scrollToIndex: y,")
@@ -61,6 +74,13 @@ test('upgrades the previously installed cancellation patch without reinstalling'
 }));
 test('upgrades the extent repair while retaining internal index measurements', () => fixture(directory => {
   names.forEach((name, index) => writeFileSync(resolve(directory, 'dist', name), extentRepair(sources[index])));
+  assert.throws(() => patchReactVirtuoso(directory, true), /npm run postinstall/);
+  patchReactVirtuoso(directory);
+  patchReactVirtuoso(directory, true);
+  names.forEach((name, index) => assert.equal(readFileSync(resolve(directory, 'dist', name), 'utf8'), sources[index]));
+}));
+test('upgrades the navigation repair to one coherent fractional geometry model', () => fixture(directory => {
+  names.forEach((name, index) => writeFileSync(resolve(directory, 'dist', name), navigationRepair(sources[index])));
   assert.throws(() => patchReactVirtuoso(directory, true), /npm run postinstall/);
   patchReactVirtuoso(directory);
   patchReactVirtuoso(directory, true);
