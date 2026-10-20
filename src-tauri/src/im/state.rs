@@ -18,6 +18,7 @@ pub struct QuestionCallback {
 
 /// Pending approval waiting for user response
 pub(crate) struct PendingApproval {
+    pub(crate) requester_user_id: Option<String>,
     pub(crate) sidecar_port: u16,
     pub(crate) chat_id: String,
     pub(crate) card_message_id: String,

@@ -583,7 +583,6 @@ pub struct FeishuAdapter {
     /// Serializes token refresh to prevent concurrent refreshes
     token_refresh_lock: Arc<tokio::sync::Mutex<()>>,
     msg_tx: mpsc::Sender<ImMessage>,
-    allowed_users: Arc<RwLock<Vec<String>>>,
     bot_name: Arc<RwLock<Option<String>>>,
     /// Message dedup cache: message_id → unix_timestamp_secs (72h TTL, disk-persisted)
     dedup_cache: Arc<Mutex<HashMap<String, u64>>>,
@@ -611,7 +610,6 @@ impl FeishuAdapter {
     pub fn new(
         config: &ImConfig,
         msg_tx: mpsc::Sender<ImMessage>,
-        allowed_users: Arc<RwLock<Vec<String>>>,
         approval_tx: mpsc::Sender<ApprovalCallback>,
         question_tx: mpsc::Sender<QuestionCallback>,
         dedup_path: Option<PathBuf>,
@@ -650,7 +648,6 @@ impl FeishuAdapter {
             token_cache: Arc::new(RwLock::new(None)),
             token_refresh_lock: Arc::new(tokio::sync::Mutex::new(())),
             msg_tx,
-            allowed_users,
             bot_name: Arc::new(RwLock::new(None)),
             dedup_cache: Arc::new(Mutex::new(dedup_cache)),
             dedup_persist_path: dedup_path,
@@ -1585,6 +1582,7 @@ impl FeishuAdapter {
         };
 
         Some(ImMessage {
+            access_admission: None,
             source_metadata: super::inbound_metadata::feishu(
                 message,
                 sender,
@@ -1610,15 +1608,6 @@ impl FeishuAdapter {
             request_id: String::new(),
             delivery_protocol: None,
         })
-    }
-
-    /// Check if a user is in the whitelist.
-    async fn is_allowed(&self, sender_id: &str) -> bool {
-        let allowed = self.allowed_users.read().await;
-        if allowed.is_empty() {
-            return false; // Empty whitelist = reject all
-        }
-        allowed.iter().any(|u| u == sender_id)
     }
 
     /// Get a header value from a protobuf frame by key.
@@ -2540,17 +2529,7 @@ impl FeishuAdapter {
                 }
             }
 
-            // Check bind code (plain text BIND_xxx in private chat)
-            let is_bind_request =
-                msg.text.starts_with("BIND_") && msg.source_type == ImSourceType::Private;
-
-            if !is_bind_request && !self.is_allowed(&msg.sender_id).await {
-                ulog_debug!(
-                    "[feishu] Rejected message from non-whitelisted user: {}",
-                    msg.sender_id
-                );
-                return;
-            }
+            // Current access policy is applied by the Channel owner.
 
             ulog_info!(
                 "[feishu] Dispatching message {} from {} (chat {}): {} chars",

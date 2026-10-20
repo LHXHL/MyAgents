@@ -6,35 +6,6 @@ static CHANNEL_LIFECYCLE_LOCKS: std::sync::LazyLock<
     std::sync::Mutex<HashMap<String, std::sync::Weak<Mutex<()>>>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
-/// Platform names are mutable display data, never legacy identity evidence.
-/// Preserve exact-ID permissions; a different ID always gets its own record.
-fn register_discovered_group(
-    permissions: &mut Vec<GroupPermission>,
-    discovered: GroupPermission,
-) -> bool {
-    if permissions
-        .iter()
-        .any(|group| group.group_id == discovered.group_id)
-    {
-        return false;
-    }
-    permissions.push(discovered);
-    true
-}
-
-/// Native adapters have already admitted private messages (Telegram also accepts
-/// usernames). Bridge plugins delegate admission to Rust; preserve their existing
-/// empty-list policy for both chat and management commands.
-fn private_message_allowed_after_adapter(
-    platform: &ImPlatform,
-    sender_id: &str,
-    allowed_users: &[String],
-) -> bool {
-    !matches!(platform, ImPlatform::OpenClaw(_))
-        || allowed_users.is_empty()
-        || allowed_users.iter().any(|user| user == sender_id)
-}
-
 fn short_session_id(value: &str) -> String {
     value.chars().take(8).collect()
 }
@@ -391,6 +362,67 @@ pub(crate) async fn stop_agent_channels_runtime(
             failures.join("; ")
         ))
     }
+}
+
+// A blacklist exemption remains tied to the exact pending request selected at admission.
+fn interaction_candidate_matches(
+    msg: &ImMessage,
+    request_id: &str,
+    approval: bool,
+    chat_id: &str,
+    requester: Option<&str>,
+    created_at: Instant,
+) -> bool {
+    msg.access_admission
+        .as_ref()
+        .and_then(|admission| admission.existing_interaction.as_ref())
+        .is_none_or(|scope| {
+            scope.matches(request_id, approval)
+                && chat_id == msg.chat_id
+                && requester == Some(msg.sender_id.as_str())
+                && created_at.elapsed() < Duration::from_secs(15 * 60)
+        })
+}
+
+fn pending_approval_for_message<'a>(
+    msg: &ImMessage,
+    pending: &'a HashMap<String, PendingApproval>,
+) -> Option<(&'a String, &'a PendingApproval)> {
+    pending.iter().find(|(rid, p)| {
+        p.chat_id == msg.chat_id
+            && interaction_candidate_matches(
+                msg,
+                rid,
+                true,
+                &p.chat_id,
+                p.requester_user_id.as_deref(),
+                p.created_at,
+            )
+    })
+}
+
+fn pending_question_for_message<'a>(
+    msg: &ImMessage,
+    pending: &'a HashMap<String, PendingQuestion>,
+) -> Option<(&'a String, &'a PendingQuestion)> {
+    pending
+        .iter()
+        .filter(|(rid, p)| {
+            p.chat_id == msg.chat_id
+                && !(p.source_type == ImSourceType::Group
+                    && p.requester_user_id
+                        .as_deref()
+                        .is_some_and(|id| id != msg.sender_id))
+                && interaction_candidate_matches(
+                    msg,
+                    rid,
+                    false,
+                    &p.chat_id,
+                    p.requester_user_id.as_deref(),
+                    p.created_at,
+                )
+        })
+        .max_by_key(|(_, p)| p.created_at)
 }
 
 fn uses_openclaw_reply_protocol(msg: &ImMessage) -> bool {
@@ -872,7 +904,6 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
         ImPlatform::Telegram => Arc::new(AnyAdapter::Telegram(Arc::new(TelegramAdapter::new(
             &config,
             msg_tx.clone(),
-            Arc::clone(&allowed_users),
             approval_tx.clone(),
             group_event_tx.clone(),
         )))),
@@ -884,7 +915,6 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
             Arc::new(AnyAdapter::Feishu(Arc::new(FeishuAdapter::new(
                 &config,
                 msg_tx.clone(),
-                Arc::clone(&allowed_users),
                 approval_tx.clone(),
                 question_tx.clone(),
                 dedup_path,
@@ -1182,6 +1212,9 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                 .await
                 .remove(&cb.request_id);
             if let Some(p) = pending {
+                if p.created_at.elapsed() >= Duration::from_secs(15 * 60) {
+                    continue;
+                }
                 // POST decision to Sidecar
                 let url = format!(
                     "http://127.0.0.1:{}/api/im/permission-response",
@@ -1266,6 +1299,9 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                         "[im] Ignoring AskUserQuestion callback from non-requester rid={}",
                         &cb.request_id[..cb.request_id.len().min(16)]
                     );
+                    continue;
+                }
+                if p.created_at.elapsed() >= Duration::from_secs(15 * 60) {
                     continue;
                 }
                 p.clone()
@@ -1630,7 +1666,35 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
             };
 
             tokio::select! {
-                Some(msg) = msg_rx.recv() => {
+                Some(mut msg) = msg_rx.recv() => {
+                    if msg.access_admission.is_none() {
+                        let command = model_commands::management_command(msg.text.trim());
+                        let plugin_command = matches!(adapter_for_reply.as_ref(), AnyAdapter::Bridge(bridge) if bridge.match_command(msg.text.trim()).is_some());
+                        let old_question = if command.is_none() && !plugin_command && !msg.text.trim().starts_with("BIND_") {
+                            pending_questions_for_loop.lock().await.iter().filter(|(_, pending)| pending.chat_id == msg.chat_id
+                                && pending.created_at.elapsed() < Duration::from_secs(15 * 60)
+                                && pending.requester_user_id.as_deref() == Some(msg.sender_id.as_str()))
+                                .max_by_key(|(_, pending)| pending.created_at)
+                                .map(|(rid, _)| super::access::ExistingInteraction::Question(rid.clone()))
+                        } else { None };
+                        let old_approval = if matches!(msg.text.trim(), "允许" | "同意" | "approve" | "始终允许" | "始终同意" | "always approve" | "拒绝" | "deny") {
+                            pending_approvals_for_loop.lock().await.iter().filter(|(_, pending)| pending.chat_id == msg.chat_id
+                                && pending.created_at.elapsed() < Duration::from_secs(15 * 60)
+                                && pending.requester_user_id.as_deref() == Some(msg.sender_id.as_str()))
+                                .max_by_key(|(_, pending)| pending.created_at)
+                                .map(|(rid, _)| super::access::ExistingInteraction::Approval(rid.clone()))
+                        } else { None };
+                        match super::access::admit_input(&app_clone, &bot_id_for_loop, &msg, plugin_command, old_approval.or(old_question)).await {
+                            Ok(Some(admission)) => msg.access_admission = Some(admission),
+                            Ok(None) => { complete_immediate_without_reply(adapter_for_reply.as_ref(), &msg).await; continue; }
+                            Err(error) => {
+                                ulog_error!("[im] Channel input admission failed: {}", error);
+                                let _ = send_immediate_reply(adapter_for_reply.as_ref(), &msg, "渠道配置读取或登记失败，请联系管理员重试。").await;
+                                continue;
+                            }
+                        }
+                    }
+
                     // Buffer media group messages
                     if let Some(ref group_id) = msg.media_group_id {
                         media_groups
@@ -1665,18 +1729,11 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                     let is_dingtalk_bind = text.starts_with("BIND_") && msg.platform == ImPlatform::Dingtalk;
                     let is_openclaw_bind = text.starts_with("BIND_") && matches!(msg.platform, ImPlatform::OpenClaw(_));
                     if is_telegram_bind || is_feishu_bind || is_dingtalk_bind || is_openclaw_bind {
-                        // If sender is already bound, silently ignore stale BIND_ messages
-                        // (Feishu may re-deliver old messages after bot restart clears dedup cache)
-                        let already_bound = {
-                            let users = allowed_users_for_loop.read().await;
-                            users.contains(&msg.sender_id)
-                        };
-                        if already_bound {
-                            ulog_debug!("[im] Ignoring stale BIND message from already-bound user {}", msg.sender_id);
+                        // Admission captured the disk-current qualification for this input.
+                        if msg.access_admission.as_ref().is_some_and(|admission| admission.sender_is_owner) {
                             complete_immediate_without_reply(adapter_for_reply.as_ref(), &msg).await;
                             continue;
                         }
-
                         let code = if is_telegram_bind {
                             text.strip_prefix("/start ").unwrap_or("")
                         } else {
@@ -1687,28 +1744,21 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                             let user_id_str = msg.sender_id.clone();
                             let display = msg.sender_name.clone().unwrap_or_else(|| user_id_str.clone());
 
-                            {
-                                let mut users = allowed_users_for_loop.write().await;
-                                if !users.contains(&user_id_str) {
-                                    users.push(user_id_str.clone());
-                                    ulog_info!("[im] User bound via QR: {} ({})", display, user_id_str);
+                            let newly_bound = match super::access::mutate(&bot_id_for_loop, super::access::AccessIntent::AddUser { user_id: user_id_str.clone() }).await {
+                                Ok(changed) => changed,
+                                Err(error) => {
+                                    ulog_error!("[im] Failed to persist binding: {}", error);
+                                    let _ = send_immediate_reply(adapter_for_reply.as_ref(), &msg, "绑定保存失败，请重试。").await;
+                                    continue;
                                 }
+                            };
+                            if !newly_bound {
+                                complete_immediate_without_reply(adapter_for_reply.as_ref(), &msg).await;
+                                continue;
                             }
-
-                            // Persist to config.json directly (doesn't rely on frontend being mounted)
-                            {
-                                let bid = bot_id_for_loop.clone();
-                                let new_users = allowed_users_for_loop.read().await.clone();
-                                tokio::task::spawn_blocking(move || {
-                                    let patch = BotConfigPatch {
-                                        allowed_users: Some(new_users),
-                                        ..Default::default()
-                                    };
-                                    if let Err(e) = persist_bot_config_patch(&bid, &patch) {
-                                        ulog_warn!("[im] Failed to persist bound user: {}", e);
-                                    }
-                                }).await.ok();
-                            }
+                            let mut users = allowed_users_for_loop.write().await;
+                            if !users.contains(&user_id_str) { users.push(user_id_str.clone()); }
+                            drop(users);
 
                             super::peer_names::apply_peer_names(
                                 &app_clone, &bot_id_for_loop, &group_permissions_for_loop,
@@ -1747,17 +1797,6 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
 
                     let command = model_commands::management_command(&text);
                     if msg.source_type == ImSourceType::Group && command.is_some() {
-                        complete_immediate_without_reply(adapter_for_reply.as_ref(), &msg).await;
-                        continue;
-                    }
-                    // Private commands and chat share the same admission boundary.
-                    // Public help/start and the bind flow retain their existing exemptions.
-                    if msg.source_type == ImSourceType::Private
-                        && !matches!(command, Some("/start" | "/help"))
-                        && !private_message_allowed_after_adapter(
-                            &msg.platform, &msg.sender_id, &allowed_users_for_loop.read().await,
-                        ) {
-                        ulog_info!("[im] Private message blocked by channel allowlist");
                         complete_immediate_without_reply(adapter_for_reply.as_ref(), &msg).await;
                         continue;
                     }
@@ -1937,9 +1976,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                         // Find the most recent pending approval for this chat
                         let pending_rid = {
                             let guard = pending_approvals_for_loop.lock().await;
-                            guard.iter()
-                                .find(|(_, p)| p.chat_id == chat_id)
-                                .map(|(rid, _)| rid.clone())
+                            pending_approval_for_message(&msg, &guard).map(|(rid, _)| rid.clone())
                         };
                         if let Some(request_id) = pending_rid {
                             ulog_info!("[im] Text approval command: decision={}, rid={}", decision, &request_id[..request_id.len().min(16)]);
@@ -1957,24 +1994,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                     // ── Text-based AskUserQuestion answers (fallback for free text / multi question) ──
                     let pending_question = {
                         let guard = pending_questions_for_loop.lock().await;
-                        let mut matches = guard
-                            .iter()
-                            .filter(|(_, p)| {
-                                p.chat_id == chat_id
-                                    && !(matches!(p.source_type, ImSourceType::Group)
-                                        && p.requester_user_id
-                                            .as_deref()
-                                            .is_some_and(|id| id != msg.sender_id))
-                            })
-                            .collect::<Vec<_>>();
-                        matches.sort_by_key(|(_, p)| p.created_at);
-                        if matches.len() > 1 {
-                            ulog_warn!(
-                                "[im] Multiple pending AskUserQuestion prompts in chat {}; routing text fallback to newest",
-                                chat_id
-                            );
-                        }
-                        matches.last().map(|(rid, p)| {
+                        pending_question_for_message(&msg, &guard).map(|(rid, p)| {
                             (rid.to_string(), p.questions.clone(), p.source_type.clone())
                         })
                     };
@@ -2017,6 +2037,13 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                         }
                     }
 
+                    // A callback can expire or be consumed while the config lock is awaited.
+                    // Its exemption never authorizes a replacement query.
+                    if msg.access_admission.as_ref().is_some_and(|admission| admission.existing_interaction.is_some()) {
+                        complete_immediate_without_reply(adapter_for_reply.as_ref(), &msg).await;
+                        continue;
+                    }
+
                     // Private admission happened before command dispatch. Group
                     // permission and activation remain independent of private commands.
                     let is_bridge_platform = matches!(msg.platform, ImPlatform::OpenClaw(_));
@@ -2047,11 +2074,11 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                         // Check if sender is a whitelisted user OR group is approved
                         let is_allowed_user = {
                             let users = allowed_users_for_loop.read().await;
-                            users.contains(&msg.sender_id)
+                            msg.access_admission.as_ref().map_or_else(|| users.contains(&msg.sender_id), |admission| admission.sender_is_owner)
                         };
                         let group_approved = {
                             let perms = group_permissions_for_loop.read().await;
-                            perms.iter().any(|g| g.group_id == msg.chat_id && g.status == GroupPermissionStatus::Approved)
+                            msg.access_admission.as_ref().map_or_else(|| perms.iter().any(|g| g.group_id == msg.chat_id && g.status == GroupPermissionStatus::Approved), |admission| admission.group_approved)
                         };
 
                         if !is_allowed_user && !group_approved {
@@ -2081,7 +2108,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                             AnyAdapter::Bridge(bridge) if bridge.match_command(&text).is_some()
                         );
                         let activation = group_activation_for_loop.read().await.clone();
-                        if activation == GroupActivation::Mention && !msg.is_mention && !is_plugin_command {
+                        if !msg.access_admission.as_ref().map_or(activation != GroupActivation::Mention || msg.is_mention || is_plugin_command, |admission| admission.triggered) {
                             // Mention-mode gate: log so a missing IsMention from a bridge
                             // plugin (the 0.2.16 wecom group bug) is diagnosable from
                             // unified-log alone instead of requiring source dives.
@@ -2711,25 +2738,25 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                 discovered_at: chrono::Utc::now().to_rfc3339(),
                                 added_by: added_by_name.clone(),
                             };
-                            {
-                                let mut perms = group_permissions_for_loop.write().await;
-                                if !register_discovered_group(&mut perms, perm.clone()) {
-                                    ulog_debug!("[im] Group {} already known, skipping BotAdded", chat_id);
-                                    continue;
-                                }
-                            }
-                            // Persist to config.json
                             let bid = bot_id_for_loop.clone();
-                            let new_perms = group_permissions_for_loop.read().await.clone();
-                            tokio::task::spawn_blocking(move || {
-                                let patch = BotConfigPatch {
-                                    group_permissions: Some(new_perms),
-                                    ..Default::default()
-                                };
-                                if let Err(e) = persist_bot_config_patch(&bid, &patch) {
-                                    ulog_warn!("[im] Failed to persist group permission: {}", e);
-                                }
-                            });
+                            let saved = tokio::task::spawn_blocking(move || {
+                                let mut snapshot = Vec::<GroupPermission>::new();
+                                let mut notify = false;
+                                super::commands::mutate_bot_config(&bid, |channel, _| {
+                                    let already_discovered = channel.get("groupPermissions").and_then(serde_json::Value::as_array)
+                                        .is_some_and(|groups| groups.iter().any(|group| group.get("groupId").and_then(serde_json::Value::as_str) == Some(perm.group_id.as_str())));
+                                    super::access::discover_group(channel, &perm)?;
+                                    snapshot = serde_json::from_value(channel.get("groupPermissions").cloned().unwrap_or(json!([]))).map_err(|e| e.to_string())?;
+                                    let access: super::access::ChannelAccessConfig = serde_json::from_value(channel.clone()).map_err(|e| e.to_string())?;
+                                    notify = !already_discovered && access.access_mode != Some(super::access::AccessMode::Open) && !access.blocked_group_ids.contains(&perm.group_id) && snapshot.iter().any(|group| group.group_id == perm.group_id && group.status == GroupPermissionStatus::Pending);
+                                    Ok(())
+                                })?;
+                                Ok::<_, String>((snapshot, notify))
+                            }).await;
+                            let notify = match saved {
+                                Ok(Ok((snapshot, notify))) => { *group_permissions_for_loop.write().await = snapshot; notify },
+                                _ => { ulog_error!("[im] Failed to persist discovered group"); continue; }
+                            };
                             // Send prompt message to group
                             let bot_name = health_clone.get_state().await.bot_username
                                 .unwrap_or_else(|| "AI 助手".to_string());
@@ -2737,8 +2764,9 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                 "👋 你好！我是 {}。\n群聊授权申请已发送至管理员，授权后即可使用。\n已绑定的用户可直接 @我 提问。",
                                 bot_name,
                             );
-                            if let Err(e) = adapter_for_reply.send_message(&chat_id, &prompt_msg).await {
+                            if notify { if let Err(e) = adapter_for_reply.send_message(&chat_id, &prompt_msg).await {
                                 ulog_warn!("[im-cmd] send_message (group auth prompt) failed: {}", e);
+                            }
                             }
                             // Emit Tauri events
                             let _ = app_clone.emit("im:group-permission-changed", json!({
@@ -2762,18 +2790,9 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                 let session_key = format!("im:{}:group:{}", platform_for_loop, chat_id);
                                 group_history_for_loop.lock().await.clear(&session_key);
                             }
-                            // Persist
-                            let bid = bot_id_for_loop.clone();
-                            let new_perms = group_permissions_for_loop.read().await.clone();
-                            tokio::task::spawn_blocking(move || {
-                                let patch = BotConfigPatch {
-                                    group_permissions: Some(new_perms),
-                                    ..Default::default()
-                                };
-                                if let Err(e) = persist_bot_config_patch(&bid, &patch) {
-                                    ulog_warn!("[im] Failed to persist group removal: {}", e);
-                                }
-                            });
+                            if let Err(error) = super::access::mutate(&bot_id_for_loop, super::access::AccessIntent::RemoveGroup { group_id: chat_id.clone() }).await {
+                                ulog_error!("[im] Failed to persist group removal: {}", error);
+                            }
                             let _ = app_clone.emit("im:group-permission-changed", json!({
                                 "botId": bot_id_for_loop,
                                 "event": "removed",
@@ -3223,31 +3242,6 @@ fn merge_media_group(mut messages: Vec<ImMessage>) -> ImMessage {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn private_chat_and_commands_preserve_platform_admission() {
-        let bridge = ImPlatform::OpenClaw("openclaw-weixin".into());
-        assert!(private_message_allowed_after_adapter(&bridge, "peer", &[]));
-        assert!(private_message_allowed_after_adapter(
-            &bridge, "peer", &["peer".into()]
-        ));
-        assert!(!private_message_allowed_after_adapter(
-            &bridge, "other", &["peer".into()]
-        ));
-        // The adapter accepted Telegram's case-insensitive username. Its numeric
-        // sender ID must not be subjected to a second, incompatible comparison.
-        assert!(private_message_allowed_after_adapter(
-            &ImPlatform::Telegram, "123", &["Alice".into()]
-        ));
-        // Native adapters retain their own admission policy; this layer cannot
-        // reinterpret an empty list or add a command-only restriction.
-        assert!(private_message_allowed_after_adapter(
-            &ImPlatform::Feishu, "peer", &[]
-        ));
-        assert!(private_message_allowed_after_adapter(
-            &ImPlatform::Dingtalk, "peer", &[]
-        ));
-    }
-
-    #[test]
     fn refreshed_group_name_cannot_transfer_approval_to_another_id() {
         use super::super::peer_names::{merge_peer_names, PeerDisplayName, PeerKind};
         let mut config = serde_json::json!({"groupPermissions": [{
@@ -3262,8 +3256,6 @@ mod tests {
                 name: "group-b".into(),
             }],
         );
-        let mut permissions: Vec<GroupPermission> =
-            serde_json::from_value(config["groupPermissions"].clone()).unwrap();
         let discovered = GroupPermission {
             group_id: "group-b".into(),
             group_name: "Team B".into(),
@@ -3272,11 +3264,10 @@ mod tests {
             discovered_at: "2026-10-18".into(),
             added_by: None,
         };
-        assert!(register_discovered_group(
-            &mut permissions,
-            discovered.clone()
-        ));
-        assert!(!register_discovered_group(&mut permissions, discovered));
+        super::super::access::discover_group(&mut config, &discovered).unwrap();
+        super::super::access::discover_group(&mut config, &discovered).unwrap();
+        let permissions: Vec<GroupPermission> =
+            serde_json::from_value(config["groupPermissions"].clone()).unwrap();
         assert_eq!(permissions.len(), 2);
         assert_eq!(permissions[0].group_id, "group-a");
         assert_eq!(permissions[0].status, GroupPermissionStatus::Approved);
@@ -3288,6 +3279,118 @@ mod tests {
     use crate::im::types::{AskUserQuestionOption, PeerSession};
     use axum::{routing::post, Json, Router as AxumRouter};
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn interaction_message() -> ImMessage {
+        serde_json::from_value::<types::BufferedMessage>(json!({
+            "chat_id":"chat", "message_id":"message", "text":"approve", "sender_id":"user-1",
+            "source_type":"group", "platform":"openclaw:custom", "timestamp":"2026-10-20T00:00:00Z", "retry_count":0
+        })).unwrap().to_im_message()
+    }
+
+    #[test]
+    fn pinned_interactions_cannot_select_replacements_other_requesters_or_expired_requests() {
+        use super::super::access::{ExistingInteraction, InputAdmission};
+        let mut msg = interaction_message();
+        msg.access_admission = Some(InputAdmission {
+            sender_is_owner: true,
+            group_approved: true,
+            triggered: true,
+            existing_interaction: Some(ExistingInteraction::Question("original".into())),
+        });
+        let question = PendingQuestion {
+            sidecar_port: 1,
+            chat_id: "chat".into(),
+            card_message_id: "card".into(),
+            requester_user_id: Some("user-1".into()),
+            source_type: ImSourceType::Group,
+            questions: vec![],
+            created_at: Instant::now(),
+        };
+        let mut questions = HashMap::from([
+            ("original".into(), question.clone()),
+            ("replacement".into(), question.clone()),
+        ]);
+        assert_eq!(
+            pending_question_for_message(&msg, &questions).unwrap().0,
+            "original"
+        );
+        questions.remove("original");
+        assert!(pending_question_for_message(&msg, &questions).is_none());
+        let mut expired = question.clone();
+        expired.created_at = Instant::now() - Duration::from_secs(15 * 60);
+        questions.insert("original".into(), expired);
+        assert!(pending_question_for_message(&msg, &questions).is_none());
+        let mut other = question;
+        other.requester_user_id = Some("other-user".into());
+        questions.insert("original".into(), other);
+        assert!(pending_question_for_message(&msg, &questions).is_none());
+        let mut approvals = HashMap::from([(
+            "approval".into(),
+            PendingApproval {
+                sidecar_port: 1,
+                chat_id: "chat".into(),
+                card_message_id: "card".into(),
+                created_at: Instant::now(),
+                requester_user_id: Some("user-1".into()),
+            },
+        )]);
+        assert!(pending_approval_for_message(&msg, &approvals).is_none());
+        msg.access_admission.as_mut().unwrap().existing_interaction =
+            Some(ExistingInteraction::Approval("approval".into()));
+        assert!(pending_approval_for_message(&msg, &approvals).is_some());
+        approvals.get_mut("approval").unwrap().created_at =
+            Instant::now() - Duration::from_secs(15 * 60);
+        assert!(pending_approval_for_message(&msg, &approvals).is_none());
+    }
+
+    #[tokio::test]
+    async fn rejected_bridge_input_and_expired_callback_settle_exact_dispatch_without_platform_reply(
+    ) {
+        use super::super::access::{admit, ExistingInteraction};
+        let operations = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let recorded = operations.clone();
+        let app = AxumRouter::new().route(
+            "/complete-dispatch",
+            post(move |Json(body): Json<serde_json::Value>| {
+                let recorded = recorded.clone();
+                async move {
+                    recorded.lock().await.push(body);
+                    Json(json!({"ok":true}))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tauri::async_runtime::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let adapter = bridge::BridgeAdapter::new("custom".into(), port);
+        let mut msg = interaction_message();
+        msg.request_id = "blocked-query".into();
+        msg.delivery_protocol = Some(types::ImDeliveryProtocol::OpenClawReply);
+        let mut channel = json!({"accessMode":"open", "blockedUserIds":["user-1"]});
+        assert!(admit(&mut channel, &msg, false, None).unwrap().is_none());
+        complete_immediate_without_reply(&adapter, &msg).await;
+        msg.request_id = "old-callback".into();
+        msg.access_admission = admit(
+            &mut channel,
+            &msg,
+            false,
+            Some(ExistingInteraction::Approval("gone".into())),
+        )
+        .unwrap();
+        assert!(pending_approval_for_message(&msg, &HashMap::new()).is_none());
+        // This follows the same terminal path after an existing interaction disappeared.
+        complete_immediate_without_reply(&adapter, &msg).await;
+        assert_eq!(
+            *operations.lock().await,
+            vec![
+                json!({"requestId":"blocked-query","finalPayloads":[]}),
+                json!({"requestId":"old-callback","finalPayloads":[]})
+            ]
+        );
+        server.abort();
+    }
 
     fn rotation_peer(session_key: &str, session_id: &str, sidecar_port: u16) -> PeerSession {
         let (source_type, source_id) = super::router::parse_session_key(session_key);
@@ -3310,6 +3413,7 @@ mod tests {
     #[test]
     fn album_preserves_constituent_source_ids_and_times_without_changing_route() {
         let message = |id: &str, second: i64| ImMessage {
+            access_admission: None,
             source_metadata: crate::im::types::ImSourceMetadata {
                 platform_message_id: Some(id.into()),
                 sent_at: chrono::DateTime::from_timestamp(second, 0),

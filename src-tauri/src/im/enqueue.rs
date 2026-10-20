@@ -306,7 +306,10 @@ pub(super) async fn enqueue_to_sidecar(
             Some(users) if !users.is_empty() => users.contains(&msg.sender_id),
             _ => false,
         };
-        body["senderIsOwner"] = json!(is_owner);
+        body["senderIsOwner"] = json!(msg
+            .access_admission
+            .as_ref()
+            .map_or(is_owner, |admission| admission.sender_is_owner));
     }
 
     let url = format!("http://127.0.0.1:{}/api/im/enqueue", port);
@@ -353,6 +356,7 @@ mod tests {
 
     fn test_group_message() -> ImMessage {
         ImMessage {
+            access_admission: None,
             source_metadata: Default::default(),
             chat_id: "group-1".to_string(),
             message_id: "message-1".to_string(),

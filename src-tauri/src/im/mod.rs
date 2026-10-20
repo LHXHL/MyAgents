@@ -1,12 +1,13 @@
 // IM Bot integration module
 // Manages the Telegram Bot lifecycle, routing IM messages to AI Sidecars.
 
+pub(crate) mod access;
 pub mod adapter;
 pub(crate) mod agent_channel;
 pub mod bridge;
 pub mod buffer;
-pub(crate) mod channel_messaging;
 pub(crate) mod channel_handoff;
+pub(crate) mod channel_messaging;
 pub(crate) mod commands;
 pub(crate) mod config_store;
 pub(crate) mod credential_provisioning;
@@ -57,7 +58,6 @@ pub use agent_channel::{get_all_bots_status, get_im_bot_status, start_im_bot, st
 pub(crate) use agent_channel::{stop_agent_channel_runtime, stop_agent_channels_runtime};
 use bridge::BridgeAdapter;
 use buffer::MessageBuffer;
-use commands::persist_bot_config_patch;
 pub(crate) use commands::reload_agent_config_from_disk;
 #[allow(unused_imports, deprecated)]
 pub use commands::{

@@ -35,6 +35,8 @@ import DingtalkCredentialInput from '../../ImSettings/components/DingtalkCredent
 import BindQrPanel from '../../ImSettings/components/BindQrPanel';
 import BindCodePanel from '../../ImSettings/components/BindCodePanel';
 import WhitelistManager from '../../ImSettings/components/WhitelistManager';
+import { ChannelAccessMode } from './ChannelAccessPanel';
+import { mutateChannelAccess } from '@/config/services/agentConfigService';
 import type { AgentConfig, ChannelConfig, ChannelType } from '../../../../shared/types/agent';
 import type { InstalledPlugin } from '../../../../shared/types/im';
 import type { ChannelStatusData } from '@/hooks/useAgentStatuses';
@@ -235,6 +237,8 @@ export default function ChannelWizard({
     const channelCreatedRef = useRef(false);
     const channelSaveInFlightRef = useRef<Promise<ChannelConfig> | null>(null);
     const cancelRequestedRef = useRef(false);
+    const [accessMode, setAccessMode] = useState<ChannelConfig['accessMode']>();
+    const [accessSaving, setAccessSaving] = useState(false);
     const [allowedUsers, setAllowedUsers] = useState<string[]>([]);
     const [botStatus, setBotStatus] = useState<ChannelStatusData | null>(null);
     const [permJsonCopied, setPermJsonCopied] = useState(false);
@@ -475,6 +479,15 @@ export default function ChannelWizard({
         return () => clearInterval(interval);
     }, [step, bindingStep, channelId, agent.id]);
 
+    // The disk snapshot includes auto-registration and edits from other surfaces.
+    useEffect(() => {
+        const persisted = config.agents?.find(candidate => candidate.id === agent.id)?.channels?.find(channel => channel.id === channelId);
+        if (persisted) setAllowedUsers(previous => {
+            const next = persisted.allowedUsers ?? [];
+            return previous.length === next.length && previous.every((id, index) => id === next[index]) ? previous : next;
+        });
+    }, [config.agents, agent.id, channelId]);
+
     // Listen for user-bound events
     useEffect(() => {
         if (step !== bindingStep || !isTauriEnvironment()) return;
@@ -541,6 +554,7 @@ export default function ChannelWizard({
                 type: platform,
                 name: pluginName,
                 enabled: true,
+                ...(accessMode ? { accessMode } : {}),
                 allowedUsers: provisionedAllowedUserId ? [provisionedAllowedUserId] : [],
                 setupCompleted: false,
                 openclawPluginId: openclawPluginId,
@@ -559,10 +573,11 @@ export default function ChannelWizard({
             feishuAppSecret: isFeishu ? feishuAppSecret.trim() : undefined,
             dingtalkClientId: isDingtalk ? dingtalkClientId.trim() : undefined,
             dingtalkClientSecret: isDingtalk ? dingtalkClientSecret.trim() : undefined,
+            ...(accessMode ? { accessMode } : {}),
             allowedUsers: [],
             setupCompleted: false,
         };
-    }, [channelId, platform, isFeishu, isDingtalk, isOpenClaw, isDualConfig, dualConfigMode, provisionedConfigValues, provisionedAllowedUserId, botToken, feishuAppId, feishuAppSecret, dingtalkClientId, dingtalkClientSecret, openclawPluginId, promoted, installedPlugin, buildOpenclawConfig]);
+    }, [accessMode, channelId, platform, isFeishu, isDingtalk, isOpenClaw, isDualConfig, dualConfigMode, provisionedConfigValues, provisionedAllowedUserId, botToken, feishuAppId, feishuAppSecret, dingtalkClientId, dingtalkClientSecret, openclawPluginId, promoted, installedPlugin, buildOpenclawConfig]);
 
     // Start channel via shared utility (resolves MCP + overrides)
     const startChannel = useCallback(async (channelCfg: ChannelConfig) => {
@@ -834,21 +849,37 @@ export default function ChannelWizard({
         }
     }, [hasCredentials, isFeishu, isDingtalk, isOpenClaw, step, botToken, feishuAppId, dingtalkClientId, channelId, platform, agent, config.agents, buildChannelConfig, startChannel, refreshConfig, t, persistWizardChannel]);
 
-    // Complete wizard — merge local users with any Rust-persisted users
-    const handleComplete = useCallback(async () => {
-        await modifyAgentChannelConfig(agent.id, channelId, ch => {
-            if (cancelRequestedRef.current) throw new Error('Channel setup was cancelled');
-            return {
-                ...ch,
-                setupCompleted: true,
-                allowedUsers: [...new Set([...(ch.allowedUsers ?? []), ...allowedUsers])],
-            };
-        });
-        await refreshConfig();
+    // Qualification edits are ID intents; finishing never replays a stale list.
+    const handleUsersChange = async (next: string[]) => {
+        if (accessSaving) return;
+        setAccessSaving(true);
+        try {
+            for (const userId of next.filter(id => !allowedUsers.includes(id))) {
+                await mutateChannelAccess(channelId, { kind: 'addUser', userId });
+            }
+            for (const userId of allowedUsers.filter(id => !next.includes(id))) {
+                await mutateChannelAccess(channelId, { kind: 'removeUser', userId });
+            }
+            setAllowedUsers(next);
+            await refreshConfig();
+        } catch (error) { toastRef.current.error(String(error)); }
+        finally { if (isMountedRef.current) setAccessSaving(false); }
+    };
 
-        track('agent_channel_create', { source: 'desktop', platform });
-        if (isMountedRef.current) onComplete(channelId);
-    }, [agent.id, channelId, allowedUsers, platform, onComplete, refreshConfig]);
+    const handleComplete = useCallback(async () => {
+        if (accessSaving) return;
+        setAccessSaving(true);
+        try {
+            await modifyAgentChannelConfig(agent.id, channelId, ch => {
+                if (cancelRequestedRef.current) throw new Error('Channel setup was cancelled');
+                return { ...ch, setupCompleted: true };
+            });
+            await refreshConfig();
+            track('agent_channel_create', { source: 'desktop', platform });
+            if (isMountedRef.current) onComplete(channelId);
+        } catch (error) { toastRef.current.error(String(error)); }
+        finally { if (isMountedRef.current) setAccessSaving(false); }
+    }, [accessSaving, agent.id, channelId, platform, onComplete, refreshConfig]);
 
     // Cancel wizard - remove desired config before stopping the runtime.
     const handleCancel = useCallback(async () => {
@@ -1833,9 +1864,19 @@ export default function ChannelWizard({
 
             {/* Binding step (all platforms) */}
             {step === bindingStep && (
-                <div className="space-y-6">
+                <fieldset disabled={accessSaving} className="space-y-6">
+                    <ChannelAccessMode value={accessMode} disabled={accessSaving} onChange={mode => {
+                        if (accessSaving) return;
+                        if (!channelCreatedRef.current) { setAccessMode(mode); return; }
+                        setAccessSaving(true);
+                        void mutateChannelAccess(channelId, { kind: 'setMode', mode }).then(async () => {
+                            setAccessMode(mode); await refreshConfig();
+                        }).catch(error => { toastRef.current.error(String(error)); }).finally(() => { setAccessSaving(false); });
+                    }} />
+                    {accessMode === 'open' && <p className="text-sm text-[var(--ink-muted)]">{t('agentSettings.channelAccess.skipBinding')}</p>}
                     {/* Action bar at top */}
                     {renderActionBar({
+                        nextDisabled: accessSaving,
                         onBack: isQrLogin ? undefined : () => setStep((isFeishu || isDingtalk || isOpenClaw) ? 2 : 1),
                         onNext: handleComplete,
                         nextLabel: t('agentSettings.channelWizard.nav.finish'),
@@ -1872,7 +1913,7 @@ export default function ChannelWizard({
                             <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
                                 <WhitelistManager
                                     users={allowedUsers}
-                                    onChange={setAllowedUsers}
+                                    onChange={next => { void handleUsersChange(next); }}
                                     platform={platform}
                                 />
                             </div>
@@ -1883,12 +1924,12 @@ export default function ChannelWizard({
                         <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
                             <WhitelistManager
                                 users={allowedUsers}
-                                onChange={setAllowedUsers}
+                                onChange={next => { void handleUsersChange(next); }}
                                 platform={platform}
                             />
                         </div>
                     )}
-                </div>
+                </fieldset>
             )}
         </div>
     );

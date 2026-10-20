@@ -11,8 +11,14 @@ export default function GroupPermissionList({
     onApprove,
     onReject,
     onRemove,
+    blockedGroupIds = [],
+    onBlockChange,
+    openAccess = false,
 }: {
     permissions: GroupPermission[];
+    blockedGroupIds?: string[];
+    onBlockChange?: (groupId: string, blocked: boolean) => Promise<void>;
+    openAccess?: boolean;
     onApprove: (groupId: string) => Promise<void>;
     onReject: (groupId: string) => Promise<void>;
     onRemove: (groupId: string) => Promise<void>;
@@ -21,9 +27,10 @@ export default function GroupPermissionList({
     const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
     const [loading, setLoading] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
+    const [blockedOnly, setBlockedOnly] = useState(false);
 
-    const pending = permissions.filter(p => p.status === 'pending');
-    const approved = permissions.filter(p => p.status === 'approved');
+    const pending = permissions.filter(p => p.status === 'pending' && (!blockedOnly || blockedGroupIds.includes(p.groupId)));
+    const approved = permissions.filter(p => p.status === 'approved' && (!blockedOnly || blockedGroupIds.includes(p.groupId)));
 
     const handleAction = async (action: () => Promise<void>, groupId: string) => {
         setLoading(groupId);
@@ -39,9 +46,16 @@ export default function GroupPermissionList({
         }
     };
 
+    const renderBlock = (groupId: string) => onBlockChange && <button type="button" disabled={loading !== null}
+        onClick={() => { void handleAction(() => onBlockChange(groupId, !blockedGroupIds.includes(groupId)), groupId); }}
+        className="rounded-md px-2 py-1 text-xs text-[var(--accent)] disabled:opacity-50">
+        {t(`agentSettings.channelAccess.${blockedGroupIds.includes(groupId) ? 'unblock' : 'block'}`)}
+    </button>;
     return (
         <div className="space-y-3">
             {/* Error display */}
+            {onBlockChange && <label className="flex items-center gap-2 text-xs text-[var(--ink-muted)]"><input type="checkbox" checked={blockedOnly} onChange={event => setBlockedOnly(event.target.checked)} />{t('agentSettings.channelAccess.blockedOnly')}</label>}
+            {blockedGroupIds.filter(id => !permissions.some(group => group.groupId === id)).map(id => <div key={id} className="flex items-center justify-between gap-2 rounded-lg bg-[var(--paper-inset)] px-3 py-2 text-sm text-[var(--ink)]"><span className="break-all">{id} · {t('agentSettings.channelAccess.blocked')}</span>{renderBlock(id)}</div>)}
             {error && (
                 <p className="text-xs text-[var(--error)]">{error}</p>
             )}
@@ -50,7 +64,7 @@ export default function GroupPermissionList({
             {pending.length > 0 && (
                 <div className="space-y-2">
                     <label className="text-xs font-medium text-[var(--warning)]">
-                        {t('agentSettings.imComponents.pendingReview')}
+                        {openAccess ? t('agentSettings.channelAccess.discovered') : t('agentSettings.imComponents.pendingReview')}
                     </label>
                     {pending.map(g => (
                         <div
@@ -58,16 +72,17 @@ export default function GroupPermissionList({
                             className="flex items-center justify-between rounded-lg border border-[var(--warning)]/20 bg-[var(--warning)]/5 px-3 py-2"
                         >
                             <div className="min-w-0 flex-1">
-                                <p className="truncate text-sm font-medium text-[var(--ink)]">{peerDisplayName(g.groupId, g.groupName)}</p>
+                                <p className="truncate text-sm font-medium text-[var(--ink)]">{peerDisplayName(g.groupId, g.groupName)}{blockedGroupIds.includes(g.groupId) && <span className="ml-2 text-xs text-[var(--error)]">{t('agentSettings.channelAccess.blocked')}</span>}</p>
                                 <p className="text-xs text-[var(--ink-muted)]">
                                     {getPlatformLabel(g.platform)}
                                     {g.addedBy && ` · ${t('agentSettings.imComponents.addedBy', { name: g.addedBy })}`}
                                 </p>
                             </div>
                             <div className="ml-3 flex items-center gap-1.5">
+                                {renderBlock(g.groupId)}
                                 <button
                                     onClick={() => handleAction(() => onApprove(g.groupId), g.groupId)}
-                                    disabled={loading === g.groupId}
+                                    disabled={loading !== null}
                                     className="rounded-md bg-[var(--accent)] p-1.5 text-[var(--on-accent)] transition-colors hover:bg-[var(--accent-warm-hover)] disabled:opacity-50"
                                     title={t('agentSettings.imComponents.allow')}
                                 >
@@ -75,7 +90,7 @@ export default function GroupPermissionList({
                                 </button>
                                 <button
                                     onClick={() => handleAction(() => onReject(g.groupId), g.groupId)}
-                                    disabled={loading === g.groupId}
+                                    disabled={loading !== null}
                                     className="rounded-md bg-[var(--paper-inset)] p-1.5 text-[var(--ink-muted)] transition-colors hover:text-[var(--error)] disabled:opacity-50"
                                     title={t('agentSettings.imComponents.reject')}
                                 >
@@ -99,12 +114,14 @@ export default function GroupPermissionList({
                             className="group flex items-center justify-between rounded-lg bg-[var(--paper-inset)] px-3 py-2"
                         >
                             <div className="min-w-0 flex-1">
-                                <p className="truncate text-sm text-[var(--ink)]">{peerDisplayName(g.groupId, g.groupName)}</p>
+                                <p className="truncate text-sm text-[var(--ink)]">{peerDisplayName(g.groupId, g.groupName)}{blockedGroupIds.includes(g.groupId) && <span className="ml-2 text-xs text-[var(--error)]">{t('agentSettings.channelAccess.blocked')}</span>}</p>
                                 <p className="text-xs text-[var(--ink-muted)]">
                                     {getPlatformLabel(g.platform)}
                                 </p>
                             </div>
+                            {renderBlock(g.groupId)}
                             <button
+                                disabled={loading !== null}
                                 onClick={() => setConfirmRemove(g.groupId)}
                                 className="ml-3 rounded-md p-1.5 text-[var(--ink-muted)] opacity-0 transition-all hover:text-[var(--error)] group-hover:opacity-100"
                                 title={t('agentSettings.imComponents.remove')}

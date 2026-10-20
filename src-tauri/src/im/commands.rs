@@ -53,6 +53,9 @@ pub async fn cmd_start_im_bot(
         .map(|(_, c)| c);
 
     let config = ImConfig {
+        access: existing
+            .map(|config| config.access.clone())
+            .unwrap_or_default(),
         message_delivery_mode: existing
             .map(|c| c.message_delivery_mode)
             .unwrap_or_default(),
@@ -752,29 +755,22 @@ pub async fn cmd_approve_group(
     let (group_perms, _group_history, adapter, _platform) =
         resolve_group_context(&imState, &agentState, &botId).await?;
 
-    // Update permission status to Approved
+    super::access::mutate(
+        &botId,
+        super::access::AccessIntent::ApproveGroup {
+            group_id: groupId.clone(),
+        },
+    )
+    .await?;
+    if let Some(group) = group_perms
+        .write()
+        .await
+        .iter_mut()
+        .find(|group| group.group_id == groupId)
     {
-        let mut perms = group_perms.write().await;
-        if let Some(p) = perms.iter_mut().find(|p| p.group_id == groupId) {
-            p.status = GroupPermissionStatus::Approved;
-        } else {
-            return Err(format!("Group {} not found in permissions", groupId));
-        }
+        group.status = GroupPermissionStatus::Approved;
     }
-
-    // Persist (lock-free)
-    let new_perms = group_perms.read().await.clone();
-    let bid = botId.clone();
     let gid = groupId.clone();
-    tokio::task::spawn_blocking(move || {
-        let patch = BotConfigPatch {
-            group_permissions: Some(new_perms),
-            ..Default::default()
-        };
-        persist_bot_config_patch(&bid, &patch)
-    })
-    .await
-    .map_err(|e| format!("spawn_blocking: {}", e))??;
 
     // Send confirmation message to group (lock-free)
     if let Err(e) = adapter
@@ -805,6 +801,13 @@ pub async fn cmd_reject_group(
     let (group_perms, group_history, _adapter, platform) =
         resolve_group_context(&imState, &agentState, &botId).await?;
 
+    super::access::mutate(
+        &botId,
+        super::access::AccessIntent::RemoveGroup {
+            group_id: groupId.clone(),
+        },
+    )
+    .await?;
     // Remove pending permission
     {
         let mut perms = group_perms.write().await;
@@ -814,19 +817,6 @@ pub async fn cmd_reject_group(
     // Clean up group history buffer
     let session_key = format!("im:{}:group:{}", platform, groupId);
     group_history.lock().await.clear(&session_key);
-
-    // Persist (lock-free)
-    let new_perms = group_perms.read().await.clone();
-    let bid = botId.clone();
-    tokio::task::spawn_blocking(move || {
-        let patch = BotConfigPatch {
-            group_permissions: Some(new_perms),
-            ..Default::default()
-        };
-        persist_bot_config_patch(&bid, &patch)
-    })
-    .await
-    .map_err(|e| format!("spawn_blocking: {}", e))??;
 
     let _ = app_handle.emit(
         "im:group-permission-changed",
@@ -849,6 +839,13 @@ pub async fn cmd_remove_group(
     let (group_perms, group_history, _adapter, platform) =
         resolve_group_context(&imState, &agentState, &botId).await?;
 
+    super::access::mutate(
+        &botId,
+        super::access::AccessIntent::RemoveGroup {
+            group_id: groupId.clone(),
+        },
+    )
+    .await?;
     // Remove approved permission
     {
         let mut perms = group_perms.write().await;
@@ -858,19 +855,6 @@ pub async fn cmd_remove_group(
     // Clean up group history buffer
     let session_key = format!("im:{}:group:{}", platform, groupId);
     group_history.lock().await.clear(&session_key);
-
-    // Persist (lock-free)
-    let new_perms = group_perms.read().await.clone();
-    let bid = botId.clone();
-    tokio::task::spawn_blocking(move || {
-        let patch = BotConfigPatch {
-            group_permissions: Some(new_perms),
-            ..Default::default()
-        };
-        persist_bot_config_patch(&bid, &patch)
-    })
-    .await
-    .map_err(|e| format!("spawn_blocking: {}", e))??;
 
     let _ = app_handle.emit(
         "im:group-permission-changed",

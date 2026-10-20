@@ -1594,6 +1594,31 @@
       "cardTemplateId": "卡片模板 ID",
       "cardTemplatePlaceholder": "请填入卡片模板 ID",
       "cardTemplateHint": "需在钉钉开放平台创建 AI 卡片模板后填入模板 ID。未填写时将自动降级为普通 Markdown 消息。"
+    },
+    "channelAccess": {
+      "mode": "使用模式",
+      "review": "审核使用",
+      "open": "自由使用",
+      "reviewDescription": "新私聊用户需要绑定，新群需要审核；已有资格保留。",
+      "openDescription": "无需先绑定或审批，实际使用时自动登记；可随时拉黑个人或群。",
+      "legacyDescription": "尚未设置，沿用当前渠道原有的接入规则。主动选择后采用所选模式。",
+      "users": "使用者",
+      "blockedOnly": "仅显示已拉黑",
+      "blocked": "已拉黑",
+      "block": "拉黑",
+      "unblock": "解除拉黑",
+      "remove": "移除资格",
+      "removeDescription": "自由使用时，移除资格后再次使用会重新登记。需要持续禁止使用请拉黑。",
+      "emptyUsers": "暂无使用者",
+      "userId": "平台用户 ID",
+      "blockById": "按 ID 拉黑",
+      "addUser": "添加资格",
+      "stableIdRequired": "请使用稳定的数字用户 ID 拉黑，不能按 Telegram 用户名拉黑。",
+      "savedRefreshFailed": "已保存，但配置刷新失败：",
+      "discovered": "已发现，尚未使用",
+      "skipBinding": "自由使用模式已启用，平台连接完成后即可使用，无需先绑定用户。",
+      "groups": "群聊",
+      "saved": "已保存"
     }
   },
   "resourceDetail": {

@@ -36,7 +36,8 @@ import {
 import BotTokenInput from '../../ImSettings/components/BotTokenInput';
 import FeishuCredentialInput from '../../ImSettings/components/FeishuCredentialInput';
 import DingtalkCredentialInput from '../../ImSettings/components/DingtalkCredentialInput';
-import WhitelistManager from '../../ImSettings/components/WhitelistManager';
+import ChannelAccessPanel from './ChannelAccessPanel';
+import { mutateChannelAccess } from '@/config/services/agentConfigService';
 import BindQrPanel from '../../ImSettings/components/BindQrPanel';
 import BindCodePanel from '../../ImSettings/components/BindCodePanel';
 import DingtalkCardConfig from '../../ImSettings/components/DingtalkCardConfig';
@@ -951,6 +952,8 @@ export default function ChannelDetailView({
                 />
             )}
 
+            <ChannelAccessPanel channel={channel} refresh={async () => { await refreshConfig(); onChanged(); }} />
+
             {/* User binding — all platforms including OpenClaw (Rust handles BIND codes) */}
             {(
             <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)]">
@@ -1039,23 +1042,7 @@ export default function ChannelDetailView({
                                 hasWhitelistUsers={(channel.allowedUsers?.length ?? 0) > 0}
                             />
                         )}
-                        {isQrLoginPlugin ? (
-                            <div className="space-y-3">
-                                <label className="text-sm font-medium text-[var(--ink)]">{t('agentSettings.channelDetail.userBinding')}</label>
-                                <p className="text-xs text-[var(--ink-muted)]">
-                                    {t('agentSettings.channelDetail.qrBindingOnly')}
-                                </p>
-                            </div>
-                        ) : (
-                            <WhitelistManager
-                                users={channel.allowedUsers ?? []}
-                                displayNames={channel.userDisplayNames}
-                                onChange={async (users) => {
-                                    await patchChannel({ allowedUsers: users });
-                                }}
-                                platform={channel.type}
-                            />
-                        )}
+
                     </div>
                 )}
             </div>
@@ -1168,6 +1155,12 @@ export default function ChannelDetailView({
                                 {/* Group list */}
                                 <GroupPermissionList
                                     permissions={groupPerms}
+                                    blockedGroupIds={channel.blockedGroupIds}
+                                    openAccess={channel.accessMode === 'open'}
+                                    onBlockChange={async (groupId, blocked) => {
+                                        await mutateChannelAccess(channelId, { kind: 'setGroupBlocked', groupId, blocked });
+                                        await refreshConfig(); onChanged();
+                                    }}
                                     onApprove={async (groupId) => {
                                         if (!isTauriEnvironment()) return;
                                         const { invoke } = await import('@tauri-apps/api/core');

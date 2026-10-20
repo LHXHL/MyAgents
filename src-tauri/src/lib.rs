@@ -651,6 +651,7 @@ pub fn run() {
             // IM Bot commands (non-deprecated survivors)
             im::commands::cmd_im_conversations,
             // Group permission commands (v0.1.28)
+            im::access::cmd_channel_access,
             im::commands::cmd_approve_group,
             im::commands::cmd_reject_group,
             im::commands::cmd_remove_group,

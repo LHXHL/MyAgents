@@ -117,6 +117,9 @@ export interface ChannelConfig {
   openclawEnabledToolGroups?: string[];
 
   // User management
+  accessMode?: 'review' | 'open';
+  blockedUserIds?: string[];
+  blockedGroupIds?: string[];
   allowedUsers?: string[];
   /** Display metadata only; authorization continues to use allowedUsers IDs. */
   userDisplayNames?: Record<string, string>;

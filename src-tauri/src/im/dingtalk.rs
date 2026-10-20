@@ -1142,6 +1142,7 @@ impl DingtalkAdapter {
         };
 
         let msg = ImMessage {
+            access_admission: None,
             source_metadata: super::inbound_metadata::dingtalk(&data),
             chat_id,
             message_id: msg_id.to_string(),

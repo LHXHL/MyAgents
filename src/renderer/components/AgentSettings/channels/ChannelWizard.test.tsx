@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { AgentConfig } from '../../../../shared/types/agent';
 import ChannelWizard from './ChannelWizard';
-import { modifyAgentChannelConfig } from '@/config/services/agentConfigService';
+import { modifyAgentChannelConfig, mutateChannelAccess } from '@/config/services/agentConfigService';
 
 const savedChannel = vi.hoisted(() => ({ current: undefined as unknown }));
 
@@ -25,6 +25,7 @@ vi.mock('@/config/services/agentConfigService', () => ({
     return savedChannel.current;
   }),
   invokeStartAgentChannel: vi.fn(),
+  mutateChannelAccess: vi.fn().mockResolvedValue(undefined),
 }));
 
 const agent: AgentConfig = {
@@ -145,4 +146,22 @@ describe('ChannelWizard Feishu credential provisioning', () => {
     await waitFor(() => expect(modify).toHaveBeenCalledTimes(2));
     expect(modify.mock.calls[1][3]).toMatchObject({ id: expect.any(String) });
   });
+  it('can explicitly open a connected channel and finish with no bound users', async () => {
+    savedChannel.current = undefined;
+    const complete = vi.fn();
+    render(<ChannelWizard agent={agent} platform="feishu" onComplete={complete} onCancel={vi.fn()} />);
+    fireEvent.change(screen.getByPlaceholderText('cli_xxxxxxxxxx'), { target: { value: 'cli_app' } });
+    fireEvent.change(screen.getByPlaceholderText('xxxxxxxxxxxxxxxxxxxxxxxx'), { target: { value: 'secret' } });
+    await waitFor(() => expect(screen.getByRole('button', { name: /下一步/ })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: /下一步/ }));
+    await waitFor(() => expect(screen.getByRole('button', { name: /下一步/ })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: /下一步/ }));
+    fireEvent.click(await screen.findByRole('button', { name: '自由使用' }));
+    await waitFor(() => expect(mutateChannelAccess).toHaveBeenCalledWith(expect.any(String), { kind: 'setMode', mode: 'open' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: /完成/ })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: /完成/ }));
+    await waitFor(() => expect(complete).toHaveBeenCalledOnce());
+    expect(savedChannel.current).toMatchObject({ setupCompleted: true, allowedUsers: [] });
+  });
+
 });
