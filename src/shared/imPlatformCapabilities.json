@@ -1,13 +1,13 @@
 {
-  "telegram": { "groups": "all", "prerequisite": "telegram" },
-  "feishu": { "groups": "all", "prerequisite": "feishu" },
-  "dingtalk": { "groups": "mention" },
-  "openclaw:feishu": { "groups": "all", "prerequisite": "feishu" },
-  "openclaw:openclaw-lark": { "groups": "all", "prerequisite": "feishu" },
-  "openclaw:openclaw-plugin-feishu": { "groups": "all", "prerequisite": "feishu" },
-  "openclaw:wecom": { "groups": "mention" },
-  "openclaw:wecom-openclaw-plugin": { "groups": "mention" },
-  "openclaw:qqbot": { "groups": "mention" },
-  "openclaw:weixin": { "groups": "none" },
-  "openclaw:openclaw-weixin": { "groups": "none" }
+  "telegram": {"groups": "all", "prerequisite": "telegram", "accessControl": true},
+  "feishu": {"groups": "all", "prerequisite": "feishu", "accessControl": true},
+  "dingtalk": {"groups": "mention", "accessControl": true},
+  "openclaw:feishu": {"groups": "all", "prerequisite": "feishu", "accessControl": true},
+  "openclaw:openclaw-lark": {"groups": "all", "prerequisite": "feishu", "accessControl": true},
+  "openclaw:openclaw-plugin-feishu": {"groups": "all", "prerequisite": "feishu", "accessControl": true},
+  "openclaw:wecom": {"groups": "mention", "accessControl": true},
+  "openclaw:wecom-openclaw-plugin": {"groups": "mention", "accessControl": true},
+  "openclaw:qqbot": {"groups": "mention", "accessControl": true},
+  "openclaw:weixin": {"groups": "none", "accessControl": false},
+  "openclaw:openclaw-weixin": {"groups": "none", "accessControl": false}
 }

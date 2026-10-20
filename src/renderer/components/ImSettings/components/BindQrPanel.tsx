@@ -59,16 +59,16 @@ export default function BindQrPanel({
                 <h3 className="text-sm font-semibold text-[var(--ink)]">
                     {t('agentSettings.imComponents.quickBindTitle')}
                 </h3>
-                {!hasWhitelistUsers && (
+                {!embedded && !hasWhitelistUsers && (
                     <span className="rounded-full bg-[var(--info-bg)] px-2 py-0.5 text-xs font-medium text-[var(--info)]">
                         {t('agentSettings.imComponents.recommended')}
                     </span>
                 )}
             </div>
 
-            <p className="mb-4 text-xs text-[var(--ink-muted)]">
+            {!embedded && <p className="mb-4 text-xs text-[var(--ink-muted)]">
                 {t('agentSettings.imComponents.qrBindDescription')}
-            </p>
+            </p>}
 
             <div className="flex items-start gap-5">
                 {/* QR Code */}

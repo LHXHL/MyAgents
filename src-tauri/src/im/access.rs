@@ -228,6 +228,11 @@ pub(super) fn admit(
     if existing_interaction.is_some() {
         return Ok(Some(accepted()));
     }
+    // WeChat is connected through its QR-authenticated account. Old generic
+    // settings remain on disk but cannot strand it behind now-hidden controls.
+    if !super::platform_capabilities::supports_access_control(&msg.platform) {
+        return Ok((!group).then(accepted));
+    }
     if snapshot.access.blocked_user_ids.contains(&msg.sender_id)
         || (group && snapshot.access.blocked_group_ids.contains(&msg.chat_id))
     {
@@ -388,6 +393,41 @@ mod tests {
             group_system_prompt: None,
             request_id: String::new(),
             delivery_protocol: None,
+        }
+    }
+
+    #[test]
+    fn qr_bound_wechat_ignores_historical_multi_user_access_settings() {
+        for plugin in ["weixin", "openclaw-weixin"] {
+            for mode in [None, Some("review"), Some("open")] {
+                let mut channel = json!({
+                    "allowedUsers": ["old-scanner"], "blockedUserIds": ["123"],
+                    "blockedGroupIds": ["chat-1"], "groupPermissions": []
+                });
+                if let Some(mode) = mode {
+                    channel["accessMode"] = json!(mode);
+                }
+                let original = channel.clone();
+                let input = message(ImPlatform::OpenClaw(plugin.into()), false, "hello");
+                let accepted = admit(&mut channel, &input, false, None).unwrap().unwrap();
+                assert!(!accepted.sender_is_owner); // No new tool-owner authority.
+                assert_eq!(channel, original); // No registration or destructive migration.
+                let group = message(ImPlatform::OpenClaw(plugin.into()), true, "hello");
+                assert!(admit(&mut channel, &group, false, None).unwrap().is_none());
+                assert_eq!(channel, original);
+            }
+            let mut bound = json!({"accessMode":"review", "allowedUsers":["123"]});
+            assert!(
+                admit(
+                    &mut bound,
+                    &message(ImPlatform::OpenClaw(plugin.into()), false, "hello"),
+                    false,
+                    None
+                )
+                .unwrap()
+                .unwrap()
+                .sender_is_owner
+            );
         }
     }
 

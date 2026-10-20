@@ -490,7 +490,8 @@ export default function ChannelDetailView({
         ),
         [installedPlugin?.manifest?.configSchema?.properties, promoted?.defaultConfig],
     );
-    const isQrLoginPlugin = promoted?.authType === 'qrLogin' || installedPlugin?.supportsQrLogin === true;
+    const supportsAccessControl = channel ? imPlatformCapabilities(channel.type).accessControl : true;
+    const isQrLoginPlugin = !supportsAccessControl || promoted?.authType === 'qrLogin' || installedPlugin?.supportsQrLogin === true;
     const isDualConfigPlugin = promoted?.authType === 'dualConfig';
     const credentialQrProvider = isDualConfigPlugin ? promoted?.credentialQrProvider : undefined;
 
@@ -952,7 +953,7 @@ export default function ChannelDetailView({
                 />
             )}
 
-            <ChannelAccessPanel channel={channel} refresh={async () => { await refreshConfig(); onChanged(); }} />
+            {supportsAccessControl && <ChannelAccessPanel channel={channel} refresh={async () => { await refreshConfig(); onChanged(); }} />}
 
             {/* User binding — all platforms including OpenClaw (Rust handles BIND codes) */}
             {(
@@ -966,7 +967,7 @@ export default function ChannelDetailView({
                 >
                     <div className="flex items-center gap-2">
                         <h3 className="text-sm font-semibold text-[var(--ink)]">{t('agentSettings.channelDetail.userManagement')}</h3>
-                        {!isBindingExpanded && hasUsers && (
+                        {!isBindingExpanded && supportsAccessControl && hasUsers && (
                             <span className="text-xs text-[var(--ink-muted)]">
                                 {t('agentSettings.channelDetail.usersCount', { count: channel.allowedUsers!.length })}
                             </span>
@@ -1030,7 +1031,7 @@ export default function ChannelDetailView({
                                 </div>
                             </div>
                         )}
-                        {isRunning && (channel.type === 'feishu' || channel.type === 'dingtalk' || (isOpenClaw && !isQrLoginPlugin)) && botStatus?.bindCode && (
+                        {channel.accessMode !== 'open' && isRunning && (channel.type === 'feishu' || channel.type === 'dingtalk' || (isOpenClaw && !isQrLoginPlugin)) && botStatus?.bindCode && (
                             <BindCodePanel
                                 embedded
                                 bindCode={botStatus.bindCode}
@@ -1038,7 +1039,7 @@ export default function ChannelDetailView({
                                 platformName={channel.type === 'dingtalk' ? '钉钉' : channel.type === 'feishu' ? '飞书' : (channel.name || t('agentSettings.channelDetail.pluginBot'))}
                             />
                         )}
-                        {isRunning && channel.type === 'telegram' && botStatus?.bindUrl && (
+                        {channel.accessMode !== 'open' && isRunning && channel.type === 'telegram' && botStatus?.bindUrl && (
                             <BindQrPanel
                                 embedded
                                 bindUrl={botStatus.bindUrl}
@@ -1046,13 +1047,13 @@ export default function ChannelDetailView({
                             />
                         )}
 
-                        {!isRunning && <div className="space-y-3">
+                        {!isRunning && (!supportsAccessControl || channel.accessMode !== 'open') && <div className="space-y-3">
                             <h3 className="text-sm font-semibold text-[var(--ink)]">{t(channel.type === 'telegram' ? 'agentSettings.imComponents.quickBindTitle' : isQrLoginPlugin ? 'agentSettings.channelDetail.scanLogin' : 'agentSettings.imComponents.bindCodeTitle')}</h3>
                             <p className="text-xs text-[var(--ink-muted)]">{t('agentSettings.channelDetail.bindingUnavailable')}</p>
                         </div>}
-                        <div className="border-t border-[var(--line)] pt-5">
+                        {supportsAccessControl && <div className={channel.accessMode !== 'open' ? 'border-t border-[var(--line)] pt-5' : undefined}>
                             <ChannelUserList channel={channel} refresh={async () => { await refreshConfig(); onChanged(); }} />
-                        </div>
+                        </div>}
                     </div>
             </div>
             )}

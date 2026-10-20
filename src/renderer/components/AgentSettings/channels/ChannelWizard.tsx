@@ -35,6 +35,7 @@ import DingtalkCredentialInput from '../../ImSettings/components/DingtalkCredent
 import BindQrPanel from '../../ImSettings/components/BindQrPanel';
 import BindCodePanel from '../../ImSettings/components/BindCodePanel';
 import WhitelistManager from '../../ImSettings/components/WhitelistManager';
+import { imPlatformCapabilities } from '../../../../shared/imPlatformCapabilities';
 import { ChannelAccessMode } from './ChannelAccessPanel';
 import { mutateChannelAccess } from '@/config/services/agentConfigService';
 import type { AgentConfig, ChannelConfig, ChannelType } from '../../../../shared/types/agent';
@@ -208,7 +209,8 @@ export default function ChannelWizard({
     // Feishu:   credentials(1) → permissions(2) → binding(3)
     // DingTalk: credentials(1) → permissions(2) → binding(3)
     // isQrLogin is computed below after installedPlugin state is declared
-    const isQrLoginFromPreset = promoted?.authType === 'qrLogin';
+    const supportsAccessControl = imPlatformCapabilities(platform).accessControl;
+    const isQrLoginFromPreset = !supportsAccessControl || promoted?.authType === 'qrLogin';
     const isDualConfig = promoted?.authType === 'dualConfig';
     const credentialQrProvider = isDualConfig ? promoted?.credentialQrProvider : undefined;
     const totalStepsBase = isQrLoginFromPreset ? 2 : isOpenClaw ? 3 : (isFeishu || isDingtalk) ? 3 : 2;
@@ -1865,15 +1867,14 @@ export default function ChannelWizard({
             {/* Binding step (all platforms) */}
             {step === bindingStep && (
                 <fieldset disabled={accessSaving} className="space-y-6">
-                    <ChannelAccessMode value={accessMode} disabled={accessSaving} onChange={mode => {
+                    {supportsAccessControl && <ChannelAccessMode platform={platform} value={accessMode} disabled={accessSaving} onChange={mode => {
                         if (accessSaving) return;
                         if (!channelCreatedRef.current) { setAccessMode(mode); return; }
                         setAccessSaving(true);
                         void mutateChannelAccess(channelId, { kind: 'setMode', mode }).then(async () => {
                             setAccessMode(mode); await refreshConfig();
                         }).catch(error => { toastRef.current.error(String(error)); }).finally(() => { setAccessSaving(false); });
-                    }} />
-                    {accessMode === 'open' && <p className="text-sm text-[var(--ink-muted)]">{t('agentSettings.channelAccess.skipBinding')}</p>}
+                    }} />}
                     {/* Action bar at top */}
                     {renderActionBar({
                         nextDisabled: accessSaving,
@@ -1883,7 +1884,7 @@ export default function ChannelWizard({
                         nextIcon: <CheckIcon className="h-4 w-4" />,
                     })}
 
-                    {(isFeishu || isDingtalk || (isOpenClaw && !isQrLogin)) ? (
+                    {accessMode !== 'open' && ((isFeishu || isDingtalk || (isOpenClaw && !isQrLogin)) ? (
                         botStatus?.bindCode && (
                             <BindCodePanel
                                 bindCode={botStatus.bindCode}
@@ -1918,9 +1919,9 @@ export default function ChannelWizard({
                                 />
                             </div>
                         </>
-                    )}
+                    ))}
 
-                    {(isFeishu || isDingtalk || (isOpenClaw && !isQrLogin)) && allowedUsers.length > 0 && (
+                    {accessMode !== 'open' && (isFeishu || isDingtalk || (isOpenClaw && !isQrLogin)) && allowedUsers.length > 0 && (
                         <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
                             <WhitelistManager
                                 users={allowedUsers}

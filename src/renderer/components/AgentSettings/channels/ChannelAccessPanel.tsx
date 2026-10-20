@@ -6,8 +6,8 @@ import { peerDisplayName } from '@/utils/peerDisplayName';
 
 type Mode = ChannelConfig['accessMode'];
 
-export function ChannelAccessMode({ value, disabled, onChange }: {
-  value: Mode; disabled?: boolean; onChange: (mode: NonNullable<Mode>) => void;
+export function ChannelAccessMode({ value, disabled, onChange, platform }: {
+  platform: string; value: Mode; disabled?: boolean; onChange: (mode: NonNullable<Mode>) => void;
 }) {
   const { t } = useTranslation('settings');
   return <fieldset disabled={disabled} className="space-y-2">
@@ -19,7 +19,7 @@ export function ChannelAccessMode({ value, disabled, onChange }: {
         {t(`agentSettings.channelAccess.${mode}`)}
       </button>)}
     </div>
-    <p className="text-xs text-[var(--ink-muted)]">{t(`agentSettings.channelAccess.${value ? `${value}Description` : 'legacyDescription'}`)}</p>
+    <p className="text-xs text-[var(--ink-muted)]">{t(`agentSettings.channelAccess.${value ? `${value}Description${value === 'review' && platform === 'telegram' ? 'Qr' : ''}` : 'legacyDescription'}`)}</p>
   </fieldset>;
 }
 
@@ -47,7 +47,7 @@ export default function ChannelAccessPanel({ channel, refresh }: AccessProps) {
   const { t } = useTranslation('settings');
   const { saving, error, run } = useAccessMutation(channel.id, refresh);
   return <section aria-label={t('agentSettings.channelAccess.mode')} className="space-y-4 rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5" aria-busy={saving}>
-    <ChannelAccessMode value={channel.accessMode} disabled={saving} onChange={mode => { void run({ kind: 'setMode', mode }); }} />
+    <ChannelAccessMode platform={channel.type} value={channel.accessMode} disabled={saving} onChange={mode => { void run({ kind: 'setMode', mode }); }} />
     {error && <p role="alert" className="text-xs text-[var(--error)]">{error}</p>}
   </section>;
 }

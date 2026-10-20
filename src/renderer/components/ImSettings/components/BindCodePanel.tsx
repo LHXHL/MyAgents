@@ -41,16 +41,16 @@ export default function BindCodePanel({
                 <h3 className="text-sm font-semibold text-[var(--ink)]">
                     {t('agentSettings.imComponents.bindCodeTitle')}
                 </h3>
-                {!hasWhitelistUsers && (
+                {!embedded && !hasWhitelistUsers && (
                     <span className="rounded-full bg-[var(--info-bg)] px-2 py-0.5 text-xs font-medium text-[var(--info)]">
                         {t('agentSettings.imComponents.recommended')}
                     </span>
                 )}
             </div>
 
-            <p className="mb-4 text-xs text-[var(--ink-muted)]">
+            {!embedded && <p className="mb-4 text-xs text-[var(--ink-muted)]">
                 {t('agentSettings.imComponents.bindCodeDescription', { platform: platformDisplayName })}
-            </p>
+            </p>}
 
             {/* Bind code display */}
             <div className="flex items-center gap-3">
@@ -67,7 +67,7 @@ export default function BindCodePanel({
             </div>
 
             {/* Instructions */}
-            <div className="mt-4 space-y-2 text-xs text-[var(--ink-muted)]">
+            {!embedded && <div className="mt-4 space-y-2 text-xs text-[var(--ink-muted)]">
                 <div className="flex items-start gap-2">
                     <span className="mt-0.5 flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full bg-[var(--button-primary-bg)] text-xs font-bold text-[var(--button-primary-text)]">1</span>
                     <span>{t('agentSettings.imComponents.bindCodeStepOpen', { platform: platformDisplayName })}</span>
@@ -80,7 +80,7 @@ export default function BindCodePanel({
                     <span className="mt-0.5 flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full bg-[var(--button-primary-bg)] text-xs font-bold text-[var(--button-primary-text)]">3</span>
                     <span>{t('agentSettings.imComponents.bindingStepDone')}</span>
                 </div>
-            </div>
+            </div>}
         </div>
     );
 }

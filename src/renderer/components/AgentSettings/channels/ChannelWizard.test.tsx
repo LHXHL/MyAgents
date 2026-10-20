@@ -1,14 +1,20 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AgentConfig } from '../../../../shared/types/agent';
 import ChannelWizard from './ChannelWizard';
 import { modifyAgentChannelConfig, mutateChannelAccess } from '@/config/services/agentConfigService';
 
+const runtime = vi.hoisted(() => ({ tauri: false, invoke: vi.fn() }));
+vi.mock('@tauri-apps/api/core', async original => ({ ...await original<typeof import('@tauri-apps/api/core')>(), invoke: runtime.invoke }));
+vi.mock('@/utils/tauriListen', () => ({ listenWithCleanup: vi.fn() }));
+beforeEach(() => { runtime.tauri = false; runtime.invoke.mockReset(); });
+afterEach(() => { Reflect.deleteProperty(window, '__TAURI_INTERNALS__'); });
+
 const savedChannel = vi.hoisted(() => ({ current: undefined as unknown }));
 
 vi.mock('@/analytics', () => ({ track: vi.fn() }));
-vi.mock('@/utils/browserMock', () => ({ isTauriEnvironment: () => false }));
+vi.mock('@/utils/browserMock', () => ({ isTauriEnvironment: () => runtime.tauri }));
 vi.mock('@/components/Toast', () => ({
   useToast: () => ({ success: vi.fn(), error: vi.fn(), info: vi.fn() }),
 }));
@@ -25,6 +31,7 @@ vi.mock('@/config/services/agentConfigService', () => ({
     return savedChannel.current;
   }),
   invokeStartAgentChannel: vi.fn(),
+  patchAgentChannelOpenClawConfig: vi.fn().mockResolvedValue(undefined),
   mutateChannelAccess: vi.fn().mockResolvedValue(undefined),
 }));
 
@@ -156,7 +163,7 @@ describe('ChannelWizard Feishu credential provisioning', () => {
     fireEvent.click(screen.getByRole('button', { name: /下一步/ }));
     await waitFor(() => expect(screen.getByRole('button', { name: /下一步/ })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: /下一步/ }));
-    fireEvent.click(await screen.findByRole('button', { name: '自由使用' }));
+    fireEvent.click(await screen.findByRole('button', { name: '自由模式' }));
     await waitFor(() => expect(mutateChannelAccess).toHaveBeenCalledWith(expect.any(String), { kind: 'setMode', mode: 'open' }));
     await waitFor(() => expect(screen.getByRole('button', { name: /完成/ })).toBeEnabled());
     fireEvent.click(screen.getByRole('button', { name: /完成/ }));
@@ -164,4 +171,29 @@ describe('ChannelWizard Feishu credential provisioning', () => {
     expect(savedChannel.current).toMatchObject({ setupCompleted: true, allowedUsers: [] });
   });
 
+});
+
+describe('ChannelWizard QR-bound WeChat', () => {
+  it.each(['openclaw:openclaw-weixin', 'openclaw:weixin'] as const)('finishes %s after scanning without modes or another user binding', async platform => {
+    runtime.tauri = true;
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { configurable: true, value: { invoke: runtime.invoke } });
+    savedChannel.current = undefined;
+    vi.mocked(mutateChannelAccess).mockClear();
+    runtime.invoke.mockImplementation(async command => {
+      if (command === 'cmd_list_openclaw_plugins') return [];
+      if (command === 'cmd_plugin_qr_login_start') return { ok: true, qrDataUrl: 'data:image/png;base64,AA==', sessionKey: 'fixture' };
+      if (command === 'cmd_plugin_qr_login_wait') return { ok: true, connected: true, accountId: 'fixture-account' };
+      return null;
+    });
+    const complete = vi.fn();
+    render(<ChannelWizard agent={agent} platform={platform} onComplete={complete} onCancel={vi.fn()} />);
+    const finish = await screen.findByRole('button', { name: /完成/ }, { timeout: 4000 });
+    expect(screen.queryByRole('button', { name: '白名单模式' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '自由模式' })).not.toBeInTheDocument();
+    expect(screen.queryByText('口令绑定')).not.toBeInTheDocument();
+    fireEvent.click(finish);
+    await waitFor(() => expect(complete).toHaveBeenCalledOnce());
+    expect(mutateChannelAccess).not.toHaveBeenCalled();
+    expect(savedChannel.current).not.toHaveProperty('accessMode');
+  });
 });

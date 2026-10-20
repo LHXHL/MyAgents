@@ -287,15 +287,17 @@ detached/new-session Goal需要独立parent/return-target设计，不能混入cu
 
 Channel credential、token、App Secret和provider env不得进入日志、analytics、Tauri event或错误正文。配置持久化方式的现实限制应由credential owner和安全设计统一解决，本文不维护“以后迁移”计划。
 
-### 10.1 使用模式与黑名单的入口边界
+### 10.1 权限模式与黑名单的入口边界
 
 `im/access.rs` 在同一 `mutate_bot_config` / config lock 内 fresh-read、裁决新消息并合并必要登记。`accessMode` 缺失保留真实平台旧语义：Telegram 私聊需要绑定（兼容数值 ID / username），群消息进入原群批准判断；原生飞书需要绑定，私聊绑定码例外；钉钉维持原准入；Bridge 私聊空名单放行、非空名单匹配，help/start 和绑定例外。打开设置或修改其他字段不补写模式。
 
-显式 `review` 统一为新私聊需绑定、群批准或已绑定成员例外；显式 `open` 在首条真实使用中将稳定 sender ID 写入原 `allowedUsers`，群有效触发还将原群记录批准。普通群发言、仅发现群、纯 help/start 不登记，平台 Mention/Always 能力仍生效。有效绑定保留；自动登记与绑定享有相同 `senderIsOwner`，没有新增权限等级。切换模式只写模式字段，不重置资格、封禁或 Session。
+界面将 `review` 称为“白名单模式”、`open` 称为“自由模式”，持久化值不变。显式 `review` 统一为新私聊需绑定、群批准或已绑定成员例外；显式 `open` 在首条真实使用中将稳定 sender ID 写入原 `allowedUsers`，群有效触发还将原群记录批准。普通群发言、仅发现群、纯 help/start 不登记，平台 Mention/Always 能力仍生效。有效绑定保留；自动登记与绑定享有相同 `senderIsOwner`，没有新增权限等级。切换模式只写模式字段，不重置资格、封禁或 Session。
 
 `blockedUserIds` 对本 Channel 的私聊及全部群生效，`blockedGroupIds` 对该群全部成员生效；任一命中先于绑定/群批准/自动登记拒绝，Bridge 通过原 dispatcher terminal 静默结算，不进入群历史、命令或 AI。黑名单与资格正交，解除一项不会解除另一项。设置提交 ID intent，绑定、发现和群审批也按最新集合合并；发现事件不能把已批准群降回 pending。缺失字段兼容旧数据，未知模式/损坏集合报错，不开放兜底。
 
 准入发生在新消息分流、媒体聚合和 Session 准备之前；结果作为 `ImMessage.access_admission` 固化本次 sender qualification、群批准和触发事实，并随 `BufferedMessage` 保留。媒体合并重入沿原受理事实；原缓冲重放/Node 队列/Runtime 启动与执行不再查询黑名单。保存封禁只影响锁顺序在后的新 query，不撤回之前已受理的请求、历史或回复。旧请求的权限/提问沿既有 callback 继续，文本 fallback 固化精确 pending request ID / 类型，并在消费时复核同一请求、requester 和有效期；已消失或过期则静默结算，不能改选其它请求或运行新绑定/命令。Telegram 长消息聚合也要求发送者 ID 相同，不能将被封禁者的分片并入他人的请求。其他人引用的正文照常处理，不做跨发送者内容过滤。
+
+微信 `openclaw:weixin` / `openclaw:openclaw-weixin` 在共享平台能力表声明 `accessControl: false`：只展示扫码连接，不展示多人权限、私聊名单或群管理；Rust 准入不应用旧通用模式/名单/封禁，也不自动登记或清除这些历史配置，保留既有 sender owner 计算。该路径依赖平台扫码认证，不新增 MyAgents 对不同发送者的身份绑定保证；generic QR 支持本身不意味着其它插件也豁免准入。企微和飞书继续支持两种模式。
 
 模式及个人/群封禁可离线保存；保存成功后新入站读取磁盘，不依赖迟到的 Runtime 配置投影。已存在的 Task/Goal/Heartbeat 仍按其自身生命周期执行及发送，默认主动通知对象继续沿当前规则选择。
 

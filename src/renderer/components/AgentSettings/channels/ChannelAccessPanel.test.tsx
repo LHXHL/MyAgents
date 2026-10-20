@@ -10,12 +10,22 @@ const channel: ChannelConfig = { id: 'channel-1', type: 'telegram', enabled: fal
 beforeEach(() => { mutate.mockReset().mockResolvedValue(undefined); });
 
 describe('channel access controls', () => {
+  it('shows concise mode-specific guidance and Telegram QR instructions', () => {
+    const { rerender } = render(<ChannelAccessPanel channel={{ ...channel, type: 'openclaw:wecom', accessMode: 'review' }} refresh={vi.fn()} />);
+    expect(screen.getByText('使用的用户发送下方的口令完成绑定加入白名单')).toBeInTheDocument();
+    rerender(<ChannelAccessPanel channel={{ ...channel, accessMode: 'review' }} refresh={vi.fn()} />);
+    expect(screen.getByText('使用的用户扫描下方二维码完成绑定加入白名单')).toBeInTheDocument();
+    rerender(<ChannelAccessPanel channel={{ ...channel, accessMode: 'open' }} refresh={vi.fn()} />);
+    expect(screen.getByText('无需绑定，直接使用。')).toBeInTheDocument();
+    expect(screen.queryByText(/完成绑定加入白名单/)).not.toBeInTheDocument();
+  });
+
   it('keeps missing mode unset until an explicit selection, including review', async () => {
     const refresh = vi.fn().mockResolvedValue(undefined);
     render(<ChannelAccessPanel channel={channel} refresh={refresh} />);
-    expect(screen.getByText(/尚未设置，沿用当前渠道/)).toBeInTheDocument();
+    expect(screen.getByText(/未设置，沿用原有/)).toBeInTheDocument();
     expect(mutate).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: '审核使用' }));
+    fireEvent.click(screen.getByRole('button', { name: '白名单模式' }));
     await waitFor(() => expect(refresh).toHaveBeenCalledOnce());
     expect(mutate).toHaveBeenCalledWith('channel-1', { kind: 'setMode', mode: 'review' });
   });
@@ -25,13 +35,13 @@ describe('channel access controls', () => {
     mutate.mockImplementation(() => new Promise((_resolve, failure) => { reject = failure; }));
     const refresh = vi.fn();
     render(<ChannelAccessPanel channel={channel} refresh={refresh} />);
-    fireEvent.click(screen.getByRole('button', { name: '自由使用' }));
-    expect(screen.getByRole('button', { name: '自由使用' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: '审核使用' })).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(screen.getByRole('button', { name: '自由模式' }));
+    expect(screen.getByRole('button', { name: '自由模式' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: '白名单模式' })).toHaveAttribute('aria-pressed', 'true');
     reject(new Error('disk unavailable'));
     expect(await screen.findByRole('alert')).toHaveTextContent('disk unavailable');
     expect(refresh).not.toHaveBeenCalled();
-    expect(screen.getByRole('button', { name: '审核使用' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: '白名单模式' })).toHaveAttribute('aria-pressed', 'true');
   });
 
   it('keeps all users and blocking actions without filters or ID controls', async () => {
@@ -58,7 +68,7 @@ describe('channel access controls', () => {
 
   it('reports durable success separately from a failed refresh', async () => {
     render(<ChannelAccessPanel channel={channel} refresh={vi.fn().mockRejectedValue(new Error('refresh unavailable'))} />);
-    fireEvent.click(screen.getByRole('button', { name: '自由使用' }));
+    fireEvent.click(screen.getByRole('button', { name: '自由模式' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('已保存，但配置刷新失败');
   });
 

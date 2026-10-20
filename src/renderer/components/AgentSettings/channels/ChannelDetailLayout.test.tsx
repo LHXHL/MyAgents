@@ -16,8 +16,8 @@ vi.mock('@/hooks/useConfig', () => ({ useConfig: () => ({ config: { agents: [] }
 
 beforeEach(() => { mocks.tauri = false; mocks.mutate.mockReset().mockResolvedValue(undefined); mocks.invoke.mockReset().mockResolvedValue(null); });
 
-function show(type: ChannelConfig['type'] = 'openclaw:wecom') {
-  const agent: AgentConfig = { id: 'a', name: 'Agent', enabled: false, permissionMode: 'auto', channels: [{ id: 'c', type, enabled: false, allowedUsers: ['u'], userDisplayNames: { u: 'Alice' } }] };
+function show(type: ChannelConfig['type'] = 'openclaw:wecom', accessMode?: ChannelConfig['accessMode']) {
+  const agent: AgentConfig = { id: 'a', name: 'Agent', enabled: false, permissionMode: 'auto', channels: [{ id: 'c', type, accessMode, enabled: false, allowedUsers: ['u'], userDisplayNames: { u: 'Alice' } }] };
   return render(<ChannelDetailView agent={agent} channelId="c" onBack={vi.fn()} onChanged={vi.fn()} />);
 }
 
@@ -37,7 +37,7 @@ describe('Channel detail layout', () => {
     expect(within(userBody).queryByRole('checkbox')).not.toBeInTheDocument();
     expect(within(userBody).queryByRole('textbox')).not.toBeInTheDocument();
     expectBefore(permission, users);
-    expectBefore(screen.getByText('启动渠道后可使用绑定入口。'), screen.getByRole('region', { name: '私聊用户' }));
+    expectBefore(screen.getByText('启动渠道后可绑定。'), screen.getByRole('region', { name: '私聊用户' }));
     expectBefore(screen.getByRole('region', { name: '私聊用户' }), screen.getByRole('button', { name: '群聊管理' }));
     expectBefore(screen.getByRole('button', { name: '群聊管理' }), screen.getByRole('heading', { name: '消息发送方式' }));
     fireEvent.click(users);
@@ -72,9 +72,9 @@ describe('Channel detail layout', () => {
     const login = await screen.findByRole('button', { name: '扫码登录' });
     const userBody = document.getElementById(screen.getByRole('button', { name: '用户管理' }).getAttribute('aria-controls')!)!;
     expect(userBody).toContainElement(login);
-    expectBefore(login, screen.getByRole('region', { name: '私聊用户' }));
+    expect(screen.queryByRole('region', { name: '私聊用户' })).not.toBeInTheDocument();
     expect(login.closest('.border-dashed')).toBeNull();
-    await waitFor(() => expect(screen.queryByText('启动渠道后可使用绑定入口。')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText('启动渠道后可绑定。')).not.toBeInTheDocument());
   });
 
   it.each(['telegram', 'dingtalk'] as const)('puts %s sending options inside the final delivery block', type => {
@@ -85,10 +85,26 @@ describe('Channel detail layout', () => {
     expectBefore(delivery, screen.getByRole('button', { name: /删除/ }));
   });
 
-  it('keeps private-only channels free of group controls', () => {
-    show('openclaw:openclaw-weixin');
-    expect(screen.getByRole('region', { name: '私聊用户' })).toBeInTheDocument();
+  it.each(['openclaw:openclaw-weixin', 'openclaw:weixin'] as const)('keeps %s free of multi-user permission and group controls', type => {
+    show(type, 'review');
+    expect(screen.queryByRole('region', { name: '权限模式' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: '私聊用户' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '群聊管理' })).not.toBeInTheDocument();
+  });
+
+  it.each(['openclaw:wecom', 'openclaw:wecom-openclaw-plugin', 'feishu', 'openclaw:openclaw-lark'] as const)('retains both modes for %s', type => {
+    show(type, 'review');
+    expect(screen.getByRole('button', { name: '白名单模式' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '自由模式' })).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: '私聊用户' })).toBeInTheDocument();
+  });
+
+  it('hides unnecessary binding content in open mode but retains users', () => {
+    show('openclaw:wecom', 'open');
+    expect(screen.getByText('无需绑定，直接使用。')).toBeInTheDocument();
+    expect(screen.queryByText('口令绑定')).not.toBeInTheDocument();
+    expect(screen.queryByText('启动渠道后可绑定。')).not.toBeInTheDocument();
+    expect(screen.getByRole('region', { name: '私聊用户' })).toBeInTheDocument();
   });
 
   it('embeds binding content without changing default wizard card presentation', () => {
