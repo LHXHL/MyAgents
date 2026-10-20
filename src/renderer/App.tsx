@@ -4709,7 +4709,7 @@ export default function App({ rendererAttachment = COLD_RENDERER_ATTACHMENT }: {
   // System tray event handling (minimize to tray, exit confirmation)
   useTrayEvents({
     minimizeToTray: config.minimizeToTray,
-    onOpenSettings: () => handleOpenSettings('general'),
+    onOpenSettings: () => handleOpenSettings(),
     onCmdWCloseTab: () => {
       // Cmd+W bottom: overlay → split → tab → launcher → STOP.
       closeCurrentTab(); // Last tab auto-creates launcher; launcher is a no-op.
