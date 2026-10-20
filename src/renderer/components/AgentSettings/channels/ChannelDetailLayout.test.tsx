@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, within, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentConfig, ChannelConfig } from '../../../../shared/types/agent';
 import ChannelDetailView from './ChannelDetailView';
 import BindCodePanel from '../../ImSettings/components/BindCodePanel';
@@ -14,10 +14,12 @@ vi.mock('@/utils/browserMock', () => ({ isTauriEnvironment: () => mocks.tauri })
 vi.mock('@/components/Toast', () => ({ useToast: () => ({ success: vi.fn(), error: vi.fn() }) }));
 vi.mock('@/hooks/useConfig', () => ({ useConfig: () => ({ config: { agents: [] }, refreshConfig: vi.fn() }) }));
 
+afterEach(() => { Reflect.deleteProperty(window, '__TAURI_INTERNALS__'); });
+
 beforeEach(() => { mocks.tauri = false; mocks.mutate.mockReset().mockResolvedValue(undefined); mocks.invoke.mockReset().mockResolvedValue(null); });
 
-function show(type: ChannelConfig['type'] = 'openclaw:wecom', accessMode?: ChannelConfig['accessMode']) {
-  const agent: AgentConfig = { id: 'a', name: 'Agent', enabled: false, permissionMode: 'auto', channels: [{ id: 'c', type, accessMode, enabled: false, allowedUsers: ['u'], userDisplayNames: { u: 'Alice' } }] };
+function show(type: ChannelConfig['type'] = 'openclaw:wecom', accessMode?: ChannelConfig['accessMode'], groupPermissions?: ChannelConfig['groupPermissions']) {
+  const agent: AgentConfig = { id: 'a', name: 'Agent', enabled: false, permissionMode: 'auto', channels: [{ id: 'c', type, accessMode, groupPermissions, enabled: false, allowedUsers: ['u'], userDisplayNames: { u: 'Alice' } }] };
   return render(<ChannelDetailView agent={agent} channelId="c" onBack={vi.fn()} onChanged={vi.fn()} />);
 }
 
@@ -37,6 +39,7 @@ describe('Channel detail layout', () => {
     expect(within(userBody).queryByRole('checkbox')).not.toBeInTheDocument();
     expect(within(userBody).queryByRole('textbox')).not.toBeInTheDocument();
     expectBefore(permission, users);
+    expect(screen.queryByText(/下一轮生效/)).not.toBeInTheDocument();
     expectBefore(screen.getByText('启动渠道后可绑定。'), screen.getByRole('region', { name: '私聊用户' }));
     expectBefore(screen.getByRole('region', { name: '私聊用户' }), screen.getByRole('button', { name: '群聊管理' }));
     expectBefore(screen.getByRole('button', { name: '群聊管理' }), screen.getByRole('heading', { name: '消息发送方式' }));
@@ -60,6 +63,24 @@ describe('Channel detail layout', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('保存失败');
     expect(screen.getByRole('button', { name: '拉黑' })).toBeEnabled();
     expect(mocks.mutate).toHaveBeenCalledOnce();
+  });
+
+  it('retains an in-flight group removal across fold and reopen', async () => {
+    mocks.tauri = true;
+    Object.defineProperty(window, '__TAURI_INTERNALS__', { configurable: true, value: { invoke: mocks.invoke } });
+    let reject!: (reason: Error) => void;
+    mocks.invoke.mockImplementation(command => command === 'cmd_remove_group' ? new Promise((_resolve, failure) => { reject = failure; }) : Promise.resolve(null));
+    show('openclaw:wecom', 'review', [{ groupId: 'g', groupName: 'Team', platform: 'openclaw:wecom', status: 'approved', discoveredAt: '' }]);
+    const row = screen.getByText('Team（g）').parentElement!;
+    fireEvent.click(within(row).getByRole('button', { name: '移除' }));
+    await waitFor(() => expect(mocks.invoke.mock.calls.some(([command, args]) => command === 'cmd_remove_group' && args.botId === 'c' && args.groupId === 'g')).toBe(true));
+    const groups = screen.getByRole('button', { name: '群聊管理' });
+    fireEvent.click(groups);
+    fireEvent.click(groups);
+    expect(within(row).getByRole('button', { name: '移除' })).toBeDisabled();
+    reject(new Error('remove failed'));
+    expect(await screen.findByRole('alert')).toHaveTextContent('remove failed');
+    expect(within(row).getByRole('button', { name: '移除' })).toBeEnabled();
   });
 
   it('embeds a running QR-login entry before the user list without another card', async () => {
@@ -112,6 +133,9 @@ describe('Channel detail layout', () => {
     expect(container.firstElementChild).not.toHaveClass('border');
     expect(screen.getByText('口令绑定')).toBeInTheDocument();
     expect(screen.getByTitle('复制口令')).toBeInTheDocument();
+    expect(screen.getByText('发送上方口令（点击复制按钮）')).toBeInTheDocument();
+    expect(screen.getByText('绑定成功后即可开始对话')).toBeInTheDocument();
+    expect(screen.getByText(/私聊 Bot 发送以下口令/)).toBeInTheDocument();
     rerender(<BindCodePanel bindCode="BIND_FIXTURE" hasWhitelistUsers />);
     expect(container.firstElementChild).toHaveClass('border');
     rerender(<BindQrPanel bindUrl="https://t.me/fixture?start=BIND_fixture" hasWhitelistUsers embedded />);

@@ -10,6 +10,12 @@ export function ChannelAccessMode({ value, disabled, onChange, platform }: {
   platform: string; value: Mode; disabled?: boolean; onChange: (mode: NonNullable<Mode>) => void;
 }) {
   const { t } = useTranslation('settings');
+  const mode = value ?? 'review';
+  const descriptionKey = mode === 'open'
+    ? 'agentSettings.channelAccess.openDescription'
+    : platform === 'telegram'
+      ? 'agentSettings.channelAccess.reviewDescriptionQr'
+      : 'agentSettings.channelAccess.reviewDescription';
   return <fieldset disabled={disabled} className="space-y-2">
     <legend className="text-sm font-semibold text-[var(--ink)]">{t('agentSettings.channelAccess.mode')}</legend>
     <div className="flex gap-2">
@@ -19,7 +25,7 @@ export function ChannelAccessMode({ value, disabled, onChange, platform }: {
         {t(`agentSettings.channelAccess.${mode}`)}
       </button>)}
     </div>
-    <p className="text-xs text-[var(--ink-muted)]">{t(`agentSettings.channelAccess.${value ? `${value}Description${value === 'review' && platform === 'telegram' ? 'Qr' : ''}` : 'legacyDescription'}`)}</p>
+    <p className="text-xs text-[var(--ink-muted)]">{t(descriptionKey)}</p>
   </fieldset>;
 }
 

@@ -1072,6 +1072,8 @@ export default function ChannelDetailView({
                         <button
                             type="button"
                             onClick={() => setGroupsExpanded(!isGroupsExpanded_)}
+                            aria-expanded={isGroupsExpanded_}
+                            aria-controls={`channel-groups-${channelId}`}
                             className="flex w-full items-center justify-between p-5"
                         >
                             <div className="flex items-center gap-2">
@@ -1091,8 +1093,7 @@ export default function ChannelDetailView({
                             </div>
                             <ChevronDownIcon className={`h-4 w-4 text-[var(--ink-muted)] transition-transform ${isGroupsExpanded_ ? '' : '-rotate-90'}`} />
                         </button>
-                        {isGroupsExpanded_ && (
-                            <div className="space-y-4 px-5 pb-5">
+                            <div hidden={!isGroupsExpanded_} id={`channel-groups-${channelId}`} className="space-y-4 px-5 pb-5">
                                 {/* Group activation mode */}
                                 {(() => {
                                     const mentionOnly = capabilities.groups === 'mention';
@@ -1165,7 +1166,6 @@ export default function ChannelDetailView({
                                     }}
                                 />
                             </div>
-                        )}
                     </div>
                 );
             })()}
@@ -1189,7 +1189,6 @@ export default function ChannelDetailView({
                     ))}
                 </div>
                 <p className="text-xs text-[var(--ink-muted)]">{t(`agentSettings.channelDetail.deliveryDescription_${channel.messageDeliveryMode ?? 'auto'}`)}</p>
-                <p className="text-xs text-[var(--ink-muted)]">{t('agentSettings.channelDetail.deliveryNextTurn')}</p>
                 {deliveryError && <p role="alert" className="text-xs text-[var(--error)]">{deliveryError}</p>}
                 {/* DingTalk AI Card Config */}
                 {channel.type === 'dingtalk' && (

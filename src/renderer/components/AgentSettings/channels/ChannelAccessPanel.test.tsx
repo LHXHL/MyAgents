@@ -20,10 +20,15 @@ describe('channel access controls', () => {
     expect(screen.queryByText(/完成绑定加入白名单/)).not.toBeInTheDocument();
   });
 
-  it('keeps missing mode unset until an explicit selection, including review', async () => {
+  it('defaults missing mode to whitelist without an implicit configuration write', async () => {
     const refresh = vi.fn().mockResolvedValue(undefined);
-    render(<ChannelAccessPanel channel={channel} refresh={refresh} />);
-    expect(screen.getByText(/未设置，沿用原有/)).toBeInTheDocument();
+    const { rerender } = render(<ChannelAccessPanel channel={channel} refresh={refresh} />);
+    rerender(<ChannelAccessPanel channel={{ ...channel, type: 'openclaw:wecom' }} refresh={refresh} />);
+    expect(screen.getByText('使用的用户发送下方的口令完成绑定加入白名单')).toBeInTheDocument();
+    rerender(<ChannelAccessPanel channel={channel} refresh={refresh} />);
+    expect(screen.getByRole('button', { name: '白名单模式' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByText('使用的用户扫描下方二维码完成绑定加入白名单')).toBeInTheDocument();
+    expect(screen.queryByText(/未设置/)).not.toBeInTheDocument();
     expect(mutate).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: '白名单模式' }));
     await waitFor(() => expect(refresh).toHaveBeenCalledOnce());

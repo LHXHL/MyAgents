@@ -117,6 +117,7 @@ export interface ChannelConfig {
   openclawEnabledToolGroups?: string[];
 
   // User management
+  /** Omitted mode defaults to whitelist (review); QR-bound WeChat does not use it. */
   accessMode?: 'review' | 'open';
   blockedUserIds?: string[];
   blockedGroupIds?: string[];

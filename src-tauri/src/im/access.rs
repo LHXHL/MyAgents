@@ -205,7 +205,6 @@ pub(super) fn admit(
             channel.get("groupActivation").and_then(Value::as_str),
         ) == super::types::GroupActivation::Always;
     let username = msg.source_metadata.sender_username.as_deref();
-    let bound_id = snapshot.allowed_users.contains(&msg.sender_id);
     let bound = snapshot.allowed_users.iter().any(|id| {
         id == &msg.sender_id
             || (msg.platform == ImPlatform::Telegram
@@ -215,11 +214,7 @@ pub(super) fn admit(
         permission.group_id == msg.chat_id && permission.status == GroupPermissionStatus::Approved
     });
     let accepted = || InputAdmission {
-        sender_is_owner: if snapshot.access.access_mode.is_none() {
-            bound_id
-        } else {
-            bound
-        },
+        sender_is_owner: bound,
         group_approved: approved,
         triggered,
         existing_interaction: existing_interaction.clone(),
@@ -243,26 +238,14 @@ pub(super) fn admit(
         || (text.starts_with("BIND_") && msg.platform != ImPlatform::Telegram);
     let command = super::model_commands::management_command(text);
     let help = matches!(command, Some("/help" | "/start"));
-    match snapshot.access.access_mode {
-        None => {
-            let legacy_allowed = match msg.platform {
-                ImPlatform::Telegram => group || msg.text.starts_with("/start BIND_") || bound,
-                ImPlatform::Feishu => bound || (!group && msg.text.starts_with("BIND_")),
-                ImPlatform::Dingtalk => true,
-                ImPlatform::OpenClaw(_) => {
-                    group || help || bind || snapshot.allowed_users.is_empty() || bound
-                }
-            };
-            if !legacy_allowed {
-                return Ok(None);
-            }
-        }
-        Some(AccessMode::Review) => {
+    // Missing persisted mode has the same effective policy as explicit whitelist.
+    match snapshot.access.access_mode.unwrap_or(AccessMode::Review) {
+        AccessMode::Review => {
             if !group && !bound && !bind && !help {
                 return Ok(None);
             }
         }
-        Some(AccessMode::Open) => {
+        AccessMode::Open => {
             let used = !help && !bind && (!group || (triggered && command.is_none()));
             if used {
                 valid_id(&msg.sender_id)?;
@@ -432,34 +415,65 @@ mod tests {
     }
 
     #[test]
-    fn missing_mode_preserves_each_platform_policy_and_username_matching() {
-        for (platform, allow) in [
-            (ImPlatform::Telegram, false),
-            (ImPlatform::Feishu, false),
-            (ImPlatform::Dingtalk, true),
-            (ImPlatform::OpenClaw("qqbot".into()), true),
+    fn missing_mode_is_whitelist_on_every_managed_platform() {
+        for platform in [
+            ImPlatform::Telegram,
+            ImPlatform::Feishu,
+            ImPlatform::Dingtalk,
+            ImPlatform::OpenClaw("wecom".into()),
+            ImPlatform::OpenClaw("wecom-openclaw-plugin".into()),
+            ImPlatform::OpenClaw("openclaw-lark".into()),
+            ImPlatform::OpenClaw("qqbot".into()),
+            ImPlatform::OpenClaw("custom".into()),
         ] {
-            assert_eq!(
-                admit(
-                    &mut json!({}),
-                    &message(platform, false, "hello"),
-                    false,
-                    None
-                )
-                .unwrap()
-                .is_some(),
-                allow
-            );
+            for channel in [
+                json!({}),
+                json!({"allowedUsers":["123"]}),
+                json!({"allowedUsers":["123"],"blockedUserIds":["123"]}),
+            ] {
+                for group in [false, true] {
+                    for text in [
+                        "hello",
+                        "/help",
+                        "/start",
+                        "BIND_fixture",
+                        "/start BIND_fixture",
+                    ] {
+                        let mut missing = channel.clone();
+                        let mut explicit = channel.clone();
+                        explicit["accessMode"] = json!("review");
+                        let input = message(platform.clone(), group, text);
+                        let a = admit(&mut missing, &input, false, None).unwrap();
+                        let b = admit(&mut explicit, &input, false, None).unwrap();
+                        assert_eq!(
+                            serde_json::to_value(a).unwrap(),
+                            serde_json::to_value(b).unwrap()
+                        );
+                        assert_eq!(missing, channel); // No implicit write or registration.
+                    }
+                }
+            }
+            assert!(admit(
+                &mut json!({}),
+                &message(platform, false, "hello"),
+                false,
+                None
+            )
+            .unwrap()
+            .is_none());
         }
         let mut channel = json!({"allowedUsers":["Alice_Name"]});
         let mut input = message(ImPlatform::Telegram, false, "hello");
         input.source_metadata.sender_username = Some("alice_name".into());
-        let accepted = admit(&mut channel, &input, false, None).unwrap().unwrap();
-        assert!(!accepted.sender_is_owner); // Existing numeric owner policy is unchanged.
+        assert!(
+            admit(&mut channel, &input, false, None)
+                .unwrap()
+                .unwrap()
+                .sender_is_owner
+        );
         input.source_metadata.sender_username = None;
         input.sender_name = Some("Alice_Name".into());
         assert!(admit(&mut channel, &input, false, None).unwrap().is_none());
-        assert!(channel.get("accessMode").is_none());
     }
 
     #[test]
@@ -948,7 +962,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_null_mode_never_uses_permissive_legacy_rules() {
+    fn explicit_null_mode_is_invalid() {
         for platform in [ImPlatform::Dingtalk, ImPlatform::OpenClaw("qqbot".into())] {
             assert!(admit(
                 &mut json!({"accessMode":null}),

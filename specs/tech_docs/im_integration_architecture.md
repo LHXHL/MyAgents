@@ -279,7 +279,7 @@ detached/new-session Goal需要独立parent/return-target设计，不能混入cu
 
 `config.json` 是 Agent 出生模板和 Channel transport 配置的 authority。Channel 不再拥有独立执行配置；详情与 writer 移除 model/provider/runtime/permission 覆盖，旧字段只读保留以免损坏存量信息，正常解析不采用。连接凭据、白名单、群规则和 toolsDeny 仍由 Channel 实时拥有。所有写入在config lock内fresh read-modify-write；Renderer提交typed intent并在成功后refresh完整snapshot，不能用可能过期的React state覆盖其它Channel。
 
-群聊与绑定用户的展示名保存于同一 Channel 配置：`groupPermissions[].groupName` 与 `userDisplayNames[userId]`。名称只用于展示，授权、群发现去重与路由继续使用 ID；不再把群名当作历史 ID 迁移依据。设置页显示 `名称（ID）`，未知或等于 ID 时只显示 ID。Rust 在配置锁内按最新已有 ID 合并名字，不创建授权记录，不修改群状态，查询失败/空值不清除旧名字。绑定成功和后续入站更新此元数据，沿 `im:bot-config-changed` 刷新 UI。
+群聊与绑定用户的展示名保存于同一 Channel 配置：`groupPermissions[].groupName` 与 `userDisplayNames[userId]`。名称只用于展示，授权、群发现去重与路由继续使用 ID；不再把群名当作历史 ID 迁移依据。设置页显示 `名称（ID）`；私聊用户名称未知或等于 ID 时只显示 ID，群聊的未知/同 ID 名称留空并显示 `（ID）`。Rust 在配置锁内按最新已有 ID 合并名字，不创建授权记录，不修改群状态，查询失败/空值不清除旧名字。绑定成功和后续入站更新此元数据，沿 `im:bot-config-changed` 刷新 UI。
 
 渠道启动时用既有 peer snapshot 补缺失名称；企微另经 Bridge `/peer-names` 查询当前账号的 `wecom-cli message aibot sessions list`，新平台证据更新名称。该接口仅返回最近 20 个会话，无分页，因此旧且不可见的会话保留已有名称或 ID；后续入站可补齐。Bridge 对 `single/group + chat_id` 做唯一精确匹配，不从 `extra_identity_context` 的授权人描述猜测昵称；账号级在途查询去重和超时只约束查询，不启动 Session、不发消息、不定时扫描。
 
@@ -289,7 +289,7 @@ Channel credential、token、App Secret和provider env不得进入日志、analy
 
 ### 10.1 权限模式与黑名单的入口边界
 
-`im/access.rs` 在同一 `mutate_bot_config` / config lock 内 fresh-read、裁决新消息并合并必要登记。`accessMode` 缺失保留真实平台旧语义：Telegram 私聊需要绑定（兼容数值 ID / username），群消息进入原群批准判断；原生飞书需要绑定，私聊绑定码例外；钉钉维持原准入；Bridge 私聊空名单放行、非空名单匹配，help/start 和绑定例外。打开设置或修改其他字段不补写模式。
+`im/access.rs` 在同一 `mutate_bot_config` / config lock 内 fresh-read、裁决新消息并合并必要登记。支持权限模式的渠道只存在白名单/自由两种有效策略，`accessMode` 缺失等价 `review`，新建及旧数据一致；打开设置不补写配置。此默认统一覆盖先前按平台保留旧行为的设计：钉钉与空名单 Bridge 也要求新私聊用户绑定。Telegram 继续兼容可信 username（忽略大小写），缺省与显式白名单的 sender qualification 相同；昵称不授权。微信扫码例外见下文。
 
 界面将 `review` 称为“白名单模式”、`open` 称为“自由模式”，持久化值不变。显式 `review` 统一为新私聊需绑定、群批准或已绑定成员例外；显式 `open` 在首条真实使用中将稳定 sender ID 写入原 `allowedUsers`，群有效触发还将原群记录批准。普通群发言、仅发现群、纯 help/start 不登记，平台 Mention/Always 能力仍生效。有效绑定保留；自动登记与绑定享有相同 `senderIsOwner`，没有新增权限等级。切换模式只写模式字段，不重置资格、封禁或 Session。
 
