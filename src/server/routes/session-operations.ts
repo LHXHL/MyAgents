@@ -134,7 +134,7 @@ export async function handleSessionOperationRoute(
         migrationOptions,
       );
       if (!result.success) {
-        return jsonResponse(result, 500);
+        return jsonResponse(result, result.sourceUnchanged ? 409 : 500);
       }
       if (result.sessionId !== targetSessionId) {
         return jsonResponse({ success: false, error: 'Runtime adopted an unexpected Session identity' }, 500);

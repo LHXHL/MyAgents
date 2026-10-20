@@ -293,7 +293,7 @@ pub(crate) async fn new_channel_desktop_session<R: Runtime>(
     manager: &ManagedSidecarManager,
     old_session_id: &str,
     tab_id: &str,
-) -> Result<Option<String>, String> {
+) -> Result<Option<crate::sidecar::session_lifecycle::NewDesktopSessionResult>, String> {
     let Some((session_key, router_arc, health, peer_locks)) =
         desktop_channel_binding(app, old_session_id).await?
     else {
@@ -310,32 +310,56 @@ pub(crate) async fn new_channel_desktop_session<R: Runtime>(
     }
     let target = uuid::Uuid::new_v4().to_string();
     let _lifecycle = crate::sidecar::acquire_session_lifecycle(&[old_session_id, &target]).await;
-    if crate::sidecar::has_persisted_session_owner(old_session_id).await? {
-        return Err("Cannot migrate a Session with a persistent Goal or task owner".to_string());
+    let retained_identity = crate::sidecar::has_persisted_session_owner(old_session_id).await?;
+    let Some(port) = crate::sidecar::session_lifecycle::desktop_session_reset_port(
+        manager,
+        old_session_id,
+        tab_id,
+        Some(&session_key),
+        retained_identity,
+    )?
+    else {
+        return crate::sidecar::session_lifecycle::preserve_desktop_session(
+            app,
+            manager,
+            old_session_id,
+        )
+        .await
+        .map(Some);
+    };
+    let background_app = app.clone();
+    let background_manager = manager.clone();
+    let background_source = old_session_id.to_string();
+    let background = tauri::async_runtime::spawn_blocking(move || {
+        crate::sidecar::background::start_background_completion(
+            &background_app,
+            &background_manager,
+            &background_source,
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    if !matches!(background, Ok(ref result) if !result.started) {
+        return crate::sidecar::session_lifecycle::preserve_desktop_session(
+            app,
+            manager,
+            old_session_id,
+        )
+        .await
+        .map(Some);
     }
-    let (port, channel_port) = {
-        let mut state = manager.lock().map_err(|error| error.to_string())?;
-        if !state.surface_session_migration_is_admissible(old_session_id, tab_id, &session_key) {
-            return Err(
-                "Session owners changed; only the current Tab and Channel may migrate together"
-                    .to_string(),
-            );
-        }
-        let port = state
-            .get_session_port(old_session_id)
-            .ok_or_else(|| "Source Sidecar is not ready for migration".to_string())?;
-        let channel_port = if state
-            .session_has_exact_owner(old_session_id, &SidecarOwner::Agent(session_key.clone()))
+    let channel_port = {
+        let state = manager.lock().map_err(|error| error.to_string())?;
+        if state.session_has_exact_owner(old_session_id, &SidecarOwner::Agent(session_key.clone()))
         {
             port
         } else {
             0
-        };
-        (port, channel_port)
+        }
     };
     // Keep both durable routing and Manager identity on A until Node confirms B.
     // Any failure first retires the uncertain writer under the same lifecycle.
-    let dispatch = crate::sidecar::session_lifecycle::transition_desktop_runtime(
+    let Some(dispatch) = crate::sidecar::session_lifecycle::transition_desktop_runtime(
         manager,
         old_session_id,
         &target,
@@ -344,7 +368,16 @@ pub(crate) async fn new_channel_desktop_session<R: Runtime>(
         prior.metadata_birth_pending,
         prior.metadata_indexed,
     )
-    .await?;
+    .await?
+    else {
+        return crate::sidecar::session_lifecycle::preserve_desktop_session(
+            app,
+            manager,
+            old_session_id,
+        )
+        .await
+        .map(Some);
+    };
     let transition = match router.stage_surface_session_migration(
         &session_key,
         old_session_id,
@@ -394,7 +427,9 @@ pub(crate) async fn new_channel_desktop_session<R: Runtime>(
         return Err("Session owners changed before migration committed".to_string());
     }
     ulog_info!("[handover] operation=surface_session_migration result=committed old={} new={} tab={} key={}", short_id(old_session_id), short_id(&target), tab_id, session_key);
-    Ok(Some(target))
+    Ok(Some(
+        crate::sidecar::session_lifecycle::NewDesktopSessionResult::migrated(target),
+    ))
 }
 
 // ============================================================================

@@ -30,7 +30,7 @@ describe('transitionDesktopSession', () => {
   });
 
   it('adopts the migrated channel session without plain reset', async () => {
-    mocks.newDesktopSession.mockResolvedValue({ newSessionId: 'new-session', backgroundCompletionStarted: false });
+    mocks.newDesktopSession.mockResolvedValue({ newSessionId: 'new-session', createNewSidecar: false });
 
     await expect(runTransition()).resolves.toBe(true);
 
@@ -43,7 +43,7 @@ describe('transitionDesktopSession', () => {
   });
 
   it('fails closed when migration returns no target', async () => {
-    mocks.newDesktopSession.mockResolvedValue({ newSessionId: null, backgroundCompletionStarted: false });
+    mocks.newDesktopSession.mockResolvedValue({ newSessionId: null, createNewSidecar: false });
 
     await expect(runTransition()).resolves.toBe(false);
 
@@ -53,7 +53,7 @@ describe('transitionDesktopSession', () => {
   });
 
   it('releases the migrated Tab owner when renderer adoption is refused', async () => {
-    mocks.newDesktopSession.mockResolvedValue({ newSessionId: 'new-session', backgroundCompletionStarted: false });
+    mocks.newDesktopSession.mockResolvedValue({ newSessionId: 'new-session', createNewSidecar: false });
     mocks.adoptMigratedSession.mockResolvedValue(false);
 
     await expect(runTransition()).resolves.toBe(false);
@@ -72,15 +72,28 @@ describe('transitionDesktopSession', () => {
   });
   it('consumes admitted background completion even when the old turn finishes before the UI callback', async () => {
     const background = vi.fn(async () => true);
-    mocks.newDesktopSession.mockResolvedValue({ newSessionId: null, backgroundCompletionStarted: true });
+    mocks.newDesktopSession.mockResolvedValue({ newSessionId: null, createNewSidecar: true });
     await expect(transitionDesktopSession({
       sessionId: 'busy-source', tabId: 'tab-1', ...mocks,
-      onBackgroundCompletion: background,
+      onNewSidecar: background,
       releaseMigratedTabOwner: mocks.releaseMigratedTabOwner,
     })).resolves.toBe(true);
     expect(background).toHaveBeenCalledWith('busy-source');
     expect(mocks.adoptMigratedSession).not.toHaveBeenCalled();
     expect(mocks.releaseMigratedTabOwner).not.toHaveBeenCalled();
+  });
+
+  it('opens separately for a retained source without adopting or releasing that source', async () => {
+    const openNew = vi.fn(async () => true);
+    mocks.newDesktopSession.mockResolvedValue({ newSessionId: null, createNewSidecar: true });
+    await expect(transitionDesktopSession({
+      sessionId: 'channel-or-task-source', tabId: 'tab-1', ...mocks,
+      onNewSidecar: openNew,
+    })).resolves.toBe(true);
+    expect(openNew).toHaveBeenCalledWith('channel-or-task-source');
+    expect(mocks.adoptMigratedSession).not.toHaveBeenCalled();
+    expect(mocks.releaseMigratedTabOwner).not.toHaveBeenCalled();
+    expect(mocks.reportError).not.toHaveBeenCalled();
   });
 
   it('uses each committed source for consecutive new conversations without channel polling', async () => {
@@ -89,7 +102,7 @@ describe('transitionDesktopSession', () => {
     for (const next of ['b', 'c']) {
       await expect(transitionDesktopSession({
         sessionId: current, tabId: 'tab-1',
-        newDesktopSession: async args => { sources.push(args.oldSessionId); return { newSessionId: next, backgroundCompletionStarted: false }; },
+        newDesktopSession: async args => { sources.push(args.oldSessionId); return { newSessionId: next, createNewSidecar: false }; },
         adoptMigratedSession: async id => { current = id; return true; },
         releaseMigratedTabOwner: mocks.releaseMigratedTabOwner,
         reportError: mocks.reportError,

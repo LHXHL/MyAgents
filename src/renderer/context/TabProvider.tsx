@@ -1789,14 +1789,14 @@ export default function TabProvider({
     ],
   );
 
-  const resetSession = useCallback(async (options?: { onBackgroundCompletion?: (sourceSessionId: string) => Promise<boolean> }): Promise<boolean> => {
+  const resetSession = useCallback(async (options?: { onNewSidecar?: (sourceSessionId: string) => Promise<boolean> }): Promise<boolean> => {
     const sourceId = currentSessionIdRef.current;
     if (!sourceId) return false;
     const success = await transitionDesktopSession({
       sessionId: sourceId,
       tabId,
       newDesktopSession,
-      onBackgroundCompletion: options?.onBackgroundCompletion,
+      onNewSidecar: options?.onNewSidecar,
       adoptMigratedSession,
       releaseMigratedTabOwner: releaseTabSession,
       reportError: message => { setAgentError(message); toast?.error(message); },

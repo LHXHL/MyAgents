@@ -5,8 +5,9 @@
  * Two operations:
  *   1. newDesktopSession — when desktop user clicks "+新对话", Rust resolves
  *      the current binding and moves the participating Tab and any Channel
- *      binding together. This is intentionally different from IM `/new`, which only
- *      rotates the channel binding.
+ *      binding together when the source is idle and exclusively migratable.
+ *      Retained/busy sources keep their binding while App opens a separate conversation.
+ *      IM `/new` only rotates the channel binding.
  *
  *   2. handoverSessionToChannel — when desktop user clicks the 📤 button on
  *      a pure desktop session, the chosen channel's binding is replaced to
@@ -27,7 +28,7 @@ async function getInvoke() {
 
 export interface NewDesktopSessionResult {
     newSessionId: string | null;
-    backgroundCompletionStarted: boolean;
+    createNewSidecar: boolean;
 }
 
 /** Rust resolves the binding and admits the exact Tab before any Runtime reset. */

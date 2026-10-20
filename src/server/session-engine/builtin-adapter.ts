@@ -1006,14 +1006,17 @@ export function createBuiltinSessionEngine(): SessionEngine {
       // owner. A queued request cannot mutate a subsequently adopted identity.
       return runSerializedSessionMutation(async () => {
         if (getSessionId() !== options.sourceSessionId) {
-          return { success: false, error: 'Session identity changed before new conversation' };
+          return { success: false, sourceUnchanged: true as const, error: 'Session identity changed before new conversation' };
+        }
+        if (isSessionBusy()) {
+          return { success: false, sourceUnchanged: true as const, errorCode: 'session_busy' as const };
         }
         if (options.channelBound) {
           const freeze = await freezeCurrentSessionMetadataForImDetach(undefined, {
             allowMissingMetadata: options.metadataBirthPending === true || options.metadataIndexed === false,
           });
           if (!freeze.success) {
-            return { success: false, error: freeze.error ?? 'Failed to freeze current Session before migration' };
+            return { success: false, sourceUnchanged: true as const, error: freeze.error ?? 'Failed to freeze current Session before migration' };
           }
         }
         await resetSession({ sessionId: options.targetSessionId });

@@ -3061,9 +3061,8 @@ export default function App({ rendererAttachment = COLD_RENDERER_ATTACHMENT }: {
   );
 
   /**
-   * Handle "New Session" from Chat component.
-   * If AI is running, starts background completion on old session and creates new Sidecar.
-   * Consumes Rust background admission; false means this Tab already moved away.
+   * Rust retained the source for active work, shared owners or a Channel.
+   * Prepare a distinct conversation before releasing this Tab's source owner.
    */
   const handleNewSession = useCallback(
     async (tabId: string, sourceSessionId: string): Promise<boolean> => {
@@ -3080,16 +3079,25 @@ export default function App({ rendererAttachment = COLD_RENDERER_ATTACHMENT }: {
 
       const oldSessionId = currentTab.sessionId;
 
-      // Rust already attached BackgroundCompletion under Session lifecycle
-      // admission. Do not sample activity again: completion in this window
-      // does not revoke the user's request to open a new conversation.
-
-      // AI is running → release old Sidecar (BG owner keeps it alive), create new one
-      console.log(
-        `[App] handleNewSession: AI running on ${oldSessionId}, background completion started`,
-      );
-
+      // Each birth needs its own slot, including when the source is pending.
+      const pendingSessionId = createPendingSessionId(`${tabId}-${crypto.randomUUID()}`);
       try {
+        await ensureSessionSidecar(
+          pendingSessionId,
+          currentTab.agentDir,
+          'tab',
+          tabId,
+        );
+        if (!(await reconcileSessionTabActivation(pendingSessionId, tabId))) {
+          throw new Error(
+            `Rust refused owner reconcile for session ${pendingSessionId} and tab ${tabId}`,
+          );
+        }
+        const sourceTab = tabWorkspaceController.getSnapshot().tabs.find(tab => tab.id === tabId);
+        if (sourceTab?.view !== 'chat' || sourceTab.sessionId !== oldSessionId) {
+          await releaseTabSession(pendingSessionId, tabId);
+          return false;
+        }
         await stopSseProxy(tabId);
         await releaseTabSession(oldSessionId, tabId);
 
@@ -3102,20 +3110,6 @@ export default function App({ rendererAttachment = COLD_RENDERER_ATTACHMENT }: {
           tabId,
           birthContextForSurface('new_chat_button'),
         );
-
-        // Create new pending session with new Sidecar
-        const pendingSessionId = createPendingSessionId(tabId);
-        await ensureSessionSidecar(
-          pendingSessionId,
-          currentTab.agentDir,
-          'tab',
-          tabId,
-        );
-        if (!(await reconcileSessionTabActivation(pendingSessionId, tabId))) {
-          throw new Error(
-            `Rust refused owner reconcile for session ${pendingSessionId} and tab ${tabId}`,
-          );
-        }
 
         // Update tab state → TabProvider will detect sessionId change and reconnect
         // Fresh sidecar for the new session → 'push' (overwrites any stale disposition)
@@ -3130,8 +3124,11 @@ export default function App({ rendererAttachment = COLD_RENDERER_ATTACHMENT }: {
         const fbResult = await migrateFloatingBallSessionBinding(
           oldSessionId,
           pendingSessionId,
-        );
-        if (fbResult.migrated) {
+        ).catch(error => {
+          console.warn('[App] Floating ball binding did not follow the new conversation:', error);
+          return null;
+        });
+        if (fbResult?.migrated) {
           console.log(
             `[App] Floating ball session binding migrated to pending session: ${oldSessionId} -> ${pendingSessionId}, notified=${fbResult.notified}`,
           );
@@ -3141,6 +3138,9 @@ export default function App({ rendererAttachment = COLD_RENDERER_ATTACHMENT }: {
         );
         return true;
       } catch (error) {
+        await releaseTabSession(pendingSessionId, tabId).catch(cleanupError => {
+          console.warn('[App] Failed to release unadopted new conversation:', cleanupError);
+        });
         console.error('[App] handleNewSession failed:', error);
         throw error;
       }

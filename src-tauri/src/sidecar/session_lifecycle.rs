@@ -70,7 +70,61 @@ pub(crate) async fn has_persisted_session_owner(session_id: &str) -> Result<bool
 #[serde(rename_all = "camelCase")]
 pub struct NewDesktopSessionResult {
     new_session_id: Option<String>,
-    background_completion_started: bool,
+    create_new_sidecar: bool,
+}
+
+impl NewDesktopSessionResult {
+    pub(crate) fn migrated(session_id: String) -> Self {
+        Self {
+            new_session_id: Some(session_id),
+            create_new_sidecar: false,
+        }
+    }
+}
+
+/// Protecting a source from reset does not prevent this Tab from starting a
+/// separate conversation. The source's owners and Channel binding stay put.
+pub(crate) fn desktop_session_reset_port(
+    manager: &ManagedSidecarManager,
+    source: &str,
+    tab_id: &str,
+    channel_key: Option<&str>,
+    retained_identity: bool,
+) -> Result<Option<u16>, String> {
+    let mut state = manager.lock().map_err(|error| error.to_string())?;
+    if !state.session_has_exact_owner(source, &SidecarOwner::Tab(tab_id.to_string())) {
+        return Err("The Tab no longer owns this Session".to_string());
+    }
+    let migratable = match channel_key {
+        Some(key) => state.surface_session_migration_is_admissible(source, tab_id, key),
+        None => state.desktop_session_migration_is_admissible(source, tab_id),
+    };
+    Ok(if retained_identity || !migratable {
+        None
+    } else {
+        state.get_session_port(source)
+    })
+}
+
+pub(crate) async fn preserve_desktop_session<R: Runtime>(
+    app: &AppHandle<R>,
+    manager: &ManagedSidecarManager,
+    source: &str,
+) -> Result<NewDesktopSessionResult, String> {
+    let app = app.clone();
+    let manager = manager.clone();
+    let source = source.to_string();
+    // Reuse the existing handoff owner even when the source is recovering or
+    // its activity cannot currently be sampled. The existing poller settles it.
+    tauri::async_runtime::spawn_blocking(move || {
+        super::background::start_headless_background_completion(&app, &manager, &source)
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    Ok(NewDesktopSessionResult {
+        new_session_id: None,
+        create_new_sidecar: true,
+    })
 }
 
 /// New conversation authority is shared by every desktop entry, independently
@@ -84,33 +138,28 @@ pub async fn cmd_new_desktop_session(
     oldSessionId: String,
     tabId: String,
 ) -> Result<NewDesktopSessionResult, String> {
-    if let Some(target) =
+    if let Some(result) =
         crate::im::handover::new_channel_desktop_session(&app, state.inner(), &oldSessionId, &tabId)
             .await?
     {
-        return Ok(NewDesktopSessionResult {
-            new_session_id: Some(target),
-            background_completion_started: false,
-        });
+        return Ok(result);
     }
     let target = uuid::Uuid::new_v4().to_string();
     let _lifecycle = acquire_session_lifecycle(&[&oldSessionId, &target]).await;
     // A dormant binding is still authoritative. A concurrently attached live
     // Channel first acquires its Agent owner under this same lifecycle fence.
-    if crate::im::session_delivery::configured_session_binding_exists(&oldSessionId) {
-        return Err(
-            "The bound Channel is unavailable; reconnect it before starting a new conversation"
-                .to_string(),
-        );
-    }
-    let port = {
-        let mut manager = state.lock().map_err(|error| error.to_string())?;
-        if !manager.session_has_exact_owner(&oldSessionId, &SidecarOwner::Tab(tabId.clone())) {
-            return Err("The Tab no longer owns this Session".to_string());
-        }
-        manager
-            .get_session_port(&oldSessionId)
-            .ok_or_else(|| "Session Sidecar is not ready".to_string())?
+    let retained_identity =
+        crate::im::session_delivery::configured_session_binding_exists(&oldSessionId)
+            || has_persisted_session_owner(&oldSessionId).await?;
+    let Some(port) = desktop_session_reset_port(
+        state.inner(),
+        &oldSessionId,
+        &tabId,
+        None,
+        retained_identity,
+    )?
+    else {
+        return preserve_desktop_session(&app, state.inner(), &oldSessionId).await;
     };
     // Admit the existing background owner here, once, under the source fence.
     // App consumes this decision and never re-samples activity after it returns.
@@ -125,22 +174,11 @@ pub async fn cmd_new_desktop_session(
         )
     })
     .await
-    .map_err(|error| error.to_string())??;
-    if background.started {
-        return Ok(NewDesktopSessionResult {
-            new_session_id: None,
-            background_completion_started: true,
-        });
+    .map_err(|error| error.to_string())?;
+    if !matches!(background, Ok(ref result) if !result.started) {
+        return preserve_desktop_session(&app, state.inner(), &oldSessionId).await;
     }
-    if has_persisted_session_owner(&oldSessionId).await?
-        || !state
-            .lock()
-            .map_err(|error| error.to_string())?
-            .desktop_session_migration_is_admissible(&oldSessionId, &tabId)
-    {
-        return Err("Other owners require this Session identity to remain unchanged".to_string());
-    }
-    let dispatch = transition_desktop_runtime(
+    let Some(dispatch) = transition_desktop_runtime(
         state.inner(),
         &oldSessionId,
         &target,
@@ -149,7 +187,10 @@ pub async fn cmd_new_desktop_session(
         false,
         true,
     )
-    .await?;
+    .await?
+    else {
+        return preserve_desktop_session(&app, state.inner(), &oldSessionId).await;
+    };
     if !commit_desktop_runtime_transition(
         state.inner(),
         &oldSessionId,
@@ -162,17 +203,20 @@ pub async fn cmd_new_desktop_session(
     {
         return Err("Session owners changed before new conversation committed".to_string());
     }
-    Ok(NewDesktopSessionResult {
-        new_session_id: Some(target),
-        background_completion_started: false,
-    })
+    Ok(NewDesktopSessionResult::migrated(target))
+}
+
+enum DesktopTransitionFailure {
+    Busy,
+    Rejected(String),
+    Uncertain(String),
 }
 
 async fn request_desktop_runtime_transition(
     client: &reqwest::Client,
     port: u16,
     payload: &serde_json::Value,
-) -> Result<(), String> {
+) -> Result<(), DesktopTransitionFailure> {
     let response = client
         .post(format!(
             "http://127.0.0.1:{port}/api/session/new-conversation"
@@ -182,24 +226,47 @@ async fn request_desktop_runtime_transition(
         .await;
     let failure = match response {
         Ok(response) if response.status().is_success() => {
-            let result: serde_json::Value =
-                response.json().await.map_err(|error| error.to_string())?;
+            let result: serde_json::Value = response
+                .json()
+                .await
+                .map_err(|error| DesktopTransitionFailure::Uncertain(error.to_string()))?;
             if result.get("sessionId") == payload.get("targetSessionId") {
                 return Ok(());
             }
             "Runtime returned an unexpected Session identity".to_string()
         }
-        Ok(response) => format!(
-            "Session transition returned {}: {}",
-            response.status(),
-            response.text().await.unwrap_or_default()
-        ),
+        Ok(response) => {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            // Only the adapter can confirm that it refused before entering
+            // reset. Preserve the admitted operation which won its mutation
+            // lease; HTTP timeout or a post-reset failure carries no such proof.
+            if status == reqwest::StatusCode::CONFLICT {
+                if let Ok(result) = serde_json::from_str::<serde_json::Value>(&body) {
+                    if result.get("sourceUnchanged") == Some(&serde_json::Value::Bool(true)) {
+                        if result.get("errorCode").and_then(serde_json::Value::as_str)
+                            == Some("session_busy")
+                        {
+                            return Err(DesktopTransitionFailure::Busy);
+                        }
+                        return Err(DesktopTransitionFailure::Rejected(
+                            result
+                                .get("error")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("Session transition was not started")
+                                .to_string(),
+                        ));
+                    }
+                }
+            }
+            format!("Session transition returned {status}: {body}")
+        }
         Err(error) => format!("Session transition response unavailable: {error}"),
     };
     // Only the completed response proves the whole adapter mutation, including
     // durable metadata publication. Reading the target ID alone cannot prove
     // that publication finished or that a still-queued operation has stopped.
-    Err(failure)
+    Err(DesktopTransitionFailure::Uncertain(failure))
 }
 
 /// Caller holds the source lifecycle guard. Manager identity stays on source
@@ -213,7 +280,7 @@ pub(crate) async fn transition_desktop_runtime(
     channel_bound: bool,
     metadata_birth_pending: bool,
     metadata_indexed: bool,
-) -> Result<super::manager::SidecarHttpDispatch, String> {
+) -> Result<Option<super::manager::SidecarHttpDispatch>, String> {
     let client = crate::local_http::json_client(Duration::from_secs(30));
     transition_desktop_runtime_with_client(
         manager,
@@ -237,7 +304,7 @@ async fn transition_desktop_runtime_with_client(
     metadata_birth_pending: bool,
     metadata_indexed: bool,
     client: &reqwest::Client,
-) -> Result<super::manager::SidecarHttpDispatch, String> {
+) -> Result<Option<super::manager::SidecarHttpDispatch>, String> {
     // Keep this exact writer manager-owned even if its final Tab closes while
     // Node is processing the request. A timeout does not release this lease.
     let dispatch = manager
@@ -275,11 +342,17 @@ async fn transition_desktop_runtime_with_client(
         "sourceSessionId": runtime_source, "targetSessionId": target, "channelBound": channel_bound,
         "metadataBirthPending": metadata_birth_pending, "metadataIndexed": metadata_indexed,
     });
-    if let Err(error) = request_desktop_runtime_transition(client, port, &payload).await {
-        retire_failed_desktop_transition(manager, source, dispatch).await?;
-        return Err(error);
+    if let Err(failure) = request_desktop_runtime_transition(client, port, &payload).await {
+        return match failure {
+            DesktopTransitionFailure::Busy => Ok(None),
+            DesktopTransitionFailure::Rejected(error) => Err(error),
+            DesktopTransitionFailure::Uncertain(error) => {
+                retire_failed_desktop_transition(manager, source, dispatch).await?;
+                Err(error)
+            }
+        };
     }
-    Ok(dispatch)
+    Ok(Some(dispatch))
 }
 
 /// Commit only the owners admitted for this transition. A concurrent release
@@ -2393,6 +2466,7 @@ mod session_lifecycle_tests {
             &client,
         )
         .await
+        .unwrap()
         .unwrap();
         super::commit_desktop_runtime_transition(
             &sidecars,
@@ -2409,6 +2483,127 @@ mod session_lifecycle_tests {
             .unwrap()
             .session_has_exact_owner("target", &SidecarOwner::Tab("tab".into())));
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn desktop_explicit_refusal_keeps_the_source_writer_and_owners_usable() {
+        use axum::{routing::post, Json, Router};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let service = Router::new().route(
+            "/api/session/new-conversation",
+            post(|Json(payload): Json<serde_json::Value>| async move {
+                (
+                    axum::http::StatusCode::CONFLICT,
+                    Json(serde_json::json!({
+                        "success": false, "sourceUnchanged": true,
+                        "errorCode": (payload["targetSessionId"] == "busy-target").then_some("session_busy"),
+                        "error": "Wait for the current Session operation to finish",
+                    })),
+                )
+            }),
+        );
+        let server =
+            tauri::async_runtime::spawn(
+                async move { axum::serve(listener, service).await.unwrap() },
+            );
+        let sidecars = std::sync::Arc::new(std::sync::Mutex::new(SidecarManager::new()));
+        sidecars.lock().unwrap().insert_test_ready_frontend_sidecar(
+            "source",
+            port,
+            SidecarOwner::Tab("tab".into()),
+        );
+        let client = crate::local_http::json_client(Duration::from_secs(1));
+        assert!(super::transition_desktop_runtime_with_client(
+            &sidecars, "source", "target", port, true, false, true, &client,
+        )
+        .await
+        .is_err());
+        assert!(super::transition_desktop_runtime_with_client(
+            &sidecars,
+            "source",
+            "busy-target",
+            port,
+            true,
+            false,
+            true,
+            &client,
+        )
+        .await
+        .unwrap()
+        .is_none());
+        let mut state = sidecars.lock().unwrap();
+        assert_eq!(state.get_session_port("source"), Some(port));
+        assert!(state.session_has_exact_owner("source", &SidecarOwner::Tab("tab".into())));
+        assert!(!state.recovering_sidecars.contains_key("source"));
+        assert!(state.acquire_session_dispatch("source").unwrap().is_some());
+        server.abort();
+    }
+
+    #[test]
+    fn desktop_retained_sources_can_start_separately_without_resetting_other_owners() {
+        let sidecars = std::sync::Arc::new(std::sync::Mutex::new(SidecarManager::new()));
+        let tab = SidecarOwner::Tab("tab".into());
+        sidecars
+            .lock()
+            .unwrap()
+            .insert_test_ready_frontend_sidecar("source", 12345, tab.clone());
+        assert_eq!(
+            super::desktop_session_reset_port(&sidecars, "source", "tab", None, false).unwrap(),
+            Some(12345)
+        );
+        // A dormant Channel binding or persisted Task/Goal protects identity,
+        // not the user's ability to create a separate conversation.
+        assert_eq!(
+            super::desktop_session_reset_port(&sidecars, "source", "tab", None, true).unwrap(),
+            None
+        );
+        for owner in [
+            SidecarOwner::Companion("companion".into()),
+            SidecarOwner::Task("task".into()),
+            SidecarOwner::Tab("other-tab".into()),
+        ] {
+            sidecars
+                .lock()
+                .unwrap()
+                .add_session_owner("source", owner.clone());
+            assert_eq!(
+                super::desktop_session_reset_port(&sidecars, "source", "tab", None, false).unwrap(),
+                None
+            );
+            assert!(sidecars
+                .lock()
+                .unwrap()
+                .session_has_exact_owner("source", &owner));
+            let release = sidecars
+                .lock()
+                .unwrap()
+                .remove_session_owner("source", &owner);
+            assert!(release.drain.is_none());
+        }
+        let channel = SidecarOwner::Agent("peer".into());
+        sidecars
+            .lock()
+            .unwrap()
+            .add_session_owner("source", channel.clone());
+        assert_eq!(
+            super::desktop_session_reset_port(&sidecars, "source", "tab", Some("peer"), false)
+                .unwrap(),
+            Some(12345)
+        );
+        assert_eq!(
+            super::desktop_session_reset_port(&sidecars, "source", "tab", Some("peer"), true)
+                .unwrap(),
+            None
+        );
+        assert!(sidecars
+            .lock()
+            .unwrap()
+            .session_has_exact_owner("source", &channel));
+        assert!(
+            super::desktop_session_reset_port(&sidecars, "source", "wrong-tab", None, false)
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -2440,6 +2635,7 @@ mod session_lifecycle_tests {
             &sidecars, "source", "target", port, true, false, true, &client,
         )
         .await
+        .unwrap()
         .unwrap();
         let _release = sidecars
             .lock()

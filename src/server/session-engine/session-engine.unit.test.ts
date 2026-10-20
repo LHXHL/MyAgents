@@ -2861,6 +2861,8 @@ describe('session-engine selector and adapters', () => {
 
     await expect(getSessionEngine().transitionDesktopSession('/workspace', { sourceSessionId: mocks.state.useExternal ? 'external-session' : 'builtin-session', targetSessionId: 'new-desktop', channelBound: false })).resolves.toEqual({
       success: false,
+      sourceUnchanged: true,
+      errorCode: 'session_busy',
       error: 'Wait for the current Session operation to finish',
     });
     expect(mocks.stopExternalSession).not.toHaveBeenCalled();
@@ -2924,7 +2926,7 @@ describe('session-engine selector and adapters', () => {
     mocks.state.useExternal = external;
     await expect(getSessionEngine().transitionDesktopSession('/workspace', {
       sourceSessionId: 'stale-source', targetSessionId: 'next-session', channelBound: true,
-    })).resolves.toMatchObject({ success: false, error: 'Session identity changed before new conversation' });
+    })).resolves.toMatchObject({ success: false, sourceUnchanged: true, error: 'Session identity changed before new conversation' });
     expect(mocks.resetSession).not.toHaveBeenCalled();
     expect(mocks.freezeCurrentSessionMetadataForImDetach).not.toHaveBeenCalled();
     expect(mocks.stopExternalSession).not.toHaveBeenCalled();
@@ -3021,11 +3023,31 @@ describe('session-engine selector and adapters', () => {
       targetSessionId: 'f7cd3447-b444-46a6-94bb-d549bfdcd9bd',
     })).resolves.toEqual({
       success: false,
+      sourceUnchanged: true,
+      errorCode: 'session_busy',
       error: 'Wait for the current Session operation to finish',
     });
     expect(mocks.updateSessionMetadata).not.toHaveBeenCalled();
     expect(mocks.stopExternalSession).not.toHaveBeenCalled();
     expect(mocks.restoreExternalSessionState).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])('preserves work accepted after Rust sampled idle (external=%s)', async external => {
+    mocks.state.useExternal = external;
+    // Rust saw idle before sending this request; only the adapter sees the
+    // newly accepted work at its mutation boundary.
+    if (external) mocks.state.externalBusy = true;
+    else mocks.isSessionBusy.mockReturnValueOnce(true);
+    await expect(getSessionEngine().transitionDesktopSession('/workspace', {
+      sourceSessionId: external ? 'external-session' : 'builtin-session',
+      targetSessionId: 'next-session', channelBound: true,
+    })).resolves.toEqual({
+      success: false, sourceUnchanged: true, errorCode: 'session_busy',
+    });
+    expect(mocks.freezeCurrentSessionMetadataForImDetach).not.toHaveBeenCalled();
+    expect(mocks.resetSession).not.toHaveBeenCalled();
+    expect(mocks.updateSessionMetadata).not.toHaveBeenCalled();
+    expect(mocks.stopExternalSession).not.toHaveBeenCalled();
   });
 
   it('freezes the current external IM session through the engine facade', async () => {

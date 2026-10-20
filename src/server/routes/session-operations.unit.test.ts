@@ -12,7 +12,9 @@ const mocks = vi.hoisted(() => ({
     forkAtAssistantMessage: vi.fn<(messageId: string, options?: { targetSessionId?: string }) => Promise<Record<string, unknown>>>(
       async () => ({ success: true, newSessionId: 'forked' }),
     ),
-    transitionDesktopSession: vi.fn(async (_workspacePath: string, options: { targetSessionId: string }) => ({
+    transitionDesktopSession: vi.fn(async (_workspacePath: string, options: { targetSessionId: string }): Promise<{
+      success: boolean; sessionId?: string; error?: string; sourceUnchanged?: true;
+    }> => ({
       success: true,
       sessionId: options.targetSessionId,
     })),
@@ -49,6 +51,26 @@ describe('handleSessionOperationRoute', () => {
       success: true,
       sessionId: options.targetSessionId,
     }));
+  });
+
+  it('distinguishes a completed pre-reset refusal from uncertain transition failure', async () => {
+    const request = () => new Request('http://local/api/session/new-conversation', {
+      method: 'POST',
+      body: JSON.stringify({
+        sourceSessionId: 'source', targetSessionId: 'f7cd3447-b444-46a6-94bb-d549bfdcd9bd',
+        channelBound: true,
+      }),
+    });
+    mocks.engine.transitionDesktopSession.mockResolvedValueOnce({
+      success: false, sourceUnchanged: true, error: 'busy',
+    });
+    const refused = await handleSessionOperationRoute('/api/session/new-conversation', request(), { workspacePath: '/workspace' });
+    expect(refused?.status).toBe(409);
+    expect(await refused?.json()).toMatchObject({ sourceUnchanged: true });
+    mocks.engine.transitionDesktopSession.mockRejectedValueOnce(new Error('publication failed'));
+    const uncertain = await handleSessionOperationRoute('/api/session/new-conversation', request(), { workspacePath: '/workspace' });
+    expect(uncertain?.status).toBe(500);
+    expect(await uncertain?.json()).not.toHaveProperty('sourceUnchanged');
   });
 
   it('retries a selected MCP through the facade and preserves busy responses', async () => {

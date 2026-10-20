@@ -215,7 +215,7 @@ export interface TabContextValue extends TabState {
     retryCurrentSessionRestore: (targetMessageId?: string) => Promise<CurrentSessionRestoreResult>;
     /** Prepend the next page of older messages. Safe to call repeatedly — guarded internally. */
     loadOlderMessages: (options?: LoadOlderMessagesOptions) => Promise<void>;
-    resetSession: (options?: { onBackgroundCompletion?: (sourceSessionId: string) => Promise<boolean> }) => Promise<boolean>;
+    resetSession: (options?: { onNewSidecar?: (sourceSessionId: string) => Promise<boolean> }) => Promise<boolean>;
     /** Adopt the identity already committed by Rust's desktop-new lifecycle.
      * No backend reset or owner rekey is performed by this projection helper. */
     adoptMigratedSession: (newSessionId: string, options?: AdoptMigratedSessionOptions) => Promise<boolean>;

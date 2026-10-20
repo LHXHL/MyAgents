@@ -1103,13 +1103,18 @@ export function createExternalSessionEngine(): SessionEngine {
 
     async transitionDesktopSession(workspacePath, options) {
       await awaitExternalSessionStarting();
+      // Check synchronously before acquiring our own lease: work may have
+      // arrived after Rust sampled idle, and the lease itself counts as busy.
+      if (isExternalSessionBusy()) {
+        return { success: false, sourceUnchanged: true, errorCode: 'session_busy' };
+      }
       const lease = tryAcquireExternalSessionMutationLease();
       if (!lease) {
-        return { success: false, error: 'Wait for the current Session operation to finish' };
+        return { success: false, sourceUnchanged: true, errorCode: 'session_busy', error: 'Wait for the current Session operation to finish' };
       }
       try {
         if (getCurrentProductSessionId() !== options.sourceSessionId) {
-          return { success: false, error: 'Session identity changed before new conversation' };
+          return { success: false, sourceUnchanged: true, error: 'Session identity changed before new conversation' };
         }
         if (options.channelBound) {
           const freeze = await freezeCurrentProductSessionMetadata({
@@ -1118,7 +1123,7 @@ export function createExternalSessionEngine(): SessionEngine {
             allowMissingMetadata: options.metadataBirthPending === true || options.metadataIndexed === false,
           });
           if (!freeze.success) {
-            return { success: false, error: freeze.error ?? 'Failed to freeze current Session before migration' };
+            return { success: false, sourceUnchanged: true, error: freeze.error ?? 'Failed to freeze current Session before migration' };
           }
         }
         if (hasExternalRuntimeProcess()) {

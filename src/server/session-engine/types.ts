@@ -522,5 +522,5 @@ export interface SessionEngine {
       metadataBirthPending?: boolean;
       metadataIndexed?: boolean;
     },
-  ): Promise<{ success: boolean; sessionId?: string; error?: string }>;
+  ): Promise<{ success: boolean; sessionId?: string; error?: string; sourceUnchanged?: true; errorCode?: 'session_busy' }>;
 }

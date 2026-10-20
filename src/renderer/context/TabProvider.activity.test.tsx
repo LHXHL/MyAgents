@@ -1810,7 +1810,7 @@ describe('TabProvider session activity ownership', () => {
   });
 
   it('keeps the live SSE owner when reset upgrades a real session on the same sidecar', async () => {
-    tauriHarness.newDesktopSession.mockResolvedValue({ newSessionId: 'session-reset-b', backgroundCompletionStarted: false });
+    tauriHarness.newDesktopSession.mockResolvedValue({ newSessionId: 'session-reset-b', createNewSidecar: false });
     let resolveSessionC!: (response: Response) => void;
     const sessionCResponse = new Promise<Response>((resolve) => {
       resolveSessionC = resolve;
@@ -1962,7 +1962,7 @@ describe('TabProvider session activity ownership', () => {
   });
 
   it('moves reset scope before parent adoption without letting connected status relabel it', async () => {
-    tauriHarness.newDesktopSession.mockResolvedValue({ newSessionId: 'session-reset-race-b', backgroundCompletionStarted: false });
+    tauriHarness.newDesktopSession.mockResolvedValue({ newSessionId: 'session-reset-race-b', createNewSidecar: false });
     let resolveAdoption!: (accepted: boolean) => void;
     const adoption = new Promise<boolean>((resolve) => {
       resolveAdoption = resolve;
@@ -2368,7 +2368,7 @@ describe('TabProvider session activity ownership', () => {
     { boundary: 'migration', format: 1 }, { boundary: 'migration', format: 2 },
     { boundary: 'reset', format: 1 }, { boundary: 'reset', format: 2 },
   ])('recovers the first offline IM turn after $boundary (V$format)', async ({ boundary, format }) => {
-    tauriHarness.newDesktopSession.mockResolvedValue({ newSessionId: 'session-migrated-b', backgroundCompletionStarted: false });
+    tauriHarness.newDesktopSession.mockResolvedValue({ newSessionId: 'session-migrated-b', createNewSidecar: false });
     let targetReads = 0;
     tauriHarness.proxyFetch.mockImplementation(async (url: string) => {
       const target = url.includes('/sessions/session-migrated-b?');

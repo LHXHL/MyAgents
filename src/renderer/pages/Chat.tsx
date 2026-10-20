@@ -571,7 +571,7 @@ interface ChatProps {
   ) => () => void;
   /** Native shown/not-minimized lifecycle; focus is intentionally independent. */
   windowPresentation: MainWindowPresentation;
-  /** Called when user starts a new session. Returns true if handled externally (background completion started). */
+  /** Opens a separate conversation after Rust has retained the source Session. */
   onNewSession?: (sourceSessionId: string) => Promise<boolean>;
   /** Opens a persisted Session through App's canonical new/jump/revive path. */
   onOpenSession?: (
@@ -6113,7 +6113,7 @@ export default function Chat({
   // Channel discovery and idle/reset admission belong to Rust. A display
   // snapshot may lag migration or startup and cannot select a mutation path.
   const handleNewSession = useCallback(
-    () => resetSession({ onBackgroundCompletion: onNewSession }),
+    () => resetSession({ onNewSidecar: onNewSession }),
     [onNewSession, resetSession],
   );
 

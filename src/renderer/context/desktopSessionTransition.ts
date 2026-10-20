@@ -5,7 +5,7 @@ interface DesktopSessionTransitionOptions {
   sessionId: string;
   tabId: string;
   newDesktopSession: (args: { oldSessionId: string; tabId: string }) => Promise<NewDesktopSessionResult>;
-  onBackgroundCompletion?: (sourceSessionId: string) => Promise<boolean>;
+  onNewSidecar?: (sourceSessionId: string) => Promise<boolean>;
   adoptMigratedSession: (newSessionId: string, options: { sidecarAlreadyMigrated: true; newConversation: true }) => Promise<boolean>;
   releaseMigratedTabOwner: (sessionId: string, tabId: string) => Promise<unknown>;
   reportError: (message: string) => void;
@@ -23,7 +23,7 @@ export async function transitionDesktopSession(
     sessionId,
     tabId,
     newDesktopSession,
-    onBackgroundCompletion,
+    onNewSidecar,
     adoptMigratedSession,
     releaseMigratedTabOwner,
     reportError,
@@ -32,7 +32,7 @@ export async function transitionDesktopSession(
 
   try {
     const result = await newDesktopSession({ oldSessionId: sessionId, tabId });
-    if (result.backgroundCompletionStarted) return await onBackgroundCompletion?.(sessionId) ?? false;
+    if (result.createNewSidecar) return await onNewSidecar?.(sessionId) ?? false;
     migratedSessionId = result.newSessionId;
 
     if (!migratedSessionId) {
