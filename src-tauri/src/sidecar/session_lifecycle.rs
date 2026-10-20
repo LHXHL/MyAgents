@@ -307,11 +307,14 @@ async fn transition_desktop_runtime_with_client(
 ) -> Result<Option<super::manager::SidecarHttpDispatch>, String> {
     // Keep this exact writer manager-owned even if its final Tab closes while
     // Node is processing the request. A timeout does not release this lease.
-    let dispatch = manager
+    let Some(dispatch) = manager
         .lock()
         .map_err(|error| error.to_string())?
         .acquire_session_dispatch(source)?
-        .ok_or_else(|| "Source Sidecar is no longer ready".to_string())?;
+    else {
+        // No mutation was sent. Source recovery must not block a separate birth.
+        return Ok(None);
+    };
     if dispatch.url_for_path("/")? != format!("http://127.0.0.1:{port}/") {
         return Err("Source Sidecar generation changed".to_string());
     }
@@ -319,22 +322,36 @@ async fn transition_desktop_runtime_with_client(
     // its Runtime identity from this pinned process before entering the adapter
     // mutation boundary; ordinary canonical sources must still match exactly.
     let runtime_source = if source.starts_with("pending-") {
-        let result: serde_json::Value = client
-            .get(dispatch.url_for_path("/api/session-state")?)
-            .send()
-            .await
-            .map_err(|error| error.to_string())?
-            .error_for_status()
-            .map_err(|error| error.to_string())?
-            .json()
-            .await
-            .map_err(|error| error.to_string())?;
-        result
-            .get("sessionId")
-            .and_then(serde_json::Value::as_str)
-            .filter(|id| uuid::Uuid::parse_str(id).is_ok())
-            .ok_or_else(|| "Bootstrap Runtime identity is unavailable".to_string())?
-            .to_string()
+        let probe = async {
+            let result: serde_json::Value = client
+                .get(dispatch.url_for_path("/api/session-state")?)
+                .send()
+                .await
+                .map_err(|error| error.to_string())?
+                .error_for_status()
+                .map_err(|error| error.to_string())?
+                .json()
+                .await
+                .map_err(|error| error.to_string())?;
+            result
+                .get("sessionId")
+                .and_then(serde_json::Value::as_str)
+                .filter(|id| uuid::Uuid::parse_str(id).is_ok())
+                .map(str::to_string)
+                .ok_or_else(|| "Bootstrap Runtime identity is unavailable".to_string())
+        }
+        .await;
+        match probe {
+            Ok(identity) => identity,
+            Err(error) => {
+                ulog_warn!(
+                    "[sidecar] New conversation retains bootstrap source {}: {}",
+                    source,
+                    error
+                );
+                return Ok(None);
+            }
+        }
     } else {
         source.to_string()
     };
@@ -2482,6 +2499,74 @@ mod session_lifecycle_tests {
             .lock()
             .unwrap()
             .session_has_exact_owner("target", &SidecarOwner::Tab("tab".into())));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn desktop_source_loss_before_reset_allows_separate_birth_without_retirement() {
+        use axum::{routing::get, Router};
+        // The identity probe is read-only. Failure must not issue a reset or
+        // retire a writer that has not accepted a transition.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tauri::async_runtime::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().route(
+                    "/api/session-state",
+                    get(|| async { axum::http::StatusCode::SERVICE_UNAVAILABLE }),
+                ),
+            )
+            .await
+            .unwrap();
+        });
+        let sidecars = std::sync::Arc::new(std::sync::Mutex::new(SidecarManager::new()));
+        sidecars.lock().unwrap().insert_test_ready_frontend_sidecar(
+            "pending-source",
+            port,
+            SidecarOwner::Tab("tab".into()),
+        );
+        let client = crate::local_http::json_client(Duration::from_secs(1));
+        assert!(super::transition_desktop_runtime_with_client(
+            &sidecars,
+            "pending-source",
+            "target",
+            port,
+            false,
+            false,
+            true,
+            &client,
+        )
+        .await
+        .unwrap()
+        .is_none());
+        {
+            let mut state = sidecars.lock().unwrap();
+            assert!(
+                state.session_has_exact_owner("pending-source", &SidecarOwner::Tab("tab".into()))
+            );
+            assert_eq!(state.get_session_port("pending-source"), Some(port));
+            let source = state.sidecars.get_mut("pending-source").unwrap();
+            source.process.kill().unwrap();
+            source.process.wait().unwrap();
+        }
+        assert!(super::transition_desktop_runtime_with_client(
+            &sidecars,
+            "pending-source",
+            "target",
+            port,
+            false,
+            false,
+            true,
+            &client,
+        )
+        .await
+        .unwrap()
+        .is_none());
+        assert!(sidecars
+            .lock()
+            .unwrap()
+            .session_has_exact_owner("pending-source", &SidecarOwner::Tab("tab".into()),));
         server.abort();
     }
 

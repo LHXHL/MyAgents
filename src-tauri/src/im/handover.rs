@@ -146,7 +146,73 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn freeze_current_via_sidecar_sends_metadata_indexed_flag() {
+    async fn desktop_new_rechecks_binding_after_waiting_for_im_rotation() {
+        let app = tauri::test::mock_app();
+        let directory = tempfile::tempdir().unwrap();
+        let router = Arc::new(AsyncMutex::new(super::SessionRouter::new(
+            directory.path().into(),
+        )));
+        let key = "agent:a:telegram:private:user";
+        router.lock().await.upsert_peer_session(super::PeerSession {
+            session_key: key.into(),
+            session_id: "source".into(),
+            sidecar_port: 0,
+            workspace_path: directory.path().into(),
+            source_type: super::ImSourceType::Private,
+            source_id: "user".into(),
+            source_display_name: None,
+            last_sender_name: None,
+            message_count: 1,
+            metadata_birth_pending: false,
+            metadata_indexed: true,
+            last_active: std::time::Instant::now(),
+        });
+        let health = Arc::new(super::HealthManager::new(
+            directory.path().join("health.json"),
+        ));
+        let peer_locks = Arc::new(AsyncMutex::new(std::collections::HashMap::new()));
+        let fence = acquire_peer_operation_fence(&peer_locks, key).await;
+        let manager = Arc::new(Mutex::new(crate::sidecar::SidecarManager::new()));
+        manager.lock().unwrap().insert_test_ready_frontend_sidecar(
+            "source",
+            12345,
+            crate::sidecar::SidecarOwner::Tab("tab".into()),
+        );
+        let mut pending = Box::pin(super::new_channel_desktop_session_with_binding(
+            app.handle(),
+            &manager,
+            "source",
+            "tab",
+            (key.into(), router.clone(), health, peer_locks),
+        ));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), pending.as_mut())
+                .await
+                .is_err()
+        );
+        router
+            .lock()
+            .await
+            .stage_materialized_session_binding(key, "im-new");
+        drop(fence);
+        assert!(pending.await.unwrap().is_none());
+        assert_eq!(
+            router
+                .lock()
+                .await
+                .peer_session_snapshot(key)
+                .unwrap()
+                .session_id,
+            "im-new"
+        );
+        assert!(manager
+            .lock()
+            .unwrap()
+            .session_has_exact_owner("source", &crate::sidecar::SidecarOwner::Tab("tab".into()),));
+    }
+
+    #[tokio::test]
+    async fn freeze_current_via_sidecar_uses_current_generation_and_metadata_flags() {
         let (tx, rx) = oneshot::channel::<Value>();
         let tx = Arc::new(Mutex::new(Some(tx)));
         let app = Router::new().route(
@@ -175,9 +241,46 @@ mod tests {
             let _ = axum::serve(listener, app).await;
         });
 
-        freeze_current_via_sidecar(port, false, false)
-            .await
-            .expect("freeze-current succeeds");
+        let manager = Arc::new(Mutex::new(crate::sidecar::SidecarManager::new()));
+        // The prior Router endpoint can be stale or zero; freeze resolves the
+        // replacement from the logical Session, not that cached endpoint.
+        manager.lock().unwrap().insert_test_ready_frontend_sidecar(
+            "recovered-source",
+            1,
+            crate::sidecar::SidecarOwner::Tab("tab".into()),
+        );
+        let previous_generation = manager
+            .lock()
+            .unwrap()
+            .acquire_session_dispatch("recovered-source")
+            .unwrap()
+            .unwrap()
+            .generation();
+        manager.lock().unwrap().insert_test_ready_frontend_sidecar(
+            "recovered-source",
+            port,
+            crate::sidecar::SidecarOwner::Tab("tab".into()),
+        );
+        assert_ne!(
+            manager
+                .lock()
+                .unwrap()
+                .acquire_session_dispatch("recovered-source")
+                .unwrap()
+                .unwrap()
+                .generation(),
+            previous_generation
+        );
+        assert!(
+            freeze_current_via_sidecar(&manager, "recovered-source", false, false)
+                .await
+                .expect("freeze-current succeeds on the manager's current port")
+        );
+        assert!(
+            !freeze_current_via_sidecar(&manager, "offline-source", false, false)
+                .await
+                .expect("offline source uses existing file preservation")
+        );
 
         let payload = rx.await.expect("captured freeze-current payload");
         assert_eq!(payload["metadataBirthPending"].as_bool(), Some(false));
@@ -197,12 +300,23 @@ fn short_id(s: &str) -> String {
 }
 
 async fn freeze_current_via_sidecar(
-    port: u16,
+    manager: &ManagedSidecarManager,
+    session_id: &str,
     metadata_birth_pending: bool,
     metadata_indexed: bool,
-) -> Result<(), String> {
+) -> Result<bool, String> {
+    // Router owns the binding, not its cached process endpoint. Pin the
+    // current generation under the same lifecycle used by recovery/reset.
+    let _lifecycle = crate::sidecar::acquire_session_lifecycle(&[session_id]).await;
+    let Some(dispatch) = manager
+        .lock()
+        .map_err(|error| error.to_string())?
+        .acquire_session_dispatch(session_id)?
+    else {
+        return Ok(false);
+    };
     let client = crate::local_http::json_client(Duration::from_secs(30));
-    let url = format!("http://127.0.0.1:{}/api/session/freeze-current", port);
+    let url = dispatch.url_for_path("/api/session/freeze-current")?;
     let resp = client
         .post(&url)
         .json(&json!({
@@ -217,23 +331,24 @@ async fn freeze_current_via_sidecar(
         let body = resp.text().await.unwrap_or_default();
         return Err(format!("freeze-current returned {}: {}", status, body));
     }
-    Ok(())
+    // Consume the response while the dispatch lease still pins the writer.
+    resp.bytes().await.map_err(|error| error.to_string())?;
+    Ok(true)
 }
 
 /// Resolve the current Router authority, never the renderer's polled status.
 /// Snapshots avoid retaining ManagedAgents across Router/lifecycle awaits.
+type DesktopChannelBinding = (
+    String,
+    std::sync::Arc<tokio::sync::Mutex<SessionRouter>>,
+    std::sync::Arc<HealthManager>,
+    PeerLocks,
+);
+
 async fn desktop_channel_binding<R: Runtime>(
     app: &AppHandle<R>,
     session_id: &str,
-) -> Result<
-    Option<(
-        String,
-        std::sync::Arc<tokio::sync::Mutex<SessionRouter>>,
-        std::sync::Arc<HealthManager>,
-        PeerLocks,
-    )>,
-    String,
-> {
+) -> Result<Option<DesktopChannelBinding>, String> {
     let agents = app.state::<ManagedAgents>();
     let mut snapshots = {
         let agents = agents.lock().await;
@@ -294,20 +409,31 @@ pub(crate) async fn new_channel_desktop_session<R: Runtime>(
     old_session_id: &str,
     tab_id: &str,
 ) -> Result<Option<crate::sidecar::session_lifecycle::NewDesktopSessionResult>, String> {
-    let Some((session_key, router_arc, health, peer_locks)) =
-        desktop_channel_binding(app, old_session_id).await?
-    else {
+    let Some(binding) = desktop_channel_binding(app, old_session_id).await? else {
         return Ok(None);
     };
+    new_channel_desktop_session_with_binding(app, manager, old_session_id, tab_id, binding).await
+}
+
+async fn new_channel_desktop_session_with_binding<R: Runtime>(
+    app: &AppHandle<R>,
+    manager: &ManagedSidecarManager,
+    old_session_id: &str,
+    tab_id: &str,
+    (session_key, router_arc, health, peer_locks): DesktopChannelBinding,
+) -> Result<Option<crate::sidecar::session_lifecycle::NewDesktopSessionResult>, String> {
     let _peer = acquire_peer_operation_fence(&peer_locks, &session_key).await;
     let _projection = health.lock_active_sessions_projection().await;
     let mut router = router_arc.lock().await;
-    let prior = router
+    let Some(prior) = router
         .peer_session_snapshot(&session_key)
-        .ok_or_else(|| "Channel binding disappeared before migration".to_string())?;
-    if prior.session_id != old_session_id {
-        return Err("Channel binding changed before migration".to_string());
-    }
+        .filter(|prior| prior.session_id == old_session_id)
+    else {
+        // IM may have rotated this binding while desktop waited for its fence.
+        // Let the ordinary desktop path re-admit the source under its lifecycle
+        // lock; it still checks the exact Tab owner and any remaining bindings.
+        return Ok(None);
+    };
     let target = uuid::Uuid::new_v4().to_string();
     let _lifecycle = crate::sidecar::acquire_session_lifecycle(&[old_session_id, &target]).await;
     let retained_identity = crate::sidecar::has_persisted_session_owner(old_session_id).await?;
@@ -736,62 +862,29 @@ pub(super) async fn handover_session_to_channel<R: Runtime>(
                     router.classify_peer_session_metadata_for_binding_rotation(&target_session_key),
                 )
             };
-            let freeze_result = if !peer_binding_source_requires_freeze(prior_metadata_disposition)
-            {
-                ulog_info!(
-                    "[handover] step4b skipped freeze for unmaterialized prior session {} disposition={:?}",
-                    short_id(&prior_for_freeze.session_id),
-                    prior_metadata_disposition,
-                );
-                Ok(())
-            } else if prior_for_freeze.sidecar_port != 0 {
-                freeze_current_via_sidecar(
-                    prior_for_freeze.sidecar_port,
-                    prior_for_freeze.metadata_birth_pending,
-                    prior_for_freeze.metadata_indexed,
-                )
-                .await
-                .map(|_| {
+            let freeze_result = async {
+                if !peer_binding_source_requires_freeze(prior_metadata_disposition) {
                     ulog_info!(
-                        "[handover] step4b froze prior session {} via sidecar port {}",
-                        short_id(&prior_for_freeze.session_id),
-                        prior_for_freeze.sidecar_port
+                        "[handover] step4b skipped freeze for unmaterialized prior session {} disposition={:?}",
+                        short_id(&prior_for_freeze.session_id), prior_metadata_disposition,
                     );
-                })
-            } else {
-                runtime_change::freeze_via_file_lock_status(
-                    &prior_for_freeze.session_id,
-                )
-                .await
-                .and_then(|outcome| {
-                    runtime_change::resolve_peer_file_lock_freeze_outcome(
-                        outcome,
-                        prior_for_freeze.metadata_birth_pending,
-                        prior_for_freeze.metadata_indexed,
-                        &prior_for_freeze.session_id,
-                    )
-                })
-                .map(|disposition| match disposition {
-                        runtime_change::PeerFileLockFreezeDisposition::Frozen | runtime_change::PeerFileLockFreezeDisposition::PreservedLegacy => {
-                            ulog_info!(
-                                "[handover] step4b preserved offline prior session {} without reconstructing settings",
-                                short_id(&prior_for_freeze.session_id)
-                            );
-                        }
-                        runtime_change::PeerFileLockFreezeDisposition::MissingBirthPending => {
-                            ulog_info!(
-                                "[handover] step4b skipped freeze for birth-pending prior session {} missing from SessionStore",
-                                short_id(&prior_for_freeze.session_id)
-                            );
-                        }
-                        runtime_change::PeerFileLockFreezeDisposition::MissingUnindexedPeerSession => {
-                            ulog_info!(
-                                "[handover] step4b skipped freeze for unindexed prior peer session {} missing from SessionStore",
-                                short_id(&prior_for_freeze.session_id)
-                            );
-                        }
-                    })
-            };
+                    return Ok(());
+                }
+                if freeze_current_via_sidecar(
+                    manager.inner(), &prior_for_freeze.session_id,
+                    prior_for_freeze.metadata_birth_pending, prior_for_freeze.metadata_indexed,
+                ).await? {
+                    ulog_info!("[handover] step4b froze prior session {} via its current Sidecar", short_id(&prior_for_freeze.session_id));
+                    return Ok(());
+                }
+                let outcome = runtime_change::freeze_via_file_lock_status(&prior_for_freeze.session_id).await?;
+                let disposition = runtime_change::resolve_peer_file_lock_freeze_outcome(
+                    outcome, prior_for_freeze.metadata_birth_pending,
+                    prior_for_freeze.metadata_indexed, &prior_for_freeze.session_id,
+                )?;
+                ulog_info!("[handover] step4b preserved offline prior session {} disposition={:?}", short_id(&prior_for_freeze.session_id), disposition);
+                Ok::<(), String>(())
+            }.await;
             if let Err(e) = freeze_result {
                 let _ = release_session_sidecar(manager.inner(), &sessionId, &owner).await;
                 ulog_warn!(

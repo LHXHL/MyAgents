@@ -188,6 +188,8 @@ Stop/Reset 的结果也由 SessionEngine 决定。Stop 的回执或超时不代�
 
 同一 Tab 切换到独立新建的 pending Session 时，`TabProvider` 必须在新订阅接入前结束旧 Session 的展示生命周期：复用与原地迁移相同的清理入口，清除消息、流式缓冲、消息 ID 去重、交互状态和标题。消息 ID 只在各自 Session 内唯一；保留旧投影会把新消息误认为旧消息。pending→canonical 是同一会话的实体化，必须保留已经显示的首轮内容；同会话重连也不得清空历史。
 
+等待 peer fence 后若 Channel 已经换绑，桌面新对话重新走普通 Session lifecycle 准入，不能用等待前的 binding 快照否决操作。源进程在 reset 请求发送前退出、或 bootstrap identity 的只读探测失败时，保留源并独立新建；这与 reset 请求发送后的不确定结果不同。显式 Channel handover 冻结旧会话时也必须经 Manager 按逻辑 Session 取得当前 generation 的 dispatch lease，并持 source lifecycle fence，不能使用 Router 缓存的旧端口。
+
 Runtime 成功前 Manager 与 Router 保持 source，成功后才发布 target。adapter 在既有 mutation boundary 重新判断已接纳工作，不能把 Rust 的较早 idle 采样当成重置许可；busy 返回 `sourceUnchanged` / `session_busy` / HTTP 409，Rust 同样转入保留 source、独立新建。其它进入 reset 前的明确拒绝也返回 `sourceUnchanged` / HTTP 409，Rust 保留旧 writer 和正在执行的操作。超时、坏回执或 reset 后写盘失败不等于取消：Rust 持有精确 generation 的 dispatch lease，关闭 admission、终止并确认旧 writer 退出后，才通过已有 recovery 保留原 owners；不能用一次 session-state 读到 source 或 target 就推定整个 mutation 已结束。前端只采用 Rust 已提交的 identity，拒绝时保留历史。App 打开新 Tab 失败须与「可在当前空会话 reset」区分，不能用失败触发破坏性的 fallback。
 
 ## 5. Goal 与跨 Session 协作
