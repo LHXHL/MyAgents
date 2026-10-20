@@ -3166,6 +3166,18 @@ fn persist_agent_channel_enabled_at_path(
                     .find(|agent| agent["id"].as_str() == Some(agent_id))
             })
             .ok_or_else(|| format!("Agent {agent_id} not found"))?;
+        let channel = agent
+            .get_mut("channels")
+            .and_then(|v| v.as_array_mut())
+            .and_then(|channels| {
+                channels
+                    .iter_mut()
+                    .find(|channel| channel["id"].as_str() == Some(channel_id))
+            })
+            .ok_or_else(|| format!("Channel {channel_id} not found"))?;
+        // Validate the requested intent, not the old disabled projection.
+        // with_config_lock only writes this candidate if validation succeeds.
+        channel["enabled"] = serde_json::json!(enabled);
         if enabled {
             let parsed: types::AgentConfigRust =
                 serde_json::from_value(agent.clone()).map_err(|e| e.to_string())?;
@@ -3181,16 +3193,6 @@ fn persist_agent_channel_enabled_at_path(
                 return Err("Channel is missing required credentials".into());
             }
         }
-        let channel = agent
-            .get_mut("channels")
-            .and_then(|v| v.as_array_mut())
-            .and_then(|channels| {
-                channels
-                    .iter_mut()
-                    .find(|channel| channel["id"].as_str() == Some(channel_id))
-            })
-            .ok_or_else(|| format!("Channel {channel_id} not found"))?;
-        channel["enabled"] = serde_json::json!(enabled);
         Ok(())
     })?;
     Ok(())
@@ -4260,6 +4262,62 @@ pub async fn monitor_agent_channels(
 #[cfg(test)]
 mod enabled_intent_tests {
     use super::*;
+
+    #[test]
+    fn stopped_channels_can_be_enabled_with_existing_credentials() {
+        for channel in [
+            serde_json::json!({"type":"telegram", "botToken":"test-token"}),
+            serde_json::json!({"type":"feishu", "feishuAppId":"test-app", "feishuAppSecret":"test-secret"}),
+            serde_json::json!({"type":"dingtalk", "dingtalkClientId":"test-app", "dingtalkClientSecret":"test-secret"}),
+            serde_json::json!({"type":"openclaw:openclaw-weixin", "openclawPluginId":"test-plugin"}),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("config.json");
+            let mut channel = channel;
+            channel["id"] = "c".into();
+            channel["enabled"] = false.into();
+            let config = serde_json::json!({"themeId":"latest-theme", "appearanceMode":"system", "themeSelectionExplicit":true, "agents":[{
+                "id":"a", "name":"Latest name", "enabled":false,
+                "channels":[channel]
+            }]});
+            std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+            let archived = ArchivedAgentWorkspaces::default();
+            persist_agent_channel_enabled_at_path(&path, &archived, "a", "c", true)
+                .expect("explicit enable must evaluate the requested state");
+            let actual: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            let mut expected = config;
+            expected["agents"][0]["channels"][0]["enabled"] = true.into();
+            assert_eq!(actual, expected);
+            persist_agent_channel_enabled_at_path(&path, &archived, "a", "c", false).unwrap();
+            persist_agent_channel_enabled_at_path(&path, &archived, "a", "c", true).unwrap();
+        }
+    }
+
+    #[test]
+    fn rejected_enable_leaves_disabled_intent_on_disk() {
+        for archived_agent in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("config.json");
+            let mut config = serde_json::json!({"agents":[{
+                "id":"a", "name":"Agent", "enabled":false,
+                "channels":[{"id":"c", "type":"telegram", "botToken":"test-token", "enabled":false}]
+            }]});
+            let mut archived = ArchivedAgentWorkspaces::default();
+            if archived_agent {
+                archived.agent_ids.insert("a".to_string());
+            } else {
+                config["agents"][0]["runtimePreference"] =
+                    serde_json::json!({"family":"integrated", "id":"unsupported-runtime"});
+            }
+            let original = serde_json::to_vec(&config).unwrap();
+            std::fs::write(&path, &original).unwrap();
+            assert!(
+                persist_agent_channel_enabled_at_path(&path, &archived, "a", "c", true).is_err()
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+        }
+    }
 
     #[test]
     fn channel_intent_preserves_latest_config_and_rejects_invalid_enable() {

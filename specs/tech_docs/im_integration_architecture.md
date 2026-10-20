@@ -50,6 +50,8 @@ GUI 只修复“多个其它方面有效的 Project 声明同一 Agent”这一�
 
 用户启用/停用渠道走 `cmd_set_agent_channel_enabled`：在既有 Channel lifecycle lock 内，经配置锁更新磁盘最新 `enabled`，再执行对应连接启动/停止。配置意图已保存但连接处理失败时返回错误，UI 刷新配置并显示失败，不能静默声称停用完成。停止入口根据「已启用或仍在线/连接中」提供，不能因连接失败而让用户无法取消自动重连；连接状态单独展示，不替代 enabled 意图。内部临时重连与删除仍用 runtime lifecycle 入口，不改写用户的 enabled 意图。
 
+显式启用必须校验本次 `enabled=true` 的候选配置；不能拿旧 `enabled=false` 的运行投影作为启用前提，否则凭据完整的已停止渠道也会被误拒。候选在同一配置锁内校验，失败不写盘；自动恢复仍按当前已提交的 desired state 筛选。
+
 ### 3.1 启动
 
 标准启动顺序：
