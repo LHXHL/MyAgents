@@ -72,7 +72,6 @@ import {
   ANTIGRAVITY_SUBSCRIPTION_PROVIDER_ID,
   normalizeDisabledProviderIds,
   normalizeProviderOrder,
-  splitProviderModelInput,
   type AppConfig,
   type ModelAliases,
   type Provider,
@@ -173,6 +172,7 @@ import {
   planVisionToolToggle,
 } from './visionToolSettingsPolicy';
 import {
+  buildCustomProvider,
   EMPTY_CUSTOM_FORM,
   parsePositiveInt,
   type CustomProviderForm,
@@ -205,6 +205,7 @@ import type {
   SettingsProps,
   SubscriptionStatus,
 } from './types';
+import CustomProviderDialog from './components/CustomProviderDialog';
 import { useSettingsNavigation } from './hooks/useSettingsNavigation';
 import { SettingsSidebar } from './components/SettingsSidebar';
 import { SkillsAgentsSection } from './sections/SkillsAgentsSection';
@@ -799,24 +800,6 @@ export default function Settings({
   const [disabledProviderDraft, setDisabledProviderDraft] = useState<string[]>(
     [],
   );
-  const customModelInputRef = useRef<HTMLInputElement>(null);
-  const addCustomModelFromInput = () => {
-    const modelIds = splitProviderModelInput(
-      customModelInputRef.current?.value ?? '',
-    );
-    if (modelIds.length === 0) return;
-    setCustomForm((p) => {
-      const existing = new Set(p.models);
-      const added = modelIds.filter((id) => {
-        if (existing.has(id)) return false;
-        existing.add(id);
-        return true;
-      });
-      if (added.length === 0) return p;
-      return { ...p, models: [...p.models, ...added] };
-    });
-    if (customModelInputRef.current) customModelInputRef.current.value = '';
-  };
   // Provider edit/manage panel state
   const [editingProvider, setEditingProvider] =
     useState<ProviderEditForm | null>(null);
@@ -3039,36 +3022,7 @@ export default function Settings({
       toast.error(tSettings('providers.toast.addAtLeastOneModel'));
       return null;
     }
-    const newProvider: Provider = {
-      id: `custom-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
-      name: customForm.name,
-      vendor: 'Custom', // 内部保留但不在 UI 显示
-      cloudProvider: customForm.cloudProvider || '自定义',
-      type: 'api',
-      primaryModel: customForm.models[0] ?? '',
-      isBuiltin: false,
-      authType: customForm.authType,
-      apiProtocol: customForm.apiProtocol === 'openai' ? 'openai' : undefined,
-      ...(customForm.apiProtocol === 'openai' && customForm.maxOutputTokens
-        ? { maxOutputTokens: parsePositiveInt(customForm.maxOutputTokens) }
-        : {}),
-      ...(customForm.apiProtocol === 'openai' &&
-      customForm.maxOutputTokensParamName !== 'max_tokens'
-        ? { maxOutputTokensParamName: customForm.maxOutputTokensParamName }
-        : {}),
-      ...(customForm.apiProtocol === 'openai' &&
-      customForm.upstreamFormat !== 'chat_completions'
-        ? { upstreamFormat: customForm.upstreamFormat }
-        : {}),
-      config: {
-        baseUrl: customForm.baseUrl,
-      },
-      models: customForm.models.map((m) => ({
-        model: m,
-        modelName: m,
-        modelSeries: 'custom',
-      })),
-    };
+    const newProvider = buildCustomProvider(customForm, `custom-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`);
 
     try {
       // Save API key FIRST so that addCustomProvider's rebuildAndPersistAvailableProviders()
@@ -9288,376 +9242,11 @@ export default function Settings({
       )}
 
       {/* Custom Provider Modal */}
-      {showCustomForm && (
-        <OverlayBackdrop className="z-50 overflow-y-auto py-8">
-          <div className="mx-4 w-full max-w-md flex max-h-[90vh] flex-col rounded-2xl bg-[var(--paper-elevated)] shadow-xl">
-            <div className="flex-shrink-0 px-6 pt-6 pb-4">
-              <div className="flex items-center justify-between">
-                <h3 className="text-lg font-semibold text-[var(--ink)]">
-                  {tSettings('providers.custom.addTitle')}
-                </h3>
-                <button
-                  onClick={() => {
-                    setShowCustomForm(false);
-                    setCustomForm(EMPTY_CUSTOM_FORM);
-                  }}
-                  className="rounded-lg p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)]"
-                >
-                  <CloseIcon className="h-5 w-5" />
-                </button>
-              </div>
-            </div>
-
-            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-6 pb-4">
-              <div>
-                <label className="mb-1.5 block text-sm font-medium text-[var(--ink)]">
-                  {tSettings('providers.custom.providerName')}{' '}
-                  <span className="text-[var(--error)]">*</span>
-                </label>
-                <input
-                  type="text"
-                  value={customForm.name}
-                  onChange={(e) =>
-                    setCustomForm((p) => ({ ...p, name: e.target.value }))
-                  }
-                  placeholder={tSettings(
-                    'providers.custom.providerNamePlaceholder',
-                  )}
-                  className="w-full rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] px-3 py-2.5 text-sm transition-colors focus:border-[var(--focus-border)] focus:outline-none"
-                />
-              </div>
-
-              <div>
-                <label className="mb-1.5 block text-sm font-medium text-[var(--ink)]">
-                  {tSettings('providers.custom.cloudProvider')}
-                </label>
-                <input
-                  type="text"
-                  value={customForm.cloudProvider}
-                  onChange={(e) =>
-                    setCustomForm((p) => ({
-                      ...p,
-                      cloudProvider: e.target.value,
-                    }))
-                  }
-                  placeholder={tSettings(
-                    'providers.custom.cloudProviderPlaceholder',
-                  )}
-                  className="w-full rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] px-3 py-2.5 text-sm transition-colors focus:border-[var(--focus-border)] focus:outline-none"
-                />
-              </div>
-
-              <div>
-                <label className="mb-0.5 block text-sm font-medium text-[var(--ink)]">
-                  {tSettings('providers.custom.apiProtocol')}
-                </label>
-                {customForm.apiProtocol === 'openai' && (
-                  <p className="mb-1.5 text-xs text-[var(--ink-muted)]">
-                    {tSettings('providers.custom.bridgeWarning')}
-                  </p>
-                )}
-                <div
-                  className={`flex gap-4${customForm.apiProtocol !== 'openai' ? ' mt-1' : ''}`}
-                >
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="create-apiProtocol"
-                      value="anthropic"
-                      checked={customForm.apiProtocol !== 'openai'}
-                      onChange={() =>
-                        setCustomForm((p) => ({
-                          ...p,
-                          apiProtocol: 'anthropic',
-                          authType: 'auth_token',
-                        }))
-                      }
-                      className="accent-[var(--ink)]"
-                    />
-                    <span className="text-sm text-[var(--ink)]">
-                      {tSettings('providers.custom.anthropicProtocol')}
-                    </span>
-                  </label>
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="create-apiProtocol"
-                      value="openai"
-                      checked={customForm.apiProtocol === 'openai'}
-                      onChange={() =>
-                        setCustomForm((p) => ({
-                          ...p,
-                          apiProtocol: 'openai',
-                          authType: 'api_key',
-                        }))
-                      }
-                      className="accent-[var(--ink)]"
-                    />
-                    <span className="text-sm text-[var(--ink)]">
-                      {tSettings('providers.custom.openaiProtocol')}
-                    </span>
-                  </label>
-                </div>
-              </div>
-
-              <div>
-                <label className="mb-1.5 block text-sm font-medium text-[var(--ink)]">
-                  {tSettings('providers.custom.baseUrl')}{' '}
-                  <span className="text-[var(--error)]">*</span>
-                </label>
-                <input
-                  type="url"
-                  value={customForm.baseUrl}
-                  onChange={(e) =>
-                    setCustomForm((p) => ({ ...p, baseUrl: e.target.value }))
-                  }
-                  placeholder={
-                    customForm.apiProtocol === 'openai'
-                      ? 'https://api.openai.com/v1'
-                      : 'https://api.example.com/anthropic'
-                  }
-                  className="w-full rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] px-3 py-2.5 text-sm transition-colors focus:border-[var(--focus-border)] focus:outline-none"
-                />
-              </div>
-
-              {customForm.apiProtocol === 'openai' && (
-                <>
-                  <div>
-                    <label className="mb-1.5 block text-sm font-medium text-[var(--ink)]">
-                      {tSettings('providers.custom.upstreamFormat')}
-                    </label>
-                    <div className="flex gap-4">
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input
-                          type="radio"
-                          name="create-upstreamFormat"
-                          value="chat_completions"
-                          checked={
-                            customForm.upstreamFormat === 'chat_completions'
-                          }
-                          onChange={() =>
-                            setCustomForm((p) => ({
-                              ...p,
-                              upstreamFormat: 'chat_completions',
-                              maxOutputTokensParamName:
-                                p.maxOutputTokensParamName ===
-                                'max_output_tokens'
-                                  ? 'max_tokens'
-                                  : p.maxOutputTokensParamName,
-                            }))
-                          }
-                          className="accent-[var(--ink)]"
-                        />
-                        <span className="text-sm text-[var(--ink)]">
-                          Chat Completions
-                        </span>
-                      </label>
-                      <label className="flex items-center gap-2 cursor-pointer">
-                        <input
-                          type="radio"
-                          name="create-upstreamFormat"
-                          value="responses"
-                          checked={customForm.upstreamFormat === 'responses'}
-                          onChange={() =>
-                            setCustomForm((p) => ({
-                              ...p,
-                              upstreamFormat: 'responses',
-                              maxOutputTokensParamName: 'max_output_tokens',
-                            }))
-                          }
-                          className="accent-[var(--ink)]"
-                        />
-                        <span className="text-sm text-[var(--ink)]">
-                          Responses API
-                        </span>
-                      </label>
-                    </div>
-                  </div>
-                  <div>
-                    <label className="mb-1.5 block text-sm font-medium text-[var(--ink)]">
-                      {tSettings('providers.custom.maxOutputTokens')}
-                    </label>
-                    <div className="flex gap-2 items-center">
-                      <CustomSelect
-                        value={customForm.maxOutputTokensParamName}
-                        onChange={(v) =>
-                          setCustomForm((p) => ({
-                            ...p,
-                            maxOutputTokensParamName: v as
-                              | 'max_tokens'
-                              | 'max_completion_tokens'
-                              | 'max_output_tokens',
-                          }))
-                        }
-                        options={
-                          customForm.upstreamFormat === 'responses'
-                            ? [
-                                {
-                                  value: 'max_output_tokens',
-                                  label: 'max_output_tokens',
-                                },
-                              ]
-                            : [
-                                { value: 'max_tokens', label: 'max_tokens' },
-                                {
-                                  value: 'max_completion_tokens',
-                                  label: 'max_completion_tokens',
-                                },
-                              ]
-                        }
-                        compact
-                        className="shrink-0"
-                      />
-                      <input
-                        type="number"
-                        value={customForm.maxOutputTokens}
-                        onChange={(e) =>
-                          setCustomForm((p) => ({
-                            ...p,
-                            maxOutputTokens: e.target.value,
-                          }))
-                        }
-                        placeholder={tSettings(
-                          'providers.custom.unlimitedPlaceholder',
-                        )}
-                        className="flex-1 rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] px-3 py-2.5 text-sm transition-colors focus:border-[var(--focus-border)] focus:outline-none"
-                      />
-                    </div>
-                  </div>
-                </>
-              )}
-
-              {/* Auth Type - only meaningful for Anthropic protocol (controls x-api-key vs Authorization header) */}
-              {customForm.apiProtocol !== 'openai' && (
-                <div>
-                  <label className="mb-0.5 block text-sm font-medium text-[var(--ink)]">
-                    {tSettings('providers.custom.authType')}
-                  </label>
-                  <p className="mb-1.5 text-xs text-[var(--ink-muted)]">
-                    {tSettings('providers.custom.authTypeDescription')}
-                  </p>
-                  <div className="flex gap-4">
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="radio"
-                        name="create-authType"
-                        value="auth_token"
-                        checked={customForm.authType === 'auth_token'}
-                        onChange={() =>
-                          setCustomForm((p) => ({
-                            ...p,
-                            authType: 'auth_token',
-                          }))
-                        }
-                        className="accent-[var(--ink)]"
-                      />
-                      <span className="text-sm text-[var(--ink)]">
-                        AUTH_TOKEN
-                      </span>
-                    </label>
-                    <label className="flex items-center gap-2 cursor-pointer">
-                      <input
-                        type="radio"
-                        name="create-authType"
-                        value="api_key"
-                        checked={customForm.authType === 'api_key'}
-                        onChange={() =>
-                          setCustomForm((p) => ({ ...p, authType: 'api_key' }))
-                        }
-                        className="accent-[var(--ink)]"
-                      />
-                      <span className="text-sm text-[var(--ink)]">API_KEY</span>
-                    </label>
-                  </div>
-                </div>
-              )}
-
-              {/* Models — inline input, no dependency on provider creation */}
-              <div>
-                <label className="mb-1.5 block text-sm font-medium text-[var(--ink)]">
-                  {tSettings('providers.custom.models')}{' '}
-                  <span className="text-[var(--error)]">*</span>
-                </label>
-                {customForm.models.length > 0 && (
-                  <div className="mb-2 flex flex-wrap gap-1.5">
-                    {customForm.models.map((m) => (
-                      <span
-                        key={m}
-                        className="inline-flex items-center gap-1 rounded-md bg-[var(--paper-inset)] px-2 py-0.5 text-xs text-[var(--ink-muted)]"
-                      >
-                        {m}
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setCustomForm((p) => ({
-                              ...p,
-                              models: p.models.filter((id) => id !== m),
-                            }))
-                          }
-                          className="rounded-sm p-0.5 text-[var(--ink-subtle)] transition-colors hover:text-[var(--ink)]"
-                        >
-                          <CloseIcon className="h-3 w-3" />
-                        </button>
-                      </span>
-                    ))}
-                  </div>
-                )}
-                <div className="flex gap-2">
-                  <input
-                    ref={customModelInputRef}
-                    type="text"
-                    placeholder={tSettings(
-                      'providers.custom.modelInputPlaceholder',
-                    )}
-                    className="flex-1 rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] px-3 py-2.5 text-sm transition-colors placeholder:text-[var(--ink-muted)] focus:border-[var(--focus-border)] focus:outline-none"
-                    onKeyDown={(e) => {
-                      if (isImeComposingEvent(e)) return;
-                      if (e.key === 'Enter') {
-                        e.preventDefault();
-                        addCustomModelFromInput();
-                      }
-                    }}
-                  />
-                  <button
-                    type="button"
-                    onClick={addCustomModelFromInput}
-                    className="rounded-lg bg-[var(--paper-inset)] px-2.5 py-1.5 text-[var(--ink-muted)] transition-colors hover:text-[var(--ink)]"
-                  >
-                    <PlusIcon className="h-4 w-4" />
-                  </button>
-                </div>
-              </div>
-
-              {/* API Key moved to provider list page for consistency with edit flow */}
-            </div>
-
-            <div className="flex-shrink-0 border-t border-[var(--line)] px-6 py-4">
-              <div className="flex gap-3">
-                <button
-                  onClick={() => {
-                    setShowCustomForm(false);
-                    setCustomForm(EMPTY_CUSTOM_FORM);
-                  }}
-                  className="flex-1 rounded-lg border border-[var(--line)] px-4 py-2.5 text-sm font-medium text-[var(--ink)] transition-colors hover:bg-[var(--paper-inset)]"
-                >
-                  {tSettings('providers.custom.cancel')}
-                </button>
-                <button
-                  onClick={handleAddCustomProvider}
-                  disabled={
-                    !customForm.name ||
-                    !customForm.baseUrl ||
-                    customForm.models.length === 0
-                  }
-                  className="flex-1 rounded-lg bg-[var(--button-primary-bg)] px-4 py-2.5 text-sm font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:opacity-50"
-                >
-                  {tSettings('providers.custom.add')}
-                </button>
-              </div>
-            </div>
-          </div>
-        </OverlayBackdrop>
-      )}
+      {showCustomForm && <CustomProviderDialog
+        form={customForm} onChange={setCustomForm} config={config}
+        onSubmit={() => { void handleAddCustomProvider(); }}
+        onCancel={() => { setShowCustomForm(false); setCustomForm(EMPTY_CUSTOM_FORM); }}
+      />}
 
       {/* Provider Management Modal */}
       {editingProvider && (

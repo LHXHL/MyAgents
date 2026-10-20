@@ -1,6 +1,7 @@
 import type {
   ApiProtocol,
   ModelAliases,
+  ModelEntity,
   Provider,
   ProviderAuthType,
 } from '@/config/types';
@@ -16,8 +17,8 @@ export interface CustomProviderForm {
   apiProtocol: ApiProtocol;
   baseUrl: string;
   authType: Extract<ProviderAuthType, 'auth_token' | 'api_key'>;
-  models: string[];
-  newModelInput: string;
+  models: ModelEntity[];
+  primaryModel: string;
   apiKey: string;
   maxOutputTokens: string;
   maxOutputTokensParamName: 'max_tokens' | 'max_completion_tokens' | 'max_output_tokens';
@@ -31,7 +32,7 @@ export const EMPTY_CUSTOM_FORM: CustomProviderForm = {
   baseUrl: '',
   authType: 'auth_token',
   models: [],
-  newModelInput: '',
+  primaryModel: '',
   apiKey: '',
   maxOutputTokens: '',
   maxOutputTokensParamName: 'max_tokens',
@@ -53,4 +54,23 @@ export interface ProviderEditForm {
   editUpstreamFormat?: 'chat_completions' | 'responses';
   editModelAliases?: ModelAliases;
   showAdvanced?: boolean;
+}
+
+/** Both the draft manager and final create action use the same provider projection. */
+export function buildCustomProvider(form: CustomProviderForm, id: string): Provider {
+  return {
+    id, name: form.name, vendor: 'Custom', cloudProvider: form.cloudProvider || '自定义',
+    type: 'api', isBuiltin: false,
+    primaryModel: form.models.some(model => model.model === form.primaryModel)
+      ? form.primaryModel : form.models[0]?.model ?? '',
+    authType: form.authType,
+    apiProtocol: form.apiProtocol === 'openai' ? 'openai' : undefined,
+    ...(form.apiProtocol === 'openai' && form.maxOutputTokens
+      ? { maxOutputTokens: parsePositiveInt(form.maxOutputTokens) } : {}),
+    ...(form.apiProtocol === 'openai' && form.maxOutputTokensParamName !== 'max_tokens'
+      ? { maxOutputTokensParamName: form.maxOutputTokensParamName } : {}),
+    ...(form.apiProtocol === 'openai' && form.upstreamFormat !== 'chat_completions'
+      ? { upstreamFormat: form.upstreamFormat } : {}),
+    config: { baseUrl: form.baseUrl }, models: form.models,
+  };
 }

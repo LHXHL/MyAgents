@@ -194,6 +194,8 @@ Tag 用于类型、来源或紧凑元信息，通常使用 12px。状态 Tag 只
 
 ### 5.5 Menu、Select、Tip 与 Overlay
 
+共享 `Popover` 在首次定位完成前隐藏内容，定位用的 `transform` 由 Floating UI 独占，视觉动效不能覆写同一属性。需要移入焦点的调用方通过 `onPositioned` 在定位后执行，并使用 `preventScroll`，避免零坐标阶段的聚焦带动页面。
+
 优先复用：
 
 | 场景 | 共享实现 |

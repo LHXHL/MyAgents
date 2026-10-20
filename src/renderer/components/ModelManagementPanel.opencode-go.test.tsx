@@ -39,7 +39,7 @@ describe('OpenCode Go model setup', () => {
     await screen.findByText('Future Go');
     const row = screen.getByText('Future Go').closest('.group')!;
     fireEvent.click(within(row as HTMLElement).getByRole('button', { name: 'Add' }));
-    const editor = screen.getAllByRole('dialog')[1];
+    const editor = await screen.findByRole('dialog', { name: 'Model Parameters' });
     const save = within(editor).getByRole('button', { name: 'Save' });
     expect(save).toBeDisabled();
     expect(within(editor).getAllByText('Choose a model protocol')).toHaveLength(2);
@@ -80,7 +80,7 @@ describe('OpenCode Go model setup', () => {
     mocks.config.presetCustomModels = { [go.id]: [manual] };
     open([], mergePresetCustomModels([go], mocks.config.presetCustomModels)[0]);
     fireEvent.click(screen.getByRole('button', { name: 'Model parameter settings: Custom Future' }));
-    const editor = screen.getAllByRole('dialog')[1];
+    const editor = await screen.findByRole('dialog', { name: 'Model Parameters' });
     fireEvent.click(within(editor).getByRole('button', { name: 'Request protocol' }));
     fireEvent.click(await screen.findByText('OpenAI Chat Completions'));
     fireEvent.click(within(editor).getByRole('button', { name: 'Save' }));
@@ -94,7 +94,7 @@ describe('OpenCode Go model setup', () => {
     const add = within(row as HTMLElement).getByRole('button', { name: 'Add' });
     add.focus();
     fireEvent.click(add);
-    const editor = screen.getAllByRole('dialog')[1];
+    const editor = await screen.findByRole('dialog', { name: 'Model Parameters' });
     const selector = within(editor).getByRole('button', { name: 'Request protocol' });
     fireEvent.click(selector);
     const option = await screen.findByText('OpenAI Responses');
@@ -134,7 +134,7 @@ describe('OpenCode Go model setup', () => {
     const add = within(row as HTMLElement).getByRole('button', { name: 'Add' });
     add.focus();
     fireEvent.click(add);
-    const editor = screen.getAllByRole('dialog')[1];
+    const editor = await screen.findByRole('dialog', { name: 'Model Parameters' });
     fireEvent.click(within(editor).getByRole('button', { name: 'Request protocol' }));
     fireEvent.click(await screen.findByText('OpenAI Responses'));
     fireEvent.click(within(editor).getByRole('button', { name: 'Save' }));

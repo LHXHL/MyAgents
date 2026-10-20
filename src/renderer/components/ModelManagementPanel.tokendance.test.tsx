@@ -68,7 +68,7 @@ describe('Token Dance managed model additions', () => {
     );
     fireEvent.change(input, { target: { value: discovered.id } });
     fireEvent.keyDown(input, { key: 'Enter' });
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Save' }));
     await waitFor(() =>
       expect(mocks.config.presetCustomModels?.tokendance?.[0]?.model).toBe(
         discovered.id,
@@ -91,7 +91,7 @@ describe('Token Dance managed model additions', () => {
     );
     fireEvent.change(input, { target: { value: 'unknown-id' } });
     fireEvent.keyDown(input, { key: 'Enter' });
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Save' }));
     await screen.findByText(/Cannot confirm this model’s supported protocols/);
     expect(mocks.config.presetCustomModels?.tokendance).toBeUndefined();
   });
@@ -121,6 +121,8 @@ describe('Token Dance managed model additions', () => {
     await user.type(input, 'future-chat{Enter}');
     const editor = screen.getAllByRole('dialog').find((el) => el !== dialog)!;
     const name = within(editor).getByRole('textbox', { name: 'Display name' });
+    await waitFor(() => expect(editor).toHaveFocus());
+    await user.tab();
     expect(name).toHaveFocus();
     await user.tab({ shift: true });
     expect(within(editor).getByRole('button', { name: 'Save' })).toHaveFocus();

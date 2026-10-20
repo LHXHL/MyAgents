@@ -77,6 +77,7 @@ describe('ModelManagementPanel custom model add flow', () => {
 
     expect(screen.getByText('Model Parameters')).toBeInTheDocument();
     expect(screen.getByText('gpt-5.5')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('dialog', { name: 'Model Parameters' })).toHaveFocus());
     expect(onUpdateCustomProvider).not.toHaveBeenCalled();
   });
 
@@ -90,6 +91,25 @@ describe('ModelManagementPanel custom model add flow', () => {
     );
 
     expect(screen.getByTestId('model-settings-popover').closest('[data-model-management-panel]')).toBeNull();
+  });
+
+  it.each([
+    { isComposing: true, keyCode: 13 },
+    { isComposing: false, keyCode: 229 },
+  ])('does not open parameters while confirming an IME candidate ($keyCode)', async ime => {
+    const { onUpdateCustomProvider } = renderPanel();
+    const input = screen.getByPlaceholderText('Enter a model ID, press Enter to configure and add');
+    fireEvent.change(input, { target: { value: 'model-ime' } });
+    fireEvent.compositionStart(input);
+    if (!ime.isComposing) fireEvent.compositionEnd(input);
+    fireEvent.keyDown(input, { key: 'Enter', ...ime });
+
+    expect(screen.queryByRole('dialog', { name: 'Model Parameters' })).not.toBeInTheDocument();
+    expect(onUpdateCustomProvider).not.toHaveBeenCalled();
+
+    fireEvent.compositionEnd(input);
+    fireEvent.keyDown(input, { key: 'Enter', keyCode: 13 });
+    expect(await screen.findByRole('dialog', { name: 'Model Parameters' })).toBeInTheDocument();
   });
 
   it('does not let a second Enter replace the pending model editor', async () => {

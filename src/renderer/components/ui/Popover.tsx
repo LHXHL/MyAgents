@@ -81,6 +81,8 @@ export interface PopoverProps {
   /** Hover ownership includes the popup's border and native scrollbars. */
   onMouseEnter?: React.MouseEventHandler<HTMLDivElement>;
   onMouseLeave?: React.MouseEventHandler<HTMLDivElement>;
+  /** Called once positioning is ready; callers may then move focus without scrolling. */
+  onPositioned?: () => void;
   children: React.ReactNode;
 }
 
@@ -107,8 +109,9 @@ export function Popover({
   onMouseEnter,
   onMouseLeave,
   children,
+  onPositioned,
 }: PopoverProps) {
-  const { refs, floatingStyles } = useFloating({
+  const { refs, floatingStyles, isPositioned } = useFloating({
     placement,
     open,
     middleware: popoverPositioning(
@@ -129,6 +132,12 @@ export function Popover({
   useEffect(() => {
     refs.setReference(anchorRef.current ?? null);
   });
+
+  const onPositionedRef = useRef(onPositioned);
+  useEffect(() => { onPositionedRef.current = onPositioned; }, [onPositioned]);
+  useEffect(() => {
+    if (open && isPositioned) onPositionedRef.current?.();
+  }, [open, isPositioned]);
 
   // Escape dismissal.
   useEffect(() => {
@@ -193,6 +202,9 @@ export function Popover({
           zIndex,
           overflowY: "auto",
           ...contentStyle,
+          // Preserve existing caller autofocus while masking zero-coordinate paint.
+          opacity: isPositioned ? contentStyle.opacity : 0,
+          pointerEvents: isPositioned ? contentStyle.pointerEvents : "none",
         }}
         className={
           unstyled ? className : `${DEFAULT_CHROME} ${className}`.trim()

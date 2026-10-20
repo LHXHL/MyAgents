@@ -562,7 +562,11 @@
       "delete": "Delete",
       "save": "Save",
       "deleteTitle": "Delete Provider",
-      "deleteMessage": "Delete \"{{name}}\"? This cannot be undone."
+      "deleteMessage": "Delete \"{{name}}\"? This cannot be undone.",
+      "discoveryKeyHint": "Optional. Enter a key to fetch models, or add them manually in Manage models.",
+      "noModelsSelected": "No models selected",
+      "selectedModels": "Selected models: {{count}}",
+      "primaryModelSummary": "Primary: {{name}}"
     },
     "order": {
       "fixedFirst": "Pinned first",
