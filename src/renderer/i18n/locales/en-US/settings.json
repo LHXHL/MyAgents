@@ -1292,7 +1292,9 @@
       "platformMentionOnlyDescription": "This channel only receives group messages that @mention the bot. All messages is not supported.",
       "groupPrerequisite_telegram": "To receive all messages, make the bot a group admin, or disable privacy mode in BotFather and re-add it to the group.",
       "groupPrerequisite_feishu": "To receive all messages, enable im:message.group_msg in the Feishu developer console and publish the app.",
-      "groupPrerequisite_plugin": "Available messages depend on the plugin and platform permissions."
+      "groupPrerequisite_plugin": "Available messages depend on the plugin and platform permissions.",
+      "userManagement": "User management",
+      "bindingUnavailable": "Start the channel to use account binding."
     },
     "channelWizard": {
       "toast": {
@@ -1596,23 +1598,20 @@
       "cardTemplateHint": "Create an AI Card template in DingTalk Open Platform and enter the template ID. If empty, messages fall back to normal Markdown."
     },
     "channelAccess": {
-      "mode": "Access mode",
+      "mode": "Permission mode",
       "review": "Review access",
       "open": "Open access",
       "reviewDescription": "New private users must bind; new groups require approval. Existing access is retained.",
       "openDescription": "Register people and groups when they use the bot. Block a person or group at any time.",
       "legacyDescription": "Not explicitly set. Existing channel rules remain in effect until you choose a mode.",
-      "users": "Users",
+      "users": "Private chat users",
       "blockedOnly": "Blocked only",
       "blocked": "Blocked",
       "block": "Block",
       "unblock": "Unblock",
-      "remove": "Remove access",
+      "remove": "Remove",
       "removeDescription": "In open access, removed users can register again by using the bot. Block them to prevent further use.",
       "emptyUsers": "No users yet",
-      "userId": "Platform user ID",
-      "blockById": "Block by ID",
-      "addUser": "Add access",
       "stableIdRequired": "Blocking requires a stable numeric Telegram user ID, not a username.",
       "savedRefreshFailed": "Saved, but refreshing the configuration failed: ",
       "discovered": "Discovered, not used yet",

@@ -6,10 +6,12 @@ import { copyPlainText } from '@/utils/clipboard';
 export default function BindCodePanel({
     bindCode,
     hasWhitelistUsers,
+    embedded = false,
     platformName,
 }: {
     bindCode: string;
     hasWhitelistUsers: boolean;
+    embedded?: boolean;
     platformName?: string;
 }) {
     const { t } = useTranslation('settings');
@@ -33,7 +35,7 @@ export default function BindCodePanel({
     }, [bindCode]);
 
     return (
-        <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
+        <div className={embedded ? "space-y-3" : "rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5"}>
             <div className="flex items-center gap-2 mb-3">
                 <MessageIcon className="h-4 w-4 text-[var(--ink-muted)]" />
                 <h3 className="text-sm font-semibold text-[var(--ink)]">

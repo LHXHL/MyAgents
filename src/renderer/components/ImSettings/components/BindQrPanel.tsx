@@ -12,9 +12,11 @@ import { copyPlainText } from '@/utils/clipboard';
 export default function BindQrPanel({
     bindUrl,
     hasWhitelistUsers,
+    embedded = false,
 }: {
     bindUrl: string;
-	hasWhitelistUsers: boolean;
+    hasWhitelistUsers: boolean;
+    embedded?: boolean;
 }) {
     const { t } = useTranslation('settings');
     const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
@@ -51,7 +53,7 @@ export default function BindQrPanel({
     }, [bindUrl]);
 
     return (
-        <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
+        <div className={embedded ? "space-y-3" : "rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5"}>
             <div className="flex items-center gap-2 mb-3">
                 <QrIcon className="h-4 w-4 text-[var(--ink-muted)]" />
                 <h3 className="text-sm font-semibold text-[var(--ink)]">

@@ -36,7 +36,7 @@ import {
 import BotTokenInput from '../../ImSettings/components/BotTokenInput';
 import FeishuCredentialInput from '../../ImSettings/components/FeishuCredentialInput';
 import DingtalkCredentialInput from '../../ImSettings/components/DingtalkCredentialInput';
-import ChannelAccessPanel from './ChannelAccessPanel';
+import ChannelAccessPanel, { ChannelUserList } from './ChannelAccessPanel';
 import { mutateChannelAccess } from '@/config/services/agentConfigService';
 import BindQrPanel from '../../ImSettings/components/BindQrPanel';
 import BindCodePanel from '../../ImSettings/components/BindCodePanel';
@@ -249,7 +249,7 @@ export default function ChannelDetailView({
     const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
     const [deleting, setDeleting] = useState(false);
     const [credentialsExpanded, setCredentialsExpanded] = useState<boolean | null>(null);
-    const [bindingExpanded, setBindingExpanded] = useState<boolean | null>(null);
+    const [bindingExpanded, setBindingExpanded] = useState(true);
     const [deliverySaving, setDeliverySaving] = useState(false);
     const [deliveryError, setDeliveryError] = useState<string | null>(null);
     const [groupsExpanded, setGroupsExpanded] = useState<boolean | null>(null);
@@ -275,7 +275,7 @@ export default function ChannelDetailView({
 
     // Auto-collapse: default collapsed when filled, expanded when empty
     const isCredentialsExpanded = credentialsExpanded ?? !hasCredentials;
-    const isBindingExpanded = bindingExpanded ?? !hasUsers;
+    const isBindingExpanded = bindingExpanded;
 
     useEffect(() => {
         const mountedRef = isMountedRef;
@@ -960,10 +960,12 @@ export default function ChannelDetailView({
                 <button
                     type="button"
                     onClick={() => setBindingExpanded(!isBindingExpanded)}
+                    aria-expanded={isBindingExpanded}
+                    aria-controls={`channel-users-${channelId}`}
                     className="flex w-full items-center justify-between p-5"
                 >
                     <div className="flex items-center gap-2">
-                        <h3 className="text-sm font-semibold text-[var(--ink)]">{t('agentSettings.channelDetail.userBinding')}</h3>
+                        <h3 className="text-sm font-semibold text-[var(--ink)]">{t('agentSettings.channelDetail.userManagement')}</h3>
                         {!isBindingExpanded && hasUsers && (
                             <span className="text-xs text-[var(--ink-muted)]">
                                 {t('agentSettings.channelDetail.usersCount', { count: channel.allowedUsers!.length })}
@@ -972,11 +974,10 @@ export default function ChannelDetailView({
                     </div>
                     <ChevronDownIcon className={`h-4 w-4 text-[var(--ink-muted)] transition-transform ${isBindingExpanded ? '' : '-rotate-90'}`} />
                 </button>
-                {isBindingExpanded && (
-                    <div className="space-y-5 px-5 pb-5">
+                    <div hidden={!isBindingExpanded} id={`channel-users-${channelId}`} className="space-y-5 px-5 pb-5">
                         {/* QR Login section for plugins that use QR authentication (e.g. WeChat) */}
                         {isRunning && isQrLoginPlugin && (
-                            <div className="rounded-xl border border-dashed border-[var(--line)] bg-[var(--paper-inset)] p-4">
+                            <div className="space-y-3">
                                 <div className="flex flex-col items-center gap-3">
                                     {qrStatus === 'idle' && (() => {
                                         const savedAccountId = (channel.openclawPluginConfig as Record<string, unknown> | undefined)?.accountId as string | undefined;
@@ -1031,6 +1032,7 @@ export default function ChannelDetailView({
                         )}
                         {isRunning && (channel.type === 'feishu' || channel.type === 'dingtalk' || (isOpenClaw && !isQrLoginPlugin)) && botStatus?.bindCode && (
                             <BindCodePanel
+                                embedded
                                 bindCode={botStatus.bindCode}
                                 hasWhitelistUsers={(channel.allowedUsers?.length ?? 0) > 0}
                                 platformName={channel.type === 'dingtalk' ? '钉钉' : channel.type === 'feishu' ? '飞书' : (channel.name || t('agentSettings.channelDetail.pluginBot'))}
@@ -1038,38 +1040,22 @@ export default function ChannelDetailView({
                         )}
                         {isRunning && channel.type === 'telegram' && botStatus?.bindUrl && (
                             <BindQrPanel
+                                embedded
                                 bindUrl={botStatus.bindUrl}
                                 hasWhitelistUsers={(channel.allowedUsers?.length ?? 0) > 0}
                             />
                         )}
 
+                        {!isRunning && <div className="space-y-3">
+                            <h3 className="text-sm font-semibold text-[var(--ink)]">{t(channel.type === 'telegram' ? 'agentSettings.imComponents.quickBindTitle' : isQrLoginPlugin ? 'agentSettings.channelDetail.scanLogin' : 'agentSettings.imComponents.bindCodeTitle')}</h3>
+                            <p className="text-xs text-[var(--ink-muted)]">{t('agentSettings.channelDetail.bindingUnavailable')}</p>
+                        </div>}
+                        <div className="border-t border-[var(--line)] pt-5">
+                            <ChannelUserList channel={channel} refresh={async () => { await refreshConfig(); onChanged(); }} />
+                        </div>
                     </div>
-                )}
             </div>
             )}
-
-            <section className="space-y-3 rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
-                <h3 className="text-sm font-semibold text-[var(--ink)]">{t('agentSettings.channelDetail.deliveryTitle')}</h3>
-                <div className="flex gap-2" role="group" aria-label={t('agentSettings.channelDetail.deliveryTitle')}>
-                    {(['auto', 'tool_only'] as const).map(mode => (
-                        <button type="button" key={mode} disabled={deliverySaving}
-                            aria-pressed={(channel.messageDeliveryMode ?? 'auto') === mode}
-                            className={`rounded-lg border px-3 py-2 text-sm ${(channel.messageDeliveryMode ?? 'auto') === mode ? 'border-[var(--accent)] text-[var(--accent)]' : 'border-[var(--line)] text-[var(--ink)]'} disabled:opacity-50`}
-                            onClick={async () => {
-                                setDeliverySaving(true);
-                                setDeliveryError(null);
-                                try { await patchChannel({ messageDeliveryMode: mode }); }
-                                catch (error) { setDeliveryError(String(error)); }
-                                finally { setDeliverySaving(false); }
-                            }}>
-                            {t(`agentSettings.channelDetail.delivery_${mode}`)}
-                        </button>
-                    ))}
-                </div>
-                <p className="text-xs text-[var(--ink-muted)]">{t(`agentSettings.channelDetail.deliveryDescription_${channel.messageDeliveryMode ?? 'auto'}`)}</p>
-                <p className="text-xs text-[var(--ink-muted)]">{t('agentSettings.channelDetail.deliveryNextTurn')}</p>
-                {deliveryError && <p role="alert" className="text-xs text-[var(--error)]">{deliveryError}</p>}
-            </section>
 
             {/* Group Permissions */}
             {(() => {
@@ -1183,52 +1169,75 @@ export default function ChannelDetailView({
                 );
             })()}
 
-            {/* DingTalk AI Card Config */}
-            {channel.type === 'dingtalk' && (
-                <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
-                    <DingtalkCardConfig
-                        useAiCard={channel.dingtalkUseAiCard ?? false}
-                        cardTemplateId={channel.dingtalkCardTemplateId ?? ''}
-                        onUseAiCardChange={async (value) => {
-                            await patchChannel({ dingtalkUseAiCard: value });
-                        }}
-                        onCardTemplateIdChange={async (value) => {
-                            await patchChannel({ dingtalkCardTemplateId: value || undefined });
-                        }}
-                    />
-                </div>
-            )}
-
-            {/* Telegram Draft Streaming */}
-            {channel.type === 'telegram' && (
-                <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
-                    <div className="flex items-center justify-between">
-                        <div>
-                            <p className="text-sm font-medium text-[var(--ink)]">{t('agentSettings.channelDetail.draftStreamingTitle')}</p>
-                            <p className="text-xs text-[var(--ink-muted)] mt-0.5">
-                                {t('agentSettings.channelDetail.draftStreamingDescription')}
-                            </p>
-                        </div>
-                        <button
-                            type="button"
-                            role="switch"
-                            aria-checked={channel.telegramUseDraft ?? true}
+            <section className="space-y-3 rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
+                <h3 className="text-sm font-semibold text-[var(--ink)]">{t('agentSettings.channelDetail.deliveryTitle')}</h3>
+                <div className="flex gap-2" role="group" aria-label={t('agentSettings.channelDetail.deliveryTitle')}>
+                    {(['auto', 'tool_only'] as const).map(mode => (
+                        <button type="button" key={mode} disabled={deliverySaving}
+                            aria-pressed={(channel.messageDeliveryMode ?? 'auto') === mode}
+                            className={`rounded-lg border px-3 py-2 text-sm ${(channel.messageDeliveryMode ?? 'auto') === mode ? 'border-[var(--accent)] text-[var(--accent)]' : 'border-[var(--line)] text-[var(--ink)]'} disabled:opacity-50`}
                             onClick={async () => {
-                                await patchChannel({ telegramUseDraft: !(channel.telegramUseDraft ?? true) });
-                            }}
-                            className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-                                (channel.telegramUseDraft ?? true) ? 'bg-[var(--accent)]' : 'bg-[var(--ink-muted)]/30'
-                            }`}
-                        >
-                            <span
-                                className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-[var(--toggle-thumb)] shadow ring-0 transition duration-200 ease-in-out ${
-                                    (channel.telegramUseDraft ?? true) ? 'translate-x-4' : 'translate-x-0'
-                                }`}
-                            />
+                                setDeliverySaving(true);
+                                setDeliveryError(null);
+                                try { await patchChannel({ messageDeliveryMode: mode }); }
+                                catch (error) { setDeliveryError(String(error)); }
+                                finally { setDeliverySaving(false); }
+                            }}>
+                            {t(`agentSettings.channelDetail.delivery_${mode}`)}
                         </button>
-                    </div>
+                    ))}
                 </div>
-            )}
+                <p className="text-xs text-[var(--ink-muted)]">{t(`agentSettings.channelDetail.deliveryDescription_${channel.messageDeliveryMode ?? 'auto'}`)}</p>
+                <p className="text-xs text-[var(--ink-muted)]">{t('agentSettings.channelDetail.deliveryNextTurn')}</p>
+                {deliveryError && <p role="alert" className="text-xs text-[var(--error)]">{deliveryError}</p>}
+                {/* DingTalk AI Card Config */}
+                {channel.type === 'dingtalk' && (
+                    <div className="border-t border-[var(--line)] pt-5">
+                        <DingtalkCardConfig
+                            useAiCard={channel.dingtalkUseAiCard ?? false}
+                            cardTemplateId={channel.dingtalkCardTemplateId ?? ''}
+                            onUseAiCardChange={async (value) => {
+                                await patchChannel({ dingtalkUseAiCard: value });
+                            }}
+                            onCardTemplateIdChange={async (value) => {
+                                await patchChannel({ dingtalkCardTemplateId: value || undefined });
+                            }}
+                        />
+                    </div>
+                )}
+
+                {/* Telegram Draft Streaming */}
+                {channel.type === 'telegram' && (
+                    <div className="border-t border-[var(--line)] pt-5">
+                        <div className="flex items-center justify-between">
+                            <div>
+                                <p className="text-sm font-medium text-[var(--ink)]">{t('agentSettings.channelDetail.draftStreamingTitle')}</p>
+                                <p className="text-xs text-[var(--ink-muted)] mt-0.5">
+                                    {t('agentSettings.channelDetail.draftStreamingDescription')}
+                                </p>
+                            </div>
+                            <button
+                                type="button"
+                                role="switch"
+                                aria-checked={channel.telegramUseDraft ?? true}
+                                onClick={async () => {
+                                    await patchChannel({ telegramUseDraft: !(channel.telegramUseDraft ?? true) });
+                                }}
+                                className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                                    (channel.telegramUseDraft ?? true) ? 'bg-[var(--accent)]' : 'bg-[var(--ink-muted)]/30'
+                                }`}
+                            >
+                                <span
+                                    className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-[var(--toggle-thumb)] shadow ring-0 transition duration-200 ease-in-out ${
+                                        (channel.telegramUseDraft ?? true) ? 'translate-x-4' : 'translate-x-0'
+                                    }`}
+                                />
+                            </button>
+                        </div>
+                    </div>
+                )}
+
+            </section>
 
             {/* Danger zone */}
             <div className="rounded-xl border border-[var(--error)]/20 bg-[var(--error-bg)]/50 p-5">

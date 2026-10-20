@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ChannelConfig } from '../../../../shared/types/agent';
-import ChannelAccessPanel from './ChannelAccessPanel';
+import ChannelAccessPanel, { ChannelUserList } from './ChannelAccessPanel';
 import GroupPermissionList from '../../ImSettings/components/GroupPermissionList';
 
 const mutate = vi.hoisted(() => vi.fn());
@@ -34,16 +34,26 @@ describe('channel access controls', () => {
     expect(screen.getByRole('button', { name: '审核使用' })).toHaveAttribute('aria-pressed', 'true');
   });
 
-  it('preserves blocked-only identities and cannot block a legacy username', async () => {
-    render(<ChannelAccessPanel channel={channel} refresh={vi.fn().mockResolvedValue(undefined)} />);
+  it('keeps all users and blocking actions without filters or ID controls', async () => {
+    render(<ChannelUserList channel={channel} refresh={vi.fn().mockResolvedValue(undefined)} />);
     expect(screen.getByText('Alice（123）')).toBeInTheDocument();
+    expect(screen.getByText('私聊用户')).toBeInTheDocument();
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '按 ID 拉黑' })).not.toBeInTheDocument();
+    expect(screen.getByText('456')).toBeInTheDocument();
     const username = screen.getByText('old_username').closest('li')!;
     expect(within(username).getByRole('button', { name: '拉黑' })).toBeDisabled();
-    fireEvent.click(screen.getByRole('checkbox', { name: '仅显示已拉黑' }));
-    expect(screen.queryByText('Alice（123）')).not.toBeInTheDocument();
-    expect(screen.getByText('456')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '解除拉黑' }));
     await waitFor(() => expect(mutate).toHaveBeenCalledWith('channel-1', { kind: 'setUserBlocked', userId: '456', blocked: false }));
+  });
+
+  it('removes the original user ID with the renamed action', async () => {
+    render(<ChannelUserList channel={channel} refresh={vi.fn().mockResolvedValue(undefined)} />);
+    const row = screen.getByText('Alice（123）').closest('li')!;
+    expect(screen.queryByText('移除资格')).not.toBeInTheDocument();
+    fireEvent.click(within(row).getByRole('button', { name: '移除' }));
+    await waitFor(() => expect(mutate).toHaveBeenCalledWith('channel-1', { kind: 'removeUser', userId: '123' }));
   });
 
   it('reports durable success separately from a failed refresh', async () => {
