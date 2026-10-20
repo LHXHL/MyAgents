@@ -563,7 +563,7 @@
       "save": "Save",
       "deleteTitle": "Delete Provider",
       "deleteMessage": "Delete \"{{name}}\"? This cannot be undone.",
-      "discoveryKeyHint": "Optional. Enter a key to fetch models, or add them manually in Manage models.",
+      "apiKeyPlaceholder": "Enter an API key for this provider, or configure it later",
       "noModelsSelected": "No models selected",
       "selectedModels": "Selected models: {{count}}",
       "primaryModelSummary": "Primary: {{name}}"

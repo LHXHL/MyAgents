@@ -30,6 +30,22 @@ beforeEach(async () => {
 });
 
 describe('custom provider model draft', () => {
+  it('keeps protocol controls concise and places the optional key after models', async () => {
+    const user = userEvent.setup(); open();
+    await user.click(screen.getByRole('radio', { name: 'OpenAI protocol' }));
+    await user.click(screen.getByRole('radio', { name: 'Responses API' }));
+    expect(screen.queryByText(/Runs through the built-in bridge/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('spinbutton')).not.toBeInTheDocument();
+    expect(screen.queryByText('Max output tokens')).not.toBeInTheDocument();
+    expect(screen.queryByText('max_output_tokens')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('radio', { name: 'Chat Completions' }));
+    expect(screen.queryByText('max_tokens')).not.toBeInTheDocument();
+    const key = screen.getByLabelText('API Key');
+    expect(key).toHaveAttribute('placeholder', 'Enter an API key for this provider, or configure it later');
+    expect(screen.getByRole('button', { name: 'Manage models' }).compareDocumentPosition(key) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByText(/Optional\. Enter a key to fetch models/)).not.toBeInTheDocument();
+  });
+
   it('uses one manager, preserves manually configured metadata, and only submits on final Add', async () => {
     const user = userEvent.setup(); const { submit } = open();
     const creation = screen.getByRole('dialog', { name: 'Add Custom Provider' });

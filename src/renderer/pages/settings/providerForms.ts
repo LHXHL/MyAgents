@@ -20,8 +20,6 @@ export interface CustomProviderForm {
   models: ModelEntity[];
   primaryModel: string;
   apiKey: string;
-  maxOutputTokens: string;
-  maxOutputTokensParamName: 'max_tokens' | 'max_completion_tokens' | 'max_output_tokens';
   upstreamFormat: 'chat_completions' | 'responses';
 }
 
@@ -34,8 +32,6 @@ export const EMPTY_CUSTOM_FORM: CustomProviderForm = {
   models: [],
   primaryModel: '',
   apiKey: '',
-  maxOutputTokens: '',
-  maxOutputTokensParamName: 'max_tokens',
   upstreamFormat: 'chat_completions',
 };
 
@@ -65,10 +61,6 @@ export function buildCustomProvider(form: CustomProviderForm, id: string): Provi
       ? form.primaryModel : form.models[0]?.model ?? '',
     authType: form.authType,
     apiProtocol: form.apiProtocol === 'openai' ? 'openai' : undefined,
-    ...(form.apiProtocol === 'openai' && form.maxOutputTokens
-      ? { maxOutputTokens: parsePositiveInt(form.maxOutputTokens) } : {}),
-    ...(form.apiProtocol === 'openai' && form.maxOutputTokensParamName !== 'max_tokens'
-      ? { maxOutputTokensParamName: form.maxOutputTokensParamName } : {}),
     ...(form.apiProtocol === 'openai' && form.upstreamFormat !== 'chat_completions'
       ? { upstreamFormat: form.upstreamFormat } : {}),
     config: { baseUrl: form.baseUrl }, models: form.models,

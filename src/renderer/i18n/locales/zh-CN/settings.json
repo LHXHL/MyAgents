@@ -563,7 +563,7 @@
       "save": "保存",
       "deleteTitle": "删除供应商",
       "deleteMessage": "确定要删除「{{name}}」吗？此操作无法撤销。",
-      "discoveryKeyHint": "可选。填写后可获取 API 模型列表，也可在管理面板手动添加。",
+      "apiKeyPlaceholder": "填写该供应商可用 APIKEY，也可稍后配置",
       "noModelsSelected": "请至少配置 1 个可用模型",
       "selectedModels": "已选择 {{count}} 个模型",
       "primaryModelSummary": "首选：{{name}}"

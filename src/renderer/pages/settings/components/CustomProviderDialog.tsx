@@ -2,7 +2,6 @@ import { useId, useMemo, useState, type Dispatch, type SetStateAction } from 're
 import { useTranslation } from 'react-i18next';
 import { CloseIcon } from '@/components/icons';
 import OverlayBackdrop from '@/components/OverlayBackdrop';
-import CustomSelect from '@/components/CustomSelect';
 import ModelManagementPanel from '@/components/ModelManagementPanel';
 import type { AppConfig } from '@/config/types';
 import { enrichExistingModelsFromDiscovery } from '@/config/services/modelDiscoveryService';
@@ -79,14 +78,7 @@ export default function CustomProviderDialog({ form, onChange, onSubmit, onCance
                 <label className="mb-0.5 block text-sm font-medium text-[var(--ink)]">
                   {t('providers.custom.apiProtocol')}
                 </label>
-                {form.apiProtocol === 'openai' && (
-                  <p className="mb-1.5 text-xs text-[var(--ink-muted)]">
-                    {t('providers.custom.bridgeWarning')}
-                  </p>
-                )}
-                <div
-                  className={`flex gap-4${form.apiProtocol !== 'openai' ? ' mt-1' : ''}`}
-                >
+                <div className="mt-1 flex gap-4">
                   <label className="flex items-center gap-2 cursor-pointer">
                     <input
                       type="radio"
@@ -167,11 +159,6 @@ export default function CustomProviderDialog({ form, onChange, onSubmit, onCance
                             onChange((p) => ({
                               ...p,
                               upstreamFormat: 'chat_completions',
-                              maxOutputTokensParamName:
-                                p.maxOutputTokensParamName ===
-                                'max_output_tokens'
-                                  ? 'max_tokens'
-                                  : p.maxOutputTokensParamName,
                             }))
                           }
                           className="accent-[var(--ink)]"
@@ -190,7 +177,6 @@ export default function CustomProviderDialog({ form, onChange, onSubmit, onCance
                             onChange((p) => ({
                               ...p,
                               upstreamFormat: 'responses',
-                              maxOutputTokensParamName: 'max_output_tokens',
                             }))
                           }
                           className="accent-[var(--ink)]"
@@ -199,57 +185,6 @@ export default function CustomProviderDialog({ form, onChange, onSubmit, onCance
                           Responses API
                         </span>
                       </label>
-                    </div>
-                  </div>
-                  <div>
-                    <label className="mb-1.5 block text-sm font-medium text-[var(--ink)]">
-                      {t('providers.custom.maxOutputTokens')}
-                    </label>
-                    <div className="flex gap-2 items-center">
-                      <CustomSelect
-                        value={form.maxOutputTokensParamName}
-                        onChange={(v) =>
-                          onChange((p) => ({
-                            ...p,
-                            maxOutputTokensParamName: v as
-                              | 'max_tokens'
-                              | 'max_completion_tokens'
-                              | 'max_output_tokens',
-                          }))
-                        }
-                        options={
-                          form.upstreamFormat === 'responses'
-                            ? [
-                                {
-                                  value: 'max_output_tokens',
-                                  label: 'max_output_tokens',
-                                },
-                              ]
-                            : [
-                                { value: 'max_tokens', label: 'max_tokens' },
-                                {
-                                  value: 'max_completion_tokens',
-                                  label: 'max_completion_tokens',
-                                },
-                              ]
-                        }
-                        compact
-                        className="shrink-0"
-                      />
-                      <input
-                        type="number"
-                        value={form.maxOutputTokens}
-                        onChange={(e) =>
-                          onChange((p) => ({
-                            ...p,
-                            maxOutputTokens: e.target.value,
-                          }))
-                        }
-                        placeholder={t(
-                          'providers.custom.unlimitedPlaceholder',
-                        )}
-                        className="flex-1 rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] px-3 py-2.5 text-sm transition-colors focus:border-[var(--focus-border)] focus:outline-none"
-                      />
                     </div>
                   </div>
                 </>
@@ -301,13 +236,6 @@ export default function CustomProviderDialog({ form, onChange, onSubmit, onCance
               )}
 
               <div>
-                <label htmlFor={`${titleId}-key`} className="mb-1.5 block text-sm font-medium text-[var(--ink)]">API Key</label>
-                <input id={`${titleId}-key`} type="password" autoComplete="off" value={form.apiKey}
-                  onChange={e => onChange(current => ({ ...current, apiKey: e.target.value }))}
-                  className="w-full rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] px-3 py-2.5 text-sm focus:border-[var(--focus-border)] focus:outline-none" />
-                <p className="mt-1.5 text-xs text-[var(--ink-muted)]">{t('providers.custom.discoveryKeyHint')}</p>
-              </div>
-              <div>
                 <p className="mb-1.5 text-sm font-medium text-[var(--ink)]">{t('providers.custom.models')} <span className="text-[var(--error)]">*</span></p>
                 <div className="flex items-center justify-between gap-3 rounded-lg border border-[var(--line)] px-3 py-3">
                   <div className="min-w-0">
@@ -317,7 +245,12 @@ export default function CustomProviderDialog({ form, onChange, onSubmit, onCance
                   <button type="button" onClick={() => setManagingModels(true)} className="shrink-0 rounded-lg px-3 py-2 text-sm font-medium text-[var(--accent)] hover:bg-[var(--paper-inset)]">{t('providers.custom.manageModels')}</button>
                 </div>
               </div>
-
+              <div>
+                <label htmlFor={`${titleId}-key`} className="mb-1.5 block text-sm font-medium text-[var(--ink)]">API Key</label>
+                <input id={`${titleId}-key`} type="password" autoComplete="off" placeholder={t('providers.custom.apiKeyPlaceholder')} value={form.apiKey}
+                  onChange={e => onChange(current => ({ ...current, apiKey: e.target.value }))}
+                  className="w-full rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] px-3 py-2.5 text-sm focus:border-[var(--focus-border)] focus:outline-none" />
+              </div>
 
             </div>
 
