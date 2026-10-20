@@ -2461,6 +2461,59 @@ describe('TabProvider session activity ownership', () => {
     await waitFor(() => expect(readActivity().sessionId).toBe('session-switch-b'));
   });
 
+  it.each(['session-retained', 'pending-retained'])(
+    'starts a clean projection when replacing %s with a separate pending conversation',
+    async source => {
+      tauriHarness.proxyFetch.mockImplementation(async () => new Response(JSON.stringify({
+        success: true,
+        session: {
+          id: source, agentDir: '/tmp/workspace', title: 'Old conversation',
+          messages: [], snapshotRevision: 0, liveSessionState: 'idle', hasMoreBefore: false,
+        },
+      })));
+      let state!: ReturnType<typeof useTabState>;
+      function Capture() {
+        const current = useTabState();
+        useEffect(() => { state = current; }, [current]);
+        return <Probe />;
+      }
+      const onTitleChange = vi.fn();
+      const content = (id: string) => (
+        <TabProvider tabId="separate-birth" agentDir="/tmp/workspace" sessionId={id}
+          onTitleChange={onTitleChange} claimSessionOpeningTransition={allowSessionOpening}>
+          <Capture />
+        </TabProvider>
+      );
+      const view = render(content(source));
+      await waitFor(() => expect(state.isConnected && !state.isSessionLoading).toBe(true));
+      act(() => state.setMessages([
+        { id: '1', role: 'user', content: 'old user', timestamp: new Date(0) },
+        { id: '2', role: 'assistant', content: 'old answer', timestamp: new Date(0) },
+      ]));
+      emit('chat:status', { sessionState: 'running' });
+      expect(readActivity().historyCount).toBe(2);
+
+      view.rerender(content('pending-separate-birth'));
+      await waitFor(() => expect(state.sessionId).toBe('pending-separate-birth'));
+      expect(readActivity().historyCount).toBe(0);
+      expect(readStreamingContent()).toBeNull();
+      expect(readActivity().isLoading).toBe(false);
+      expect(onTitleChange).toHaveBeenLastCalledWith('New Chat');
+
+      // New Sessions reuse transcript-local IDs; they must not match old rows.
+      emit('chat:init', { sessionId: 'pending-separate-birth', transcriptFormat: 2, sessionState: 'idle' });
+      for (const [id, role, content] of [['1', 'user', 'new user'], ['2', 'assistant', 'new answer']]) {
+        emit('chat:transcript-operation', {
+          sessionId: 'pending-separate-birth',
+          operation: { kind: 'message-create', message: { id, role, content, timestamp: new Date(1).toISOString() } },
+        });
+      }
+      expect(screen.getByTestId('history-content')).toHaveTextContent('new user');
+      expect(screen.getByTestId('history-content')).not.toHaveTextContent('old');
+      expect(readStreamingContent()).toBe('new answer');
+    },
+  );
+
   it('clears runtime tool metadata when switching to another session', async () => {
     const view = render(
       <TabProvider tabId="tab-tools" agentDir="/tmp/workspace" sessionId="pending-tools-a" claimSessionOpeningTransition={allowSessionOpening}>

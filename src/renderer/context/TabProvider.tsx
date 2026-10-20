@@ -1526,60 +1526,6 @@ export default function TabProvider({
     const restore = persistedRestoreLifecycleRef.current;
     return restore.phase === 'ready' ? restore.sessionId : null;
   }, []);
-  // A supported persisted-history navigation normally mounts a target-bound
-  // Tab. This layout guard also covers a future prop replacement without
-  // reopening the old mutable-runtime switch path. Reset and pending births
-  // remain SSE-native under their existing owner markers.
-  useLayoutEffect(() => {
-    const previousSessionId = previousSessionPropRef.current;
-    if (previousSessionId === sessionId) return;
-
-    abortActiveRestoreRequest();
-    if (!sessionId || isPendingSessionId(sessionId)) {
-      liveRevisionFenceRef.current = {
-        ...EMPTY_LIVE_REVISION_FENCE,
-        restoreToken: liveRevisionFenceRef.current.restoreToken + 1,
-      };
-      publishPersistedRestoreLifecycle({
-        phase: 'inactive',
-        mode: 'initial',
-        sessionId: null,
-        restoreToken: liveRevisionFenceRef.current.restoreToken,
-        connectionGeneration: 0,
-        error: null,
-      });
-      return;
-    }
-
-    const isSseNativeBirth =
-      isPendingSessionId(previousSessionId) ||
-      isResetSessionBirth({
-        resetBirthSessionId: resetBirthSessionIdRef.current,
-        sessionId,
-      });
-    if (isSseNativeBirth) {
-      publishPersistedRestoreLifecycle({
-        phase: 'inactive',
-        mode: 'initial',
-        sessionId,
-        restoreToken: liveRevisionFenceRef.current.restoreToken,
-        connectionGeneration: liveRevisionFenceRef.current.connectionGeneration,
-        error: null,
-      });
-      return;
-    }
-
-    beginPersistedRestore(
-      sessionId,
-      sseRef.current?.getConnectionGeneration() ?? 0,
-      'initial',
-    );
-  }, [
-    sessionId,
-    abortActiveRestoreRequest,
-    beginPersistedRestore,
-    publishPersistedRestoreLifecycle,
-  ]);
   // Ref for cron task exit handler (set by useCronTask hook via context)
   // Synchronous map: toolUseId → toolName. Updated outside React state updaters
   // to avoid React 18 automatic batching timing issues (state updaters run during
@@ -1634,36 +1580,97 @@ export default function TabProvider({
     loadingOlderRef.current = false;
   }, []);
 
-  /** Adopt the identity already committed by Rust. Keep the existing owner-resolved
-   * SSE transport and clear only this Tab's presentation of the previous Session. */
-  const adoptMigratedSession = useCallback(
-    async (
-      newSessionId: string,
-      options?: AdoptMigratedSessionOptions,
-    ): Promise<boolean> => {
-      const previousSessionId = currentSessionIdRef.current;
-      console.log(
-        `[TabProvider ${tabId}] adoptMigratedSession: ${previousSessionId?.slice(0, 8) ?? 'none'} → ${newSessionId.slice(0, 8)}`,
-      );
-      abortActiveRestoreRequest();
+  const clearNewConversationProjection = useCallback(() => {
+    abortActiveRestoreRequest();
 
-      // Suppress the chat:init that the migrate already broadcast on the
-      // sidecar — we're treating the new session as "freshly created here"
-      // even though it came from Rust, to keep the same race-free guard
-      // resetSession uses.
-      isNewSessionRef.current = true;
-      resetBirthPendingRef.current = false;
+    // Both in-place migration and a separate pending birth start a fresh
+    // projection. A reconnect within the same Session must keep its history.
+    isNewSessionRef.current = true;
+    resetBirthPendingRef.current = false;
+    resetBirthSessionIdRef.current = null;
 
-      // Clear the previous Session projection only after Rust has committed.
-      setPendingDesktopMessages([]);
-      setHistoryMessages([]);
-      resetPaginationState();
-      setStreamingMessage(null);
-      liveContextUsageSessionIdRef.current = null;
-      setContextUsage(null); // PRD 0.2.32 — 新会话无持久占用；仅清展示态（不碰后端持久数据）
-      setAgentPlanTodos(null);
-      setSdkSlashCommands([]);
-      seenIdsRef.current.clear();
+    // Clear only after the replacement has been admitted and prepared.
+    transcriptSessionIdRef.current = null;
+    transcriptPageRef.current = null;
+    setPendingDesktopMessages([]);
+    setHistoryMessages([]);
+    resetPaginationState();
+    setStreamingMessage(null);
+    liveContextUsageSessionIdRef.current = null;
+    setContextUsage(null); // PRD 0.2.32 — 新会话无持久占用；仅清展示态（不碰后端持久数据）
+    setAgentPlanTodos(null);
+    setSdkSlashCommands([]);
+    seenIdsRef.current.clear();
+    liveRevisionFenceRef.current = {
+      ...EMPTY_LIVE_REVISION_FENCE,
+      restoreToken: liveRevisionFenceRef.current.restoreToken + 1,
+    };
+    publishPersistedRestoreLifecycle({
+      phase: 'inactive',
+      mode: 'initial',
+      sessionId: null,
+      restoreToken: liveRevisionFenceRef.current.restoreToken,
+      connectionGeneration: 0,
+      error: null,
+    });
+    clearSessionActive();
+    toolNameMapRef.current.clear();
+    pendingTranscriptToolEventsRef.current = [];
+    if (transcriptToolRafRef.current !== null)
+      cancelAnimationFrame(transcriptToolRafRef.current);
+    transcriptToolRafRef.current = null;
+    pendingTextTargetRef.current = null;
+    pendingToolResultDeltasRef.current.clear();
+    pendingToolInputDeltasRef.current.clear();
+    pendingSubagentToolResultDeltasRef.current.clear();
+    pendingSubagentToolInputDeltasRef.current.clear();
+    // Reveal state is per-tab; a session swap/reset must not let a stale reveal loop or
+    // un-revealed pending text bleed into the next session. (Loop-stop is inlined rather
+    // than calling stopRevealLoop — these reset callbacks are declared before it, so
+    // referencing it in their dep arrays would be a TDZ error. Refs are safe in the body.
+    // Staleness of any already-enqueued commit is handled by the message-id guard.)
+    pendingTextRef.current = '';
+    if (revealRafRef.current != null) {
+      cancelAnimationFrame(revealRafRef.current);
+      revealRafRef.current = null;
+    }
+    revealAccRef.current = 0;
+    revealLastRef.current = 0;
+    adoptedStreamRef.current = false;
+    setIsLoading(false);
+    setSessionState('idle');
+    setSystemStatus(null);
+    setSystemNotice(null);
+    setAgentError(null);
+    setLastTerminalReason(null);
+    setSessionMeta(null);
+    firstUserTitleProjectionRef.current = null;
+    setSessionRuntimeSource(null);
+    clearInteractiveState();
+
+    // Reset tab title so SortableTabItem falls back to folder name.
+    currentSessionTitleRef.current = 'New Chat';
+    onTitleChangeRef.current?.('New Chat');
+  }, [
+    abortActiveRestoreRequest, setPendingDesktopMessages, setHistoryMessages,
+    resetPaginationState, setStreamingMessage, publishPersistedRestoreLifecycle,
+    clearSessionActive, setAgentError, clearInteractiveState,
+  ]);
+
+  // A supported persisted-history navigation normally mounts a target-bound
+  // Tab. This layout guard also covers a future prop replacement without
+  // reopening the old mutable-runtime switch path. Reset and pending births
+  // remain SSE-native under their existing owner markers.
+  useLayoutEffect(() => {
+    const previousSessionId = previousSessionPropRef.current;
+    if (previousSessionId === sessionId) return;
+
+    abortActiveRestoreRequest();
+    if (sessionId && isPendingSessionId(sessionId)) {
+      clearNewConversationProjection();
+      return;
+    }
+    if (!sessionId) {
       liveRevisionFenceRef.current = {
         ...EMPTY_LIVE_REVISION_FENCE,
         restoreToken: liveRevisionFenceRef.current.restoreToken + 1,
@@ -1676,44 +1683,51 @@ export default function TabProvider({
         connectionGeneration: 0,
         error: null,
       });
-      clearSessionActive();
-      toolNameMapRef.current.clear();
-      pendingTranscriptToolEventsRef.current = [];
-      if (transcriptToolRafRef.current !== null)
-        cancelAnimationFrame(transcriptToolRafRef.current);
-      transcriptToolRafRef.current = null;
-      pendingTextTargetRef.current = null;
-      pendingToolResultDeltasRef.current.clear();
-      pendingToolInputDeltasRef.current.clear();
-      pendingSubagentToolResultDeltasRef.current.clear();
-      pendingSubagentToolInputDeltasRef.current.clear();
-      // Reveal state is per-tab; a session swap/reset must not let a stale reveal loop or
-      // un-revealed pending text bleed into the next session. (Loop-stop is inlined rather
-      // than calling stopRevealLoop — these reset callbacks are declared before it, so
-      // referencing it in their dep arrays would be a TDZ error. Refs are safe in the body.
-      // Staleness of any already-enqueued commit is handled by the message-id guard.)
-      pendingTextRef.current = '';
-      if (revealRafRef.current != null) {
-        cancelAnimationFrame(revealRafRef.current);
-        revealRafRef.current = null;
-      }
-      revealAccRef.current = 0;
-      revealLastRef.current = 0;
-      adoptedStreamRef.current = false;
-      setIsLoading(false);
-      setSessionState('idle');
-      setSystemStatus(null);
-      setSystemNotice(null);
-      setAgentError(null);
-      setLastTerminalReason(null);
-      setSessionMeta(null);
-      firstUserTitleProjectionRef.current = null;
-      setSessionRuntimeSource(null);
-      clearInteractiveState();
+      return;
+    }
 
-      // Reset tab title so SortableTabItem falls back to folder name.
-      currentSessionTitleRef.current = 'New Chat';
-      onTitleChangeRef.current?.('New Chat');
+    const isSseNativeBirth =
+      isPendingSessionId(previousSessionId) ||
+      isResetSessionBirth({
+        resetBirthSessionId: resetBirthSessionIdRef.current,
+        sessionId,
+      });
+    if (isSseNativeBirth) {
+      publishPersistedRestoreLifecycle({
+        phase: 'inactive',
+        mode: 'initial',
+        sessionId,
+        restoreToken: liveRevisionFenceRef.current.restoreToken,
+        connectionGeneration: liveRevisionFenceRef.current.connectionGeneration,
+        error: null,
+      });
+      return;
+    }
+
+    beginPersistedRestore(
+      sessionId,
+      sseRef.current?.getConnectionGeneration() ?? 0,
+      'initial',
+    );
+  }, [
+    sessionId,
+    clearNewConversationProjection,
+    abortActiveRestoreRequest,
+    beginPersistedRestore,
+    publishPersistedRestoreLifecycle,
+  ]);
+  /** Adopt the identity already committed by Rust. Keep the existing owner-resolved
+   * SSE transport and clear only this Tab's presentation of the previous Session. */
+  const adoptMigratedSession = useCallback(
+    async (
+      newSessionId: string,
+      options?: AdoptMigratedSessionOptions,
+    ): Promise<boolean> => {
+      const previousSessionId = currentSessionIdRef.current;
+      console.log(
+        `[TabProvider ${tabId}] adoptMigratedSession: ${previousSessionId?.slice(0, 8) ?? 'none'} → ${newSessionId.slice(0, 8)}`,
+      );
+      clearNewConversationProjection();
 
       const relabeledAttachment = Boolean(
         sseRef.current?.isActive() &&
@@ -1775,15 +1789,7 @@ export default function TabProvider({
     },
     [
       tabId,
-      setStreamingMessage,
-      setAgentError,
-      clearInteractiveState,
-      clearSessionActive,
-      resetPaginationState,
-      abortActiveRestoreRequest,
-      setPendingDesktopMessages,
-      publishPersistedRestoreLifecycle,
-      setHistoryMessages,
+      clearNewConversationProjection,
       sessionRuntime,
       sessionRuntimeSessionId,
     ],
