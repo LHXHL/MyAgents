@@ -350,7 +350,8 @@ const mocks = vi.hoisted(() => {
   };
 });
 
-vi.mock('../agent-session', () => ({
+vi.mock('../agent-session', async () => ({
+  runSerializedSessionMutation: (await import('../builtin-session/lifecycle')).runSerializedSessionMutation,
   applyMcpOverrideAndAwaitReady: mocks.applyMcpOverrideAndAwaitReady,
   cancelImRequest: mocks.cancelBuiltinImRequest,
   cancelQueueItem: mocks.cancelQueueItem,

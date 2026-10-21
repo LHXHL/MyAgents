@@ -1,4 +1,3 @@
-import { runSerializedSessionMutation } from '../builtin-session/lifecycle';
 import { broadcast } from "../sse";
 import { applySessionModelSelection } from '../agent-session';
 import { questionAnswersAsText } from '../../shared/types/askUserQuestion';
@@ -48,6 +47,7 @@ import {
   materializeCurrentSessionMetadataForPublishedReset,
   materializePendingDesktopSession as materializeBuiltinPendingDesktopSession,
   resetSession,
+  runSerializedSessionMutation,
   resetInteractionScenario,
   requireCurrentBuiltinSkill,
   rewindSession,
