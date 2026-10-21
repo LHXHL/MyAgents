@@ -15,6 +15,17 @@ pub(crate) async fn acquire_session_lifecycle(session_ids: &[&str]) -> SessionLi
         .await
 }
 
+/// Reusing a source is optional for desktop New. Never queue that optimization
+/// behind recovery or another source mutation; independent birth needs neither.
+pub(crate) async fn try_acquire_session_lifecycle(
+    session_ids: &[&str],
+) -> Option<SessionLifecycleGuard> {
+    SESSION_LIFECYCLE_LOCKS
+        .get_or_init(crate::keyed_lifecycle::KeyedLifecycleRegistry::new)
+        .try_acquire_many(session_ids)
+        .await
+}
+
 /// Close one active generation under the manager lock, wait without that
 /// lock, then move the exact process into manager-owned recovery state.
 fn replace_session_sidecar_after_drain<'a>(
@@ -110,7 +121,15 @@ pub(crate) async fn preserve_desktop_session<R: Runtime>(
     app: &AppHandle<R>,
     manager: &ManagedSidecarManager,
     source: &str,
+    tab_id: &str,
 ) -> Result<NewDesktopSessionResult, String> {
+    if !manager
+        .lock()
+        .map_err(|error| error.to_string())?
+        .session_has_exact_owner(source, &SidecarOwner::Tab(tab_id.to_string()))
+    {
+        return Err("The Tab no longer owns this Session".to_string());
+    }
     let app = app.clone();
     let manager = manager.clone();
     let source = source.to_string();
@@ -132,8 +151,8 @@ pub(crate) async fn preserve_desktop_session<R: Runtime>(
 /// is the same as IM enqueue/handover; the unbound path checks disk while fenced.
 #[tauri::command]
 #[allow(non_snake_case)]
-pub async fn cmd_new_desktop_session(
-    app: AppHandle,
+pub async fn cmd_new_desktop_session<R: Runtime>(
+    app: AppHandle<R>,
     state: tauri::State<'_, ManagedSidecarManager>,
     oldSessionId: String,
     tabId: String,
@@ -145,7 +164,9 @@ pub async fn cmd_new_desktop_session(
         return Ok(result);
     }
     let target = uuid::Uuid::new_v4().to_string();
-    let _lifecycle = acquire_session_lifecycle(&[&oldSessionId, &target]).await;
+    let Some(_lifecycle) = try_acquire_session_lifecycle(&[&oldSessionId, &target]).await else {
+        return preserve_desktop_session(&app, state.inner(), &oldSessionId, &tabId).await;
+    };
     // A dormant binding is still authoritative. A concurrently attached live
     // Channel first acquires its Agent owner under this same lifecycle fence.
     let retained_identity =
@@ -159,7 +180,7 @@ pub async fn cmd_new_desktop_session(
         retained_identity,
     )?
     else {
-        return preserve_desktop_session(&app, state.inner(), &oldSessionId).await;
+        return preserve_desktop_session(&app, state.inner(), &oldSessionId, &tabId).await;
     };
     // Admit the existing background owner here, once, under the source fence.
     // App consumes this decision and never re-samples activity after it returns.
@@ -176,7 +197,7 @@ pub async fn cmd_new_desktop_session(
     .await
     .map_err(|error| error.to_string())?;
     if !matches!(background, Ok(ref result) if !result.started) {
-        return preserve_desktop_session(&app, state.inner(), &oldSessionId).await;
+        return preserve_desktop_session(&app, state.inner(), &oldSessionId, &tabId).await;
     }
     let Some(dispatch) = transition_desktop_runtime(
         state.inner(),
@@ -189,7 +210,7 @@ pub async fn cmd_new_desktop_session(
     )
     .await?
     else {
-        return preserve_desktop_session(&app, state.inner(), &oldSessionId).await;
+        return preserve_desktop_session(&app, state.inner(), &oldSessionId, &tabId).await;
     };
     if !commit_desktop_runtime_transition(
         state.inner(),
@@ -2340,6 +2361,115 @@ mod session_lifecycle_tests {
         SessionDeleteCommandResult, SidecarManager, SidecarOwner,
     };
     use std::time::Duration;
+
+    #[tokio::test]
+    async fn desktop_new_does_not_wait_for_source_recovery() {
+        use tauri::Manager;
+        for source in [
+            "pending-recovering-desktop",
+            "370d8bc3-1de0-4090-b913-ce5830f70f27",
+        ] {
+            let app = tauri::test::mock_app();
+            let manager = super::create_sidecar_manager();
+            app.manage(manager.clone());
+            app.manage(crate::im::ManagedAgents::default());
+            app.manage(crate::im::ManagedImBots::default());
+            let owner = SidecarOwner::Tab("recovering-tab".into());
+            let epoch = {
+                let mut state = manager.lock().unwrap();
+                state.insert_test_ready_frontend_sidecar(source, 12345, owner.clone());
+                state.begin_session_sidecar_replacement(source);
+                state.recovering_sidecars[source].epoch
+            };
+            // Recovery holds this until the replacement is ready. Independent
+            // birth must settle while that operation is still suspended.
+            let recovery = acquire_session_lifecycle(&[source]).await;
+            let result = tokio::time::timeout(
+                Duration::from_millis(250),
+                super::cmd_new_desktop_session(
+                    app.handle().clone(),
+                    app.state(),
+                    source.into(),
+                    "recovering-tab".into(),
+                ),
+            )
+            .await
+            .expect("new conversation waited for source recovery")
+            .unwrap();
+            assert!(result.create_new_sidecar);
+            assert!(result.new_session_id.is_none());
+            {
+                let mut state = manager.lock().unwrap();
+                assert_eq!(state.recovering_sidecars[source].epoch, epoch);
+                assert!(state.session_has_exact_owner(source, &owner));
+                let background = SidecarOwner::BackgroundCompletion(source.into());
+                assert!(state.session_has_exact_owner(source, &background));
+                // A late old-Tab release cannot discard the ongoing recovery.
+                let _release = state.remove_session_owner(source, &owner);
+                assert!(state.has_session_recovery(source));
+                state.insert_test_ready_frontend_sidecar(source, 12346, background.clone());
+                assert!(state.commit_ready_session_sidecar(source).is_some());
+                assert!(!state.has_session_recovery(source));
+                assert!(state.session_has_exact_owner(source, &background));
+            }
+            drop(recovery);
+        }
+    }
+
+    #[tokio::test]
+    async fn desktop_new_does_not_wait_for_channel_discovery_but_requires_its_tab() {
+        use tauri::Manager;
+        let app = tauri::test::mock_app();
+        let manager = super::create_sidecar_manager();
+        app.manage(manager.clone());
+        app.manage(crate::im::ManagedAgents::default());
+        app.manage(crate::im::ManagedImBots::default());
+        manager.lock().unwrap().insert_test_ready_frontend_sidecar(
+            "discovery-source",
+            12345,
+            SidecarOwner::Tab("actual-tab".into()),
+        );
+        for legacy in [false, true] {
+            let agents = app.state::<crate::im::ManagedAgents>();
+            let bots = app.state::<crate::im::ManagedImBots>();
+            let agent_lock = if legacy {
+                None
+            } else {
+                Some(agents.lock().await)
+            };
+            let bot_lock = if legacy {
+                Some(bots.lock().await)
+            } else {
+                None
+            };
+            assert!(tokio::time::timeout(
+                Duration::from_millis(250),
+                super::cmd_new_desktop_session(
+                    app.handle().clone(),
+                    app.state(),
+                    "discovery-source".into(),
+                    "wrong-tab".into(),
+                )
+            )
+            .await
+            .unwrap()
+            .is_err());
+            let result = tokio::time::timeout(
+                Duration::from_millis(250),
+                super::cmd_new_desktop_session(
+                    app.handle().clone(),
+                    app.state(),
+                    "discovery-source".into(),
+                    "actual-tab".into(),
+                ),
+            )
+            .await
+            .expect("discovery blocked independent birth")
+            .unwrap();
+            assert!(result.create_new_sidecar);
+            drop((agent_lock, bot_lock));
+        }
+    }
 
     // A real child HTTP writer. Running this test normally is a no-op; only
     // the isolated parent case supplies its temporary directory in the child.

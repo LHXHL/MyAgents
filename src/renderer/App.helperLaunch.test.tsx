@@ -731,6 +731,32 @@ describe('App helper launch', () => {
     expect(mocks.releaseTabSession).not.toHaveBeenCalledWith(source.sessionId, source.id);
   });
 
+  it('opens the independent conversation before the recovering source owner release settles', async () => {
+    render(<App />);
+    await screen.findByTestId('launcher-page');
+    await act(async () => { await latestLauncherProps().onLaunchProject(mocks.project); });
+    await waitFor(() => expect(mocks.chatProps.length).toBeGreaterThan(0));
+    const source = latestTabbarProps().tabs.find(tab => tab.view === 'chat')!;
+    let finishRelease!: (stopped: boolean) => void;
+    mocks.releaseTabSession.mockImplementationOnce(() => new Promise<boolean>(resolve => { finishRelease = resolve; }));
+    let completed = false;
+    let operation!: Promise<boolean>;
+    try {
+      await act(async () => {
+        operation = latestChatProps().onNewSession(source.sessionId!);
+        void operation.then(() => { completed = true; });
+      });
+      await waitFor(() => expect(completed).toBe(true));
+      const target = latestTabbarProps().tabs.find(tab => tab.id === source.id)!;
+      expect(target.sessionId).not.toBe(source.sessionId);
+      expect(mocks.releaseTabSession).toHaveBeenCalledWith(source.sessionId, source.id);
+      await act(async () => { finishRelease(false); await operation; });
+      expect(latestTabbarProps().tabs.find(tab => tab.id === source.id)?.sessionId).toBe(target.sessionId);
+    } finally {
+      await act(async () => { finishRelease?.(false); await operation; });
+    }
+  });
+
   function latestTabbarProps() {
     const props = mocks.tabbarProps.at(-1);
     if (!props) throw new Error('TabBar props were not captured');

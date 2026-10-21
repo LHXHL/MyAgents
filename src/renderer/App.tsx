@@ -3099,7 +3099,6 @@ export default function App({ rendererAttachment = COLD_RENDERER_ATTACHMENT }: {
           return false;
         }
         await stopSseProxy(tabId);
-        await releaseTabSession(oldSessionId, tabId);
 
         // PRD 0.2.19 cross-review fix (B4): mark the upcoming session_new as
         // 'new_chat_button' provenance. handleNewSession is the AI-running variant
@@ -3121,6 +3120,12 @@ export default function App({ rendererAttachment = COLD_RENDERER_ATTACHMENT }: {
           initialMessage: undefined,
           sidecarConfigDisposition: 'push',
         }));
+        // Rust already retained source work/recovery with its background owner.
+        // Retire only this old Tab token after publishing the ready target;
+        // source lifecycle settlement must not delay use of the new conversation.
+        void releaseTabSession(oldSessionId, tabId).catch(error => {
+          console.warn('[App] Failed to release previous conversation Tab owner:', error);
+        });
         const fbResult = await migrateFloatingBallSessionBinding(
           oldSessionId,
           pendingSessionId,

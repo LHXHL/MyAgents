@@ -146,69 +146,107 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn desktop_new_rechecks_binding_after_waiting_for_im_rotation() {
-        let app = tauri::test::mock_app();
-        let directory = tempfile::tempdir().unwrap();
-        let router = Arc::new(AsyncMutex::new(super::SessionRouter::new(
-            directory.path().into(),
-        )));
-        let key = "agent:a:telegram:private:user";
-        router.lock().await.upsert_peer_session(super::PeerSession {
-            session_key: key.into(),
-            session_id: "source".into(),
-            sidecar_port: 0,
-            workspace_path: directory.path().into(),
-            source_type: super::ImSourceType::Private,
-            source_id: "user".into(),
-            source_display_name: None,
-            last_sender_name: None,
-            message_count: 1,
-            metadata_birth_pending: false,
-            metadata_indexed: true,
-            last_active: std::time::Instant::now(),
-        });
-        let health = Arc::new(super::HealthManager::new(
-            directory.path().join("health.json"),
-        ));
-        let peer_locks = Arc::new(AsyncMutex::new(std::collections::HashMap::new()));
-        let fence = acquire_peer_operation_fence(&peer_locks, key).await;
-        let manager = Arc::new(Mutex::new(crate::sidecar::SidecarManager::new()));
-        manager.lock().unwrap().insert_test_ready_frontend_sidecar(
-            "source",
-            12345,
-            crate::sidecar::SidecarOwner::Tab("tab".into()),
-        );
-        let mut pending = Box::pin(super::new_channel_desktop_session_with_binding(
-            app.handle(),
-            &manager,
-            "source",
-            "tab",
-            (key.into(), router.clone(), health, peer_locks),
-        ));
-        assert!(
-            tokio::time::timeout(Duration::from_millis(20), pending.as_mut())
-                .await
-                .is_err()
-        );
-        router
-            .lock()
+    async fn desktop_new_preserves_channel_binding_without_waiting_for_source_work() {
+        for blocker in ["peer", "projection", "router", "lifecycle"] {
+            let app = tauri::test::mock_app();
+            let directory = tempfile::tempdir().unwrap();
+            let router = Arc::new(AsyncMutex::new(super::SessionRouter::new(
+                directory.path().into(),
+            )));
+            let source = format!("channel-new-{blocker}");
+            let key = "agent:a:telegram:private:user";
+            router.lock().await.upsert_peer_session(super::PeerSession {
+                session_key: key.into(),
+                session_id: source.clone(),
+                sidecar_port: 0,
+                workspace_path: directory.path().into(),
+                source_type: super::ImSourceType::Private,
+                source_id: "user".into(),
+                source_display_name: None,
+                last_sender_name: None,
+                message_count: 1,
+                metadata_birth_pending: false,
+                metadata_indexed: true,
+                last_active: std::time::Instant::now(),
+            });
+            let health = Arc::new(super::HealthManager::new(
+                directory.path().join("health.json"),
+            ));
+            let peer_locks = Arc::new(AsyncMutex::new(std::collections::HashMap::new()));
+            let manager = Arc::new(Mutex::new(crate::sidecar::SidecarManager::new()));
+            let tab = crate::sidecar::SidecarOwner::Tab("tab".into());
+            let channel = crate::sidecar::SidecarOwner::Agent(key.into());
+            {
+                let mut state = manager.lock().unwrap();
+                state.insert_test_ready_frontend_sidecar(&source, 12345, tab.clone());
+                state.add_session_owner(&source, channel.clone());
+            }
+            let peer = if blocker == "peer" {
+                Some(acquire_peer_operation_fence(&peer_locks, key).await)
+            } else {
+                None
+            };
+            let projection = if blocker == "projection" {
+                Some(health.lock_active_sessions_projection().await)
+            } else {
+                None
+            };
+            let router_guard = if blocker == "router" {
+                Some(router.lock().await)
+            } else {
+                None
+            };
+            let lifecycle = if blocker == "lifecycle" {
+                Some(crate::sidecar::acquire_session_lifecycle(&[&source]).await)
+            } else {
+                None
+            };
+            let result = tokio::time::timeout(
+                Duration::from_millis(250),
+                super::new_channel_desktop_session_with_binding(
+                    app.handle(),
+                    &manager,
+                    &source,
+                    "tab",
+                    (
+                        key.into(),
+                        router.clone(),
+                        health.clone(),
+                        peer_locks.clone(),
+                    ),
+                ),
+            )
             .await
-            .stage_materialized_session_binding(key, "im-new");
-        drop(fence);
-        assert!(pending.await.unwrap().is_none());
-        assert_eq!(
+            .expect(blocker)
+            .unwrap()
+            .unwrap();
+            assert_eq!(
+                serde_json::to_value(result).unwrap()["createNewSidecar"],
+                true
+            );
+            drop((peer, projection, router_guard, lifecycle));
+            assert_eq!(
+                router
+                    .lock()
+                    .await
+                    .peer_session_snapshot(key)
+                    .unwrap()
+                    .session_id,
+                source
+            );
+            // IM can still rotate its own binding after desktop has branched.
             router
                 .lock()
                 .await
-                .peer_session_snapshot(key)
-                .unwrap()
-                .session_id,
-            "im-new"
-        );
-        assert!(manager
-            .lock()
-            .unwrap()
-            .session_has_exact_owner("source", &crate::sidecar::SidecarOwner::Tab("tab".into()),));
+                .stage_materialized_session_binding(key, "im-new");
+            let state = manager.lock().unwrap();
+            assert!(state.session_has_exact_owner(&source, &tab));
+            assert!(state.session_has_exact_owner(&source, &channel));
+            assert!(state.session_has_exact_owner(
+                &source,
+                &crate::sidecar::SidecarOwner::BackgroundCompletion(source.clone())
+            ));
+        }
     }
 
     #[tokio::test]
@@ -337,7 +375,8 @@ async fn freeze_current_via_sidecar(
 }
 
 /// Resolve the current Router authority, never the renderer's polled status.
-/// Snapshots avoid retaining ManagedAgents across Router/lifecycle awaits.
+/// Busy discovery means process reuse is unavailable, not that New is unavailable.
+/// Never wait on a Router that IM may hold while waiting for source recovery.
 type DesktopChannelBinding = (
     String,
     std::sync::Arc<tokio::sync::Mutex<SessionRouter>>,
@@ -348,10 +387,10 @@ type DesktopChannelBinding = (
 async fn desktop_channel_binding<R: Runtime>(
     app: &AppHandle<R>,
     session_id: &str,
-) -> Result<Option<DesktopChannelBinding>, String> {
+) -> Result<Option<DesktopChannelBinding>, ()> {
     let agents = app.state::<ManagedAgents>();
     let mut snapshots = {
-        let agents = agents.lock().await;
+        let agents = agents.try_lock().map_err(|_| ())?;
         agents
             .values()
             .flat_map(|agent| {
@@ -368,7 +407,7 @@ async fn desktop_channel_binding<R: Runtime>(
     };
     let bots = app.state::<super::ManagedImBots>();
     {
-        let bots = bots.lock().await;
+        let bots = bots.try_lock().map_err(|_| ())?;
         for bot in bots.values() {
             if !snapshots
                 .iter()
@@ -385,15 +424,15 @@ async fn desktop_channel_binding<R: Runtime>(
     let mut found = None;
     for (router, health, peer_locks) in snapshots {
         let keys = router
-            .lock()
-            .await
+            .try_lock()
+            .map_err(|_| ())?
             .peer_sessions_iter()
             .filter(|peer| peer.session_id == session_id)
             .map(|peer| peer.session_key.clone())
             .collect::<Vec<_>>();
         for key in keys {
             if found.is_some() {
-                return Err("Multiple Channel bindings prevent migrating this Session".to_string());
+                return Err(());
             }
             found = Some((key, router.clone(), health.clone(), peer_locks.clone()));
         }
@@ -409,8 +448,21 @@ pub(crate) async fn new_channel_desktop_session<R: Runtime>(
     old_session_id: &str,
     tab_id: &str,
 ) -> Result<Option<crate::sidecar::session_lifecycle::NewDesktopSessionResult>, String> {
-    let Some(binding) = desktop_channel_binding(app, old_session_id).await? else {
-        return Ok(None);
+    let binding = match desktop_channel_binding(app, old_session_id).await {
+        Ok(Some(binding)) => binding,
+        Ok(None) => return Ok(None),
+        // Discovery may be locked by IM waiting on recovery. It is needed
+        // only to migrate a binding, never to preserve it and create separately.
+        Err(()) => {
+            return crate::sidecar::session_lifecycle::preserve_desktop_session(
+                app,
+                manager,
+                old_session_id,
+                tab_id,
+            )
+            .await
+            .map(Some)
+        }
     };
     new_channel_desktop_session_with_binding(app, manager, old_session_id, tab_id, binding).await
 }
@@ -422,20 +474,55 @@ async fn new_channel_desktop_session_with_binding<R: Runtime>(
     tab_id: &str,
     (session_key, router_arc, health, peer_locks): DesktopChannelBinding,
 ) -> Result<Option<crate::sidecar::session_lifecycle::NewDesktopSessionResult>, String> {
-    let _peer = acquire_peer_operation_fence(&peer_locks, &session_key).await;
-    let _projection = health.lock_active_sessions_projection().await;
-    let mut router = router_arc.lock().await;
+    // Keep the established peer → projection → Router → lifecycle order,
+    // but do not wait for source work just to attempt optional process reuse.
+    let peer = peer_locks
+        .try_lock()
+        .ok()
+        .map(|mut locks| {
+            locks
+                .entry(session_key.clone())
+                .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+                .clone()
+        })
+        .and_then(|lock| lock.try_lock_owned().ok());
+    let projection = health.try_lock_active_sessions_projection();
+    let router = router_arc.try_lock();
+    let (Some(_peer), Some(_projection), Ok(mut router)) = (peer, projection, router) else {
+        return crate::sidecar::session_lifecycle::preserve_desktop_session(
+            app,
+            manager,
+            old_session_id,
+            tab_id,
+        )
+        .await
+        .map(Some);
+    };
     let Some(prior) = router
         .peer_session_snapshot(&session_key)
         .filter(|prior| prior.session_id == old_session_id)
     else {
-        // IM may have rotated this binding while desktop waited for its fence.
+        // IM may have rotated this binding since desktop discovered it.
         // Let the ordinary desktop path re-admit the source under its lifecycle
         // lock; it still checks the exact Tab owner and any remaining bindings.
         return Ok(None);
     };
     let target = uuid::Uuid::new_v4().to_string();
-    let _lifecycle = crate::sidecar::acquire_session_lifecycle(&[old_session_id, &target]).await;
+    let Some(_lifecycle) = crate::sidecar::session_lifecycle::try_acquire_session_lifecycle(&[
+        old_session_id,
+        &target,
+    ])
+    .await
+    else {
+        return crate::sidecar::session_lifecycle::preserve_desktop_session(
+            app,
+            manager,
+            old_session_id,
+            tab_id,
+        )
+        .await
+        .map(Some);
+    };
     let retained_identity = crate::sidecar::has_persisted_session_owner(old_session_id).await?;
     let Some(port) = crate::sidecar::session_lifecycle::desktop_session_reset_port(
         manager,
@@ -449,6 +536,7 @@ async fn new_channel_desktop_session_with_binding<R: Runtime>(
             app,
             manager,
             old_session_id,
+            tab_id,
         )
         .await
         .map(Some);
@@ -470,6 +558,7 @@ async fn new_channel_desktop_session_with_binding<R: Runtime>(
             app,
             manager,
             old_session_id,
+            tab_id,
         )
         .await
         .map(Some);
@@ -500,6 +589,7 @@ async fn new_channel_desktop_session_with_binding<R: Runtime>(
             app,
             manager,
             old_session_id,
+            tab_id,
         )
         .await
         .map(Some);
