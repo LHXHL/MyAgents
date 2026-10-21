@@ -126,9 +126,9 @@ source ~/.zshrc
 
 环境变量配置正确后，构建脚本与 Tauri 依次完成：
 1. ✅ 构建脚本按目标准备资源，为 DSH 内嵌的 Mach-O 可执行文件、`.node` 与动态库签名
-2. ✅ Tauri 使用 Developer ID 签名应用并提交到 Apple 公证
+2. ✅ Tauri 使用 Developer ID 签名应用并提交到 Apple 公证，默认关闭 S3 加速上传
 3. ✅ 等待公证完成（通常 2-5 分钟）
-4. ✅ Staple 公证票据到应用
+4. ✅ Staple 公证票据到应用，生成 DMG 与更新包，并验证签名、票据和 Gatekeeper
 
 ---
 
@@ -175,14 +175,14 @@ src-tauri/target/universal-apple-darwin/release/bundle/dmg/
 
 ```bash
 curl --connect-timeout 10 --max-time 20 -I https://appstoreconnect.apple.com/notary/v2/submissions
-curl --connect-timeout 10 --max-time 20 -I https://notary-submissions-prod.s3-accelerate.amazonaws.com
+curl --connect-timeout 10 --max-time 20 -I https://notary-submissions-prod.s3.us-west-2.amazonaws.com
 ```
 
 收到 401/403 等 HTTP 响应代表已建立连接，不代表认证或上传成功；连接/TLS 错误则应检查 VPN、代理、防火墙和网络。浏览器可访问 Apple 不代表构建终端或 `notarytool` 使用了相同网络路径。
 
-网络恢复后重新运行 `./build_macos.sh`，既有 Cargo 缓存可复用。若仅重试打包，必须确认源码、业务 bundle 和 staging 资源仍与失败的同一 target 对应；在加载原 `.env` 后，可用 `npm exec tauri bundle -- --target aarch64-apple-darwin`（Intel 改用 `x86_64-apple-darwin`）。资源或代码已经变化时应重新完整构建，避免打包混合产物。
+网络恢复后重新运行 `./build_macos.sh`，既有 Cargo 缓存可复用。若仅重试打包，必须确认源码、业务 bundle 和 staging 资源仍与失败的同一 target 对应；在仓库根目录加载原 `.env` 后，可用 `PATH="$PWD/scripts/macos-notary-tools:$PATH" npm exec tauri bundle -- --target aarch64-apple-darwin`（Intel 改用 `x86_64-apple-darwin`）。资源或代码已经变化时应重新完整构建，避免打包混合产物。
 
-如已有 submission ID，先用 `notarytool info` / `log` 和原认证方式查询结果。Apple 支持在**手动提交**时用 `--no-s3-acceleration` 排查加速上传链路；当前 Tauri CLI 不提供透传此参数的配置，不能靠给构建脚本设置一个自造环境变量生效。`notarytool --timeout` 控制等待公证结果的时限，不能修复连接超时。不要用跳过签名、公证或 stapling 的方式让正式发布显示成功。
+如已有 submission ID，先用 `notarytool info` / `log` 和原认证方式查询结果。正式构建现已通过仅在本次 Tauri 调用生效的工具适配，给 `notarytool submit` 添加 `--no-s3-acceleration`；无需手动补交，也不改变全局代理。直接调用 Tauri 不会自动带上该适配。当前 Tauri CLI 没有此参数的原生配置，不能靠设置自造环境变量生效。`notarytool --timeout` 控制等待公证结果的时限，不能修复连接超时。不要用跳过签名、公证或 stapling 的方式让正式发布显示成功。
 
 参考：[Apple 公证工作流](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow)、[Tauri CLI 2.11.4 公证实现](https://github.com/tauri-apps/tauri/blob/tauri-cli-v2.11.4/crates/tauri-macos-sign/src/lib.rs)。
 

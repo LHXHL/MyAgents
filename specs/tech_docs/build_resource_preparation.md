@@ -44,6 +44,12 @@ Linux 的 setup 通过 `build_linux.sh --install-deps` 和 `--prepare` 复用资
 
 macOS 正式构建完成各目标打包后，收尾步骤使用同一准备入口恢复主机架构的 Node、DSH 和 CLIProxy，并在恢复 DSH 选择后重建业务 bundle。Node 与 DSH 的原生依赖必须属于同一目标，业务 bundle 也必须绑定恢复后的 DSH 身份；只恢复 Node 会让本地启动加载另一架构的 Runtime。此步骤只更新 checkout 的 staging，不修改已经打包的 App；任一准备或业务构建失败都会使脚本失败，重跑准备入口可恢复，不提供跨资源事务回滚。
 
+## macOS 公证上传
+
+`build_macos.sh` 在每个目标的 Tauri 调用中临时将 `scripts/macos-notary-tools` 放到 PATH 前端。该目录的 `xcrun` 适配仅对 `notarytool submit` 添加 `--no-s3-acceleration`，再 `exec /usr/bin/xcrun`；查询、公证票据附加、编译工具查找及其参数、输出、退出码均原样传递。当前 Tauri 2.11.4 没有此上传选项，适配范围限定为正式构建子进程，不修改系统工具、代理、全局 PATH 或凭据，也不接管 Tauri 的 ZIP 签名、公证等待、DMG 和 updater 打包顺序。
+
+正式构建默认绕过 S3 加速上传入口；这不保证所有网络故障都能消失，失败仍由原工具返回。Tauri 2.11.4 未检查 stapler 的退出码，因此每个目标返回后必须通过 `codesign --verify --deep --strict`、`stapler validate` 和 `spctl --assess` 才报告完成。升级 Tauri 时核对其 `xcrun notarytool submit` 调用形态；若上游提供正式选项，应使用该选项移除适配。`macos-notarization.test.mjs` 覆盖参数与退出码保真、两架构接线、PATH 隔离和未验证产物的失败短路。
+
 ## Tauri 事件依赖补丁
 
 Tauri JS event API 与 Rust 生成的注册/清理脚本是成对的依赖契约。当前精确版本、原始/修复字节由 `scripts/patches/tauri-events.json` 与 Cargo manifest/lock 固定；`postinstall` 应用 ESM/CJS 补丁，web dev/build/typecheck 检查补丁存在。Rust 经 `[patch.crates-io]` 使用 `vendor/tauri`，原始 crate 清单、唯一源码差异与移除条件见该目录 `MYAGENTS_PATCH.md`。构建不改写共享 Cargo 缓存，也不在业务组件注入事件补救逻辑。
