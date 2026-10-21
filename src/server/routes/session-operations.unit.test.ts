@@ -3,7 +3,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   engine: {
     getCurrentSessionContext: vi.fn(() => ({ sessionId: 'source' })),
-    resetForNewDesktopSession: vi.fn(async () => ({ success: true, sessionId: 'new-desktop' })),
     retryUserMessage: vi.fn(async () => ({ success: true, content: 'retry text' })),
     compactContext: vi.fn(async () => ({ success: true })),
     retryMcpServer: vi.fn<(serverId: string) => Promise<Record<string, unknown>>>(async () => ({ success: true })),
@@ -13,7 +12,9 @@ const mocks = vi.hoisted(() => ({
     forkAtAssistantMessage: vi.fn<(messageId: string, options?: { targetSessionId?: string }) => Promise<Record<string, unknown>>>(
       async () => ({ success: true, newSessionId: 'forked' }),
     ),
-    migrateBoundSurfaceSession: vi.fn(async (_workspacePath: string, options: { targetSessionId: string }) => ({
+    transitionDesktopSession: vi.fn(async (_workspacePath: string, options: { targetSessionId: string }): Promise<{
+      success: boolean; sessionId?: string; error?: string; sourceUnchanged?: true;
+    }> => ({
       success: true,
       sessionId: options.targetSessionId,
     })),
@@ -41,16 +42,35 @@ async function readJson(response: Response): Promise<Record<string, unknown>> {
 describe('handleSessionOperationRoute', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.engine.resetForNewDesktopSession.mockResolvedValue({ success: true, sessionId: 'new-desktop' });
     mocks.engine.compactContext.mockResolvedValue({ success: true });
     mocks.engine.retryMcpServer.mockResolvedValue({ success: true });
     mocks.engine.rewindToUserMessage.mockResolvedValue({ success: true, content: 'removed' });
     mocks.retryLastExternalUserMessageAtSelector.mockResolvedValue({ success: true, content: 'retry text' });
     mocks.engine.forkAtAssistantMessage.mockResolvedValue({ success: true, newSessionId: 'forked' });
-    mocks.engine.migrateBoundSurfaceSession.mockImplementation(async (_workspacePath, options) => ({
+    mocks.engine.transitionDesktopSession.mockImplementation(async (_workspacePath, options) => ({
       success: true,
       sessionId: options.targetSessionId,
     }));
+  });
+
+  it('distinguishes a completed pre-reset refusal from uncertain transition failure', async () => {
+    const request = () => new Request('http://local/api/session/new-conversation', {
+      method: 'POST',
+      body: JSON.stringify({
+        sourceSessionId: 'source', targetSessionId: 'f7cd3447-b444-46a6-94bb-d549bfdcd9bd',
+        channelBound: true,
+      }),
+    });
+    mocks.engine.transitionDesktopSession.mockResolvedValueOnce({
+      success: false, sourceUnchanged: true, error: 'busy',
+    });
+    const refused = await handleSessionOperationRoute('/api/session/new-conversation', request(), { workspacePath: '/workspace' });
+    expect(refused?.status).toBe(409);
+    expect(await refused?.json()).toMatchObject({ sourceUnchanged: true });
+    mocks.engine.transitionDesktopSession.mockRejectedValueOnce(new Error('publication failed'));
+    const uncertain = await handleSessionOperationRoute('/api/session/new-conversation', request(), { workspacePath: '/workspace' });
+    expect(uncertain?.status).toBe(500);
+    expect(await uncertain?.json()).not.toHaveProperty('sourceUnchanged');
   });
 
   it('retries a selected MCP through the facade and preserves busy responses', async () => {
@@ -109,16 +129,15 @@ describe('handleSessionOperationRoute', () => {
     expect(await result?.json()).toEqual({ success: false, errorCode: 'retry_failed' });
   });
 
-  it('resets desktop sessions through the active engine', async () => {
+  it('refuses plain resets before any Runtime mutation', async () => {
     const response = await handleSessionOperationRoute(
       '/chat/reset',
       new Request('http://local/chat/reset', { method: 'POST' }),
       { workspacePath: '/workspace' },
     );
 
-    expect(response?.status).toBe(200);
-    expect(await readJson(response as Response)).toEqual({ success: true, sessionId: 'new-desktop' });
-    expect(mocks.engine.resetForNewDesktopSession).toHaveBeenCalledWith('/workspace');
+    expect(response?.status).toBe(409);
+    expect(mocks.engine.transitionDesktopSession).not.toHaveBeenCalled();
   });
 
   it('routes native context compaction through the active SessionEngine', async () => {
@@ -247,18 +266,18 @@ describe('handleSessionOperationRoute', () => {
   it('migrates a bound surface to the Rust-proven target identity', async () => {
     const targetSessionId = '6d57334a-44d8-4fe1-a4f2-cd57fc8beb85';
     const response = await handleSessionOperationRoute(
-      '/api/session/surface-migration',
-      new Request('http://local/api/session/surface-migration', {
+      '/api/session/new-conversation',
+      new Request('http://local/api/session/new-conversation', {
         method: 'POST',
-        body: JSON.stringify({ targetSessionId }),
+        body: JSON.stringify({ sourceSessionId: 'source', channelBound: true, targetSessionId }),
       }),
       { workspacePath: '/workspace' },
     );
 
     expect(response?.status).toBe(200);
     expect(await readJson(response as Response)).toEqual({ sessionId: targetSessionId });
-    expect(mocks.engine.migrateBoundSurfaceSession).toHaveBeenCalledWith('/workspace', {
-      targetSessionId,
+    expect(mocks.engine.transitionDesktopSession).toHaveBeenCalledWith('/workspace', {
+      sourceSessionId: 'source', channelBound: true, targetSessionId,
       metadataBirthPending: false,
     });
   });
@@ -266,18 +285,18 @@ describe('handleSessionOperationRoute', () => {
   it('passes birth-pending state during bound surface migration', async () => {
     const targetSessionId = 'e8c1e529-8458-4361-a24a-02f5c278203e';
     const response = await handleSessionOperationRoute(
-      '/api/session/surface-migration',
-      new Request('http://local/api/session/surface-migration', {
+      '/api/session/new-conversation',
+      new Request('http://local/api/session/new-conversation', {
         method: 'POST',
-        body: JSON.stringify({ targetSessionId, metadataBirthPending: true }),
+        body: JSON.stringify({ sourceSessionId: 'source', channelBound: true, targetSessionId, metadataBirthPending: true }),
       }),
       { workspacePath: '/workspace' },
     );
 
     expect(response?.status).toBe(200);
     expect(await readJson(response as Response)).toEqual({ sessionId: targetSessionId });
-    expect(mocks.engine.migrateBoundSurfaceSession).toHaveBeenCalledWith('/workspace', {
-      targetSessionId,
+    expect(mocks.engine.transitionDesktopSession).toHaveBeenCalledWith('/workspace', {
+      sourceSessionId: 'source', channelBound: true, targetSessionId,
       metadataBirthPending: true,
     });
   });
@@ -285,18 +304,18 @@ describe('handleSessionOperationRoute', () => {
   it('passes explicit unindexed state during bound surface migration', async () => {
     const targetSessionId = 'af131598-00c6-4b7b-b4fb-c039cb0f0496';
     const response = await handleSessionOperationRoute(
-      '/api/session/surface-migration',
-      new Request('http://local/api/session/surface-migration', {
+      '/api/session/new-conversation',
+      new Request('http://local/api/session/new-conversation', {
         method: 'POST',
-        body: JSON.stringify({ targetSessionId, metadataBirthPending: false, metadataIndexed: false }),
+        body: JSON.stringify({ sourceSessionId: 'source', channelBound: true, targetSessionId, metadataBirthPending: false, metadataIndexed: false }),
       }),
       { workspacePath: '/workspace' },
     );
 
     expect(response?.status).toBe(200);
     expect(await readJson(response as Response)).toEqual({ sessionId: targetSessionId });
-    expect(mocks.engine.migrateBoundSurfaceSession).toHaveBeenCalledWith('/workspace', {
-      targetSessionId,
+    expect(mocks.engine.transitionDesktopSession).toHaveBeenCalledWith('/workspace', {
+      sourceSessionId: 'source', channelBound: true, targetSessionId,
       metadataBirthPending: false,
       metadataIndexed: false,
     });
@@ -304,16 +323,16 @@ describe('handleSessionOperationRoute', () => {
 
   it('rejects surface migration without a Rust-generated UUID target', async () => {
     const response = await handleSessionOperationRoute(
-      '/api/session/surface-migration',
-      new Request('http://local/api/session/surface-migration', {
+      '/api/session/new-conversation',
+      new Request('http://local/api/session/new-conversation', {
         method: 'POST',
-        body: JSON.stringify({ targetSessionId: 'not-a-uuid' }),
+        body: JSON.stringify({ sourceSessionId: 'source', channelBound: true, targetSessionId: 'not-a-uuid' }),
       }),
       { workspacePath: '/workspace' },
     );
 
     expect(response?.status).toBe(400);
-    expect(mocks.engine.migrateBoundSurfaceSession).not.toHaveBeenCalled();
+    expect(mocks.engine.transitionDesktopSession).not.toHaveBeenCalled();
   });
 });
 

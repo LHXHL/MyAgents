@@ -129,6 +129,15 @@ impl HealthManager {
             .await
     }
 
+    /// Desktop New can create independently when a binding mutation is busy.
+    pub(crate) fn try_lock_active_sessions_projection(
+        &self,
+    ) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+        Arc::clone(&self.active_sessions_projection)
+            .try_lock_owned()
+            .ok()
+    }
+
     /// Persist an already-snapshotted Router state while the caller owns the
     /// active-session projection guard. This keeps binding mutation, durable
     /// projection, and rollback on one authority path without a second store.

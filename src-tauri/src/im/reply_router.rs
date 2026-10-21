@@ -645,6 +645,7 @@ impl ReplyRouter {
                     guard.insert(
                         perm_request_id,
                         PendingApproval {
+                            requester_user_id: slot.requester_user_id.clone(),
                             sidecar_port,
                             chat_id: chat_id.clone(),
                             card_message_id: card_msg_id,
@@ -1046,6 +1047,7 @@ impl ReplyRouter {
                     guard.insert(
                         perm_request_id,
                         PendingApproval {
+                            requester_user_id: slot.requester_user_id.clone(),
                             sidecar_port,
                             chat_id: chat_id.clone(),
                             card_message_id: card_msg_id,

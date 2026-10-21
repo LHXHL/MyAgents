@@ -3775,6 +3775,7 @@ async fn handle_bridge_message(
     }
 
     let msg = ImMessage {
+        access_admission: None,
         source_metadata: payload.source_metadata,
         chat_id: payload.chat_id,
         message_id: payload

@@ -431,6 +431,21 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
     expect(itemMeasurement?.(measurableItem, 'offsetHeight')).toBe(456);
   });
 
+  it('preserves fractional row geometry through growth and shrink instead of accumulating rounding errors', () => {
+    renderList({ messages: [msg('row', 'fractional line height')] });
+    const measure = lastData().itemSize!;
+    const item = document.createElement('div');
+    item.dataset.knownSize = '194.34375';
+    const rect = vi.spyOn(item, 'getBoundingClientRect');
+    for (const height of [194.34375, 46.390625, 850.546875, 24.125]) {
+      rect.mockReturnValue({ height, width: 750.375 } as DOMRect);
+      expect(measure(item, 'offsetHeight')).toBe(height);
+      expect(measure(item, 'offsetWidth')).toBe(750.375);
+    }
+    rect.mockReturnValue({ height: 0 } as DOMRect);
+    expect(measure(item, 'offsetHeight')).toBe(194.34375);
+  });
+
   it('does NOT forward streaming growth to Virtuoso while inactive, and resumes live on re-activation', () => {
     const history = [msg('h1', 'hello', 'user'), msg('h2', 'hi there')];
 

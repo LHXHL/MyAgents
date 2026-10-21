@@ -185,7 +185,7 @@ interface GlobalSidebarProps {
   onOpenAgentNetwork?: () => void;
   onOpenAppRoute?: (route: AppRoute) => Promise<boolean> | boolean;
   onOpenCapabilities: (section?: CapabilitySection) => void;
-  onOpenSettings: (section: 'general' | 'agent') => void;
+  onOpenSettings: (section?: 'agent') => void;
   onOpenBugReport: () => void;
   onOpenWorkspace: (
     project: Project,
@@ -1365,7 +1365,7 @@ export default memo(function GlobalSidebar({
             active={activeView === 'settings'}
             icon={<SettingsIcon className="h-4 w-4" />}
             label={t('globalSidebar.settings')}
-            onClick={() => onOpenSettings('general')}
+            onClick={() => onOpenSettings()}
           />
           <div className="global-sidebar-account-row grid grid-cols-[minmax(0,1fr)_var(--global-sidebar-action-size)]" data-global-sidebar-account-row>
             <AccountEntry expanded={expanded} available={teamSpaceAvailable}

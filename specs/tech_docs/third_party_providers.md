@@ -191,6 +191,10 @@ Renderer 的 Provider definition 经 `optionResolve.ts::toProviderHistoryEnv` �
 
 ## 自定义 Provider
 
+### 创建草稿与模型管理
+
+创建自定义 Provider 时，连接信息、可选 API Key、完整 `ModelEntity[]` 与首选模型仍由 Settings 创建表单持有；`CustomProviderDialog` 复用 `ModelManagementPanel` 的发现/手动输入/参数/首选路径，通过草稿回调更新，不调用 Provider 配置 writer。返回创建表单保留选择，取消关闭后未提交结果不写配置。最终添加仍沿既有先保存 Key、再添加 Provider 的入口，草稿与最终保存共用 `buildCustomProvider`，避免将发现能力和用户参数降为 ID 列表。创建期间的目录发现也复用下述连接身份和生命周期，不能因为模型草稿变化重复请求。
+
 ### 模型目录发现生命周期
 
 Renderer 的 `useProviderModelDiscovery` 由当前面板拥有，仅在打开、连接身份（Provider ID、Base URL、modelListUrl、有效凭据 / managed 模式）或发现资格变化时重新订阅；显式刷新 / 重试由按钮触发。模型名称、启用列表、首选、配置 projection 与回调引用都不是请求身份。尤其不能让日志驱动的 Settings 重渲染触发外部请求，否则请求自身的 Rust 日志会形成并发反馈循环。

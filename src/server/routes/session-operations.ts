@@ -43,20 +43,7 @@ export async function handleSessionOperationRoute(
   }
 
   if (pathname === '/chat/reset' && request.method === 'POST') {
-    try {
-      const result = await getSessionEngine().resetForNewDesktopSession(deps.workspacePath);
-      return jsonResponse(
-        result.success
-          ? { success: true, sessionId: result.sessionId }
-          : { success: false, error: result.error },
-        result.success ? 200 : 500,
-      );
-    } catch (error) {
-      return jsonResponse(
-        { success: false, error: error instanceof Error ? error.message : 'Unknown error' },
-        500,
-      );
-    }
+    return jsonResponse({ success: false, error: 'New conversations require Rust Session lifecycle admission' }, 409);
   }
 
   if (pathname === '/api/session/compact' && request.method === 'POST') {
@@ -116,37 +103,45 @@ export async function handleSessionOperationRoute(
     return operationResponse(result);
   }
 
-  if (pathname === '/api/session/surface-migration' && request.method === 'POST') {
+  if (pathname === '/api/session/new-conversation' && request.method === 'POST') {
     try {
       const body = await parseJsonObject(request);
       const targetSessionId = typeof body.targetSessionId === 'string' ? body.targetSessionId : '';
       if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(targetSessionId)) {
         return jsonResponse({ success: false, error: 'Missing or invalid targetSessionId' }, 400);
       }
+      const sourceSessionId = typeof body.sourceSessionId === 'string' ? body.sourceSessionId : '';
+      if (!sourceSessionId || typeof body.channelBound !== 'boolean') {
+        return jsonResponse({ success: false, error: 'Missing Session transition admission' }, 400);
+      }
       const migrationOptions: {
+        sourceSessionId: string;
+        channelBound: boolean;
         targetSessionId: string;
         metadataBirthPending: boolean;
         metadataIndexed?: boolean;
       } = {
+        sourceSessionId,
+        channelBound: body.channelBound,
         targetSessionId,
         metadataBirthPending: body.metadataBirthPending === true,
       };
       if (typeof body.metadataIndexed === 'boolean') {
         migrationOptions.metadataIndexed = body.metadataIndexed;
       }
-      const result = await getSessionEngine().migrateBoundSurfaceSession(
+      const result = await getSessionEngine().transitionDesktopSession(
         deps.workspacePath,
         migrationOptions,
       );
       if (!result.success) {
-        return jsonResponse(result, 500);
+        return jsonResponse(result, result.sourceUnchanged ? 409 : 500);
       }
       if (result.sessionId !== targetSessionId) {
         return jsonResponse({ success: false, error: 'Runtime adopted an unexpected Session identity' }, 500);
       }
       return jsonResponse({ sessionId: result.sessionId });
     } catch (error) {
-      console.error('[session/surface-migration] Error:', error);
+      console.error('[session/new-conversation] Error:', error);
       return jsonResponse(
         { success: false, error: error instanceof Error ? error.message : 'Reset error' },
         500,

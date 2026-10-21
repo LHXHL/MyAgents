@@ -30,8 +30,8 @@ describe('channel peer labels', () => {
       fireEvent.click(screen.getByTitle('允许'));
       expect(approve).toHaveBeenCalledWith('g');
     } else {
-      fireEvent.click(screen.getByTitle('移除'));
-      expect(screen.getByText(/确定.*Team（g）/)).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: '移除' }));
+      expect(remove).toHaveBeenCalledWith('g');
     }
   });
 });

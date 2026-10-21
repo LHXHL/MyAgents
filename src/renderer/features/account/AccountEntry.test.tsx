@@ -109,7 +109,7 @@ describe('global account entry', () => {
     mocks.snapshot.generation++; mocks.snapshot.view = null; rerender(<AccountEntry {...callbacks} />);
     expect(screen.queryByRole('heading', { name: 'Account settings' })).not.toBeInTheDocument();
   });
-  it('keeps avatar initials visible immediately on menu reopen and sidebar re-expansion', () => {
+  it('keeps avatar initials ready when the positioned menu reopens and sidebar re-expands', async () => {
     signIn({ ...session, user: { ...session.user, avatarUrl: 'https://avatars.example.test/unavailable.png' } });
     const callbacks = props(); const { rerender } = render(<AccountEntry {...callbacks} />);
     const trigger = screen.getByRole('button', { name: /Alice/ });
@@ -117,11 +117,11 @@ describe('global account entry', () => {
     fireEvent.error(trigger.querySelector('img')!);
     fireEvent.click(trigger);
     const profile = screen.getByRole('button', { name: 'Edit account profile' });
-    expect(within(profile).getByText('A')).toBeVisible();
+    await waitFor(() => expect(within(profile).getByText('A')).toBeVisible());
     fireEvent.error(profile.querySelector('img')!);
     fireEvent.keyDown(document, { key: 'Escape' });
     fireEvent.click(trigger);
-    expect(within(screen.getByRole('button', { name: 'Edit account profile' })).getByText('A')).toBeVisible();
+    await waitFor(() => expect(within(screen.getByRole('button', { name: 'Edit account profile' })).getByText('A')).toBeVisible());
     rerender(<AccountEntry {...callbacks} expanded={false} />);
     rerender(<AccountEntry {...callbacks} />);
     expect(within(screen.getByRole('button', { name: /Alice/ })).getByText('A')).toBeVisible();

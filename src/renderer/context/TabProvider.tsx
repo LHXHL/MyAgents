@@ -1,3 +1,6 @@
+import { newDesktopSession } from '@/api/sessionHandoverClient';
+import { releaseTabSession } from '@/api/tauriClient';
+import { transitionDesktopSession } from './desktopSessionTransition';
 import { LOG_SESSION_HEADER } from '../../shared/types/log';
 import { messageCompletionParams } from '@/analytics/conversation';
 import type { AskUserQuestionAnswers } from '../../shared/types/askUserQuestion';
@@ -1523,60 +1526,6 @@ export default function TabProvider({
     const restore = persistedRestoreLifecycleRef.current;
     return restore.phase === 'ready' ? restore.sessionId : null;
   }, []);
-  // A supported persisted-history navigation normally mounts a target-bound
-  // Tab. This layout guard also covers a future prop replacement without
-  // reopening the old mutable-runtime switch path. Reset and pending births
-  // remain SSE-native under their existing owner markers.
-  useLayoutEffect(() => {
-    const previousSessionId = previousSessionPropRef.current;
-    if (previousSessionId === sessionId) return;
-
-    abortActiveRestoreRequest();
-    if (!sessionId || isPendingSessionId(sessionId)) {
-      liveRevisionFenceRef.current = {
-        ...EMPTY_LIVE_REVISION_FENCE,
-        restoreToken: liveRevisionFenceRef.current.restoreToken + 1,
-      };
-      publishPersistedRestoreLifecycle({
-        phase: 'inactive',
-        mode: 'initial',
-        sessionId: null,
-        restoreToken: liveRevisionFenceRef.current.restoreToken,
-        connectionGeneration: 0,
-        error: null,
-      });
-      return;
-    }
-
-    const isSseNativeBirth =
-      isPendingSessionId(previousSessionId) ||
-      isResetSessionBirth({
-        resetBirthSessionId: resetBirthSessionIdRef.current,
-        sessionId,
-      });
-    if (isSseNativeBirth) {
-      publishPersistedRestoreLifecycle({
-        phase: 'inactive',
-        mode: 'initial',
-        sessionId,
-        restoreToken: liveRevisionFenceRef.current.restoreToken,
-        connectionGeneration: liveRevisionFenceRef.current.connectionGeneration,
-        error: null,
-      });
-      return;
-    }
-
-    beginPersistedRestore(
-      sessionId,
-      sseRef.current?.getConnectionGeneration() ?? 0,
-      'initial',
-    );
-  }, [
-    sessionId,
-    abortActiveRestoreRequest,
-    beginPersistedRestore,
-    publishPersistedRestoreLifecycle,
-  ]);
   // Ref for cron task exit handler (set by useCronTask hook via context)
   // Synchronous map: toolUseId → toolName. Updated outside React state updaters
   // to avoid React 18 automatic batching timing issues (state updaters run during
@@ -1631,49 +1580,97 @@ export default function TabProvider({
     loadingOlderRef.current = false;
   }, []);
 
-  /**
-   * Local-only session swap for the IM-handover "新对话保留绑定" flow.
-   *
-   * The Rust handover (`cmd_session_new_with_surface_migration`) has already
-   * migrated the exact Tab + Agent owners and minted `newSessionId` through
-   * the surface-migration endpoint. Calling resetSession()
-   * here would post `/chat/reset` and mint a SECOND id — leaving the binding
-   * pointing at the migrate-minted id while the tab adopts the second mint
-   * (the v0.2.14 "tag disappears after 新对话" bug).
-   *
-   * This helper does the local UI clear (mirrors resetSession step 1) and
-   * notifies the parent to update Tab.sessionId. The session-aware SSE
-   * useEffect re-labels the same owner-resolved subscription; no backend call
-   * or transport replacement is made.
-   */
-  const adoptMigratedSession = useCallback(
-    async (
-      newSessionId: string,
-      options?: AdoptMigratedSessionOptions,
-    ): Promise<boolean> => {
-      const previousSessionId = currentSessionIdRef.current;
-      console.log(
-        `[TabProvider ${tabId}] adoptMigratedSession: ${previousSessionId?.slice(0, 8) ?? 'none'} → ${newSessionId.slice(0, 8)}`,
-      );
-      abortActiveRestoreRequest();
+  const clearNewConversationProjection = useCallback(() => {
+    abortActiveRestoreRequest();
 
-      // Suppress the chat:init that the migrate already broadcast on the
-      // sidecar — we're treating the new session as "freshly created here"
-      // even though it came from Rust, to keep the same race-free guard
-      // resetSession uses.
-      isNewSessionRef.current = true;
-      resetBirthPendingRef.current = false;
+    // Both in-place migration and a separate pending birth start a fresh
+    // projection. A reconnect within the same Session must keep its history.
+    isNewSessionRef.current = true;
+    resetBirthPendingRef.current = false;
+    resetBirthSessionIdRef.current = null;
 
-      // Mirror resetSession's local clear (kept in lockstep to avoid drift).
-      setPendingDesktopMessages([]);
-      setHistoryMessages([]);
-      resetPaginationState();
-      setStreamingMessage(null);
-      liveContextUsageSessionIdRef.current = null;
-      setContextUsage(null); // PRD 0.2.32 — 新会话无持久占用；仅清展示态（不碰后端持久数据）
-      setAgentPlanTodos(null);
-      setSdkSlashCommands([]);
-      seenIdsRef.current.clear();
+    // Clear only after the replacement has been admitted and prepared.
+    transcriptSessionIdRef.current = null;
+    transcriptPageRef.current = null;
+    setPendingDesktopMessages([]);
+    setHistoryMessages([]);
+    resetPaginationState();
+    setStreamingMessage(null);
+    liveContextUsageSessionIdRef.current = null;
+    setContextUsage(null); // PRD 0.2.32 — 新会话无持久占用；仅清展示态（不碰后端持久数据）
+    setAgentPlanTodos(null);
+    setSdkSlashCommands([]);
+    seenIdsRef.current.clear();
+    liveRevisionFenceRef.current = {
+      ...EMPTY_LIVE_REVISION_FENCE,
+      restoreToken: liveRevisionFenceRef.current.restoreToken + 1,
+    };
+    publishPersistedRestoreLifecycle({
+      phase: 'inactive',
+      mode: 'initial',
+      sessionId: null,
+      restoreToken: liveRevisionFenceRef.current.restoreToken,
+      connectionGeneration: 0,
+      error: null,
+    });
+    clearSessionActive();
+    toolNameMapRef.current.clear();
+    pendingTranscriptToolEventsRef.current = [];
+    if (transcriptToolRafRef.current !== null)
+      cancelAnimationFrame(transcriptToolRafRef.current);
+    transcriptToolRafRef.current = null;
+    pendingTextTargetRef.current = null;
+    pendingToolResultDeltasRef.current.clear();
+    pendingToolInputDeltasRef.current.clear();
+    pendingSubagentToolResultDeltasRef.current.clear();
+    pendingSubagentToolInputDeltasRef.current.clear();
+    // Reveal state is per-tab; a session swap/reset must not let a stale reveal loop or
+    // un-revealed pending text bleed into the next session. (Loop-stop is inlined rather
+    // than calling stopRevealLoop — these reset callbacks are declared before it, so
+    // referencing it in their dep arrays would be a TDZ error. Refs are safe in the body.
+    // Staleness of any already-enqueued commit is handled by the message-id guard.)
+    pendingTextRef.current = '';
+    if (revealRafRef.current != null) {
+      cancelAnimationFrame(revealRafRef.current);
+      revealRafRef.current = null;
+    }
+    revealAccRef.current = 0;
+    revealLastRef.current = 0;
+    adoptedStreamRef.current = false;
+    setIsLoading(false);
+    setSessionState('idle');
+    setSystemStatus(null);
+    setSystemNotice(null);
+    setAgentError(null);
+    setLastTerminalReason(null);
+    setSessionMeta(null);
+    firstUserTitleProjectionRef.current = null;
+    setSessionRuntimeSource(null);
+    clearInteractiveState();
+
+    // Reset tab title so SortableTabItem falls back to folder name.
+    currentSessionTitleRef.current = 'New Chat';
+    onTitleChangeRef.current?.('New Chat');
+  }, [
+    abortActiveRestoreRequest, setPendingDesktopMessages, setHistoryMessages,
+    resetPaginationState, setStreamingMessage, publishPersistedRestoreLifecycle,
+    clearSessionActive, setAgentError, clearInteractiveState,
+  ]);
+
+  // A supported persisted-history navigation normally mounts a target-bound
+  // Tab. This layout guard also covers a future prop replacement without
+  // reopening the old mutable-runtime switch path. Reset and pending births
+  // remain SSE-native under their existing owner markers.
+  useLayoutEffect(() => {
+    const previousSessionId = previousSessionPropRef.current;
+    if (previousSessionId === sessionId) return;
+
+    abortActiveRestoreRequest();
+    if (sessionId && isPendingSessionId(sessionId)) {
+      clearNewConversationProjection();
+      return;
+    }
+    if (!sessionId) {
       liveRevisionFenceRef.current = {
         ...EMPTY_LIVE_REVISION_FENCE,
         restoreToken: liveRevisionFenceRef.current.restoreToken + 1,
@@ -1686,44 +1683,51 @@ export default function TabProvider({
         connectionGeneration: 0,
         error: null,
       });
-      clearSessionActive();
-      toolNameMapRef.current.clear();
-      pendingTranscriptToolEventsRef.current = [];
-      if (transcriptToolRafRef.current !== null)
-        cancelAnimationFrame(transcriptToolRafRef.current);
-      transcriptToolRafRef.current = null;
-      pendingTextTargetRef.current = null;
-      pendingToolResultDeltasRef.current.clear();
-      pendingToolInputDeltasRef.current.clear();
-      pendingSubagentToolResultDeltasRef.current.clear();
-      pendingSubagentToolInputDeltasRef.current.clear();
-      // Reveal state is per-tab; a session swap/reset must not let a stale reveal loop or
-      // un-revealed pending text bleed into the next session. (Loop-stop is inlined rather
-      // than calling stopRevealLoop — these reset callbacks are declared before it, so
-      // referencing it in their dep arrays would be a TDZ error. Refs are safe in the body.
-      // Staleness of any already-enqueued commit is handled by the message-id guard.)
-      pendingTextRef.current = '';
-      if (revealRafRef.current != null) {
-        cancelAnimationFrame(revealRafRef.current);
-        revealRafRef.current = null;
-      }
-      revealAccRef.current = 0;
-      revealLastRef.current = 0;
-      adoptedStreamRef.current = false;
-      setIsLoading(false);
-      setSessionState('idle');
-      setSystemStatus(null);
-      setSystemNotice(null);
-      setAgentError(null);
-      setLastTerminalReason(null);
-      setSessionMeta(null);
-      firstUserTitleProjectionRef.current = null;
-      setSessionRuntimeSource(null);
-      clearInteractiveState();
+      return;
+    }
 
-      // Reset tab title so SortableTabItem falls back to folder name.
-      currentSessionTitleRef.current = 'New Chat';
-      onTitleChangeRef.current?.('New Chat');
+    const isSseNativeBirth =
+      isPendingSessionId(previousSessionId) ||
+      isResetSessionBirth({
+        resetBirthSessionId: resetBirthSessionIdRef.current,
+        sessionId,
+      });
+    if (isSseNativeBirth) {
+      publishPersistedRestoreLifecycle({
+        phase: 'inactive',
+        mode: 'initial',
+        sessionId,
+        restoreToken: liveRevisionFenceRef.current.restoreToken,
+        connectionGeneration: liveRevisionFenceRef.current.connectionGeneration,
+        error: null,
+      });
+      return;
+    }
+
+    beginPersistedRestore(
+      sessionId,
+      sseRef.current?.getConnectionGeneration() ?? 0,
+      'initial',
+    );
+  }, [
+    sessionId,
+    clearNewConversationProjection,
+    abortActiveRestoreRequest,
+    beginPersistedRestore,
+    publishPersistedRestoreLifecycle,
+  ]);
+  /** Adopt the identity already committed by Rust. Keep the existing owner-resolved
+   * SSE transport and clear only this Tab's presentation of the previous Session. */
+  const adoptMigratedSession = useCallback(
+    async (
+      newSessionId: string,
+      options?: AdoptMigratedSessionOptions,
+    ): Promise<boolean> => {
+      const previousSessionId = currentSessionIdRef.current;
+      console.log(
+        `[TabProvider ${tabId}] adoptMigratedSession: ${previousSessionId?.slice(0, 8) ?? 'none'} → ${newSessionId.slice(0, 8)}`,
+      );
+      clearNewConversationProjection();
 
       const relabeledAttachment = Boolean(
         sseRef.current?.isActive() &&
@@ -1785,61 +1789,27 @@ export default function TabProvider({
     },
     [
       tabId,
-      setStreamingMessage,
-      setAgentError,
-      clearInteractiveState,
-      clearSessionActive,
-      resetPaginationState,
-      abortActiveRestoreRequest,
-      setPendingDesktopMessages,
-      publishPersistedRestoreLifecycle,
-      setHistoryMessages,
+      clearNewConversationProjection,
       sessionRuntime,
       sessionRuntimeSessionId,
     ],
   );
 
-  const resetSession = useCallback(async (): Promise<boolean> => {
+  const resetSession = useCallback(async (options?: { onNewSidecar?: (sourceSessionId: string) => Promise<boolean> }): Promise<boolean> => {
     const sourceId = currentSessionIdRef.current;
-    try {
-      const response = await postJson<{
-        success: boolean;
-        sessionId?: string;
-        error?: string;
-      }>('/chat/reset');
-      if (!response.success || !response.sessionId) {
-        throw new Error(response.error || 'Session reset failed');
-      }
-      if (
-        currentSessionIdRef.current !== sourceId &&
-        currentSessionIdRef.current !== response.sessionId
-      ) {
-        return false;
-      }
-      const adopted = await adoptMigratedSession(response.sessionId, { newConversation: true });
-      if (adopted) {
-        setPendingSessionBirth(tabId, birthContextForSurface('new_chat_button'));
-      }
-      return adopted;
-    } catch (error) {
-      console.error(`[TabProvider ${tabId}] resetSession error:`, error);
-      if (currentSessionIdRef.current !== sourceId) return false;
-      try {
-        const state = await apiGetJson<{ sessionId?: string }>('/api/session-state');
-        if (
-          state.sessionId &&
-          state.sessionId !== sourceId &&
-          currentSessionIdRef.current === sourceId
-        ) {
-          await adoptMigratedSession(state.sessionId, { newConversation: true });
-        }
-      } catch (reconcileError) {
-        console.warn(`[TabProvider ${tabId}] resetSession reconciliation failed:`, reconcileError);
-      }
-      setAgentError(error instanceof Error ? error.message : String(error));
-      return false;
-    }
-  }, [tabId, postJson, apiGetJson, adoptMigratedSession, setAgentError]);
+    if (!sourceId) return false;
+    const success = await transitionDesktopSession({
+      sessionId: sourceId,
+      tabId,
+      newDesktopSession,
+      onNewSidecar: options?.onNewSidecar,
+      adoptMigratedSession,
+      releaseMigratedTabOwner: releaseTabSession,
+      reportError: message => { setAgentError(message); toast?.error(message); },
+    });
+    if (success) setPendingSessionBirth(tabId, birthContextForSurface('new_chat_button'));
+    return success;
+  }, [tabId, adoptMigratedSession, setAgentError, toast]);
 
   const trackSessionNewForBirth = useCallback(
     (

@@ -651,6 +651,7 @@ pub fn run() {
             // IM Bot commands (non-deprecated survivors)
             im::commands::cmd_im_conversations,
             // Group permission commands (v0.1.28)
+            im::access::cmd_channel_access,
             im::commands::cmd_approve_group,
             im::commands::cmd_reject_group,
             im::commands::cmd_remove_group,
@@ -673,7 +674,7 @@ pub fn run() {
             im::commands::cmd_all_agents_status,
             im::commands::cmd_update_agent_config,
             // Session ↔ channel surface handover (PRD 0.2.14)
-            im::handover::cmd_session_new_with_surface_migration,
+            sidecar::session_lifecycle::cmd_new_desktop_session,
             im::handover::cmd_handover_session_to_channel,
             // WeCom QR code commands (public API, not plugin gateway)
             commands::cmd_wecom_qr_generate,

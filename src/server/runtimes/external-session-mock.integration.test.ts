@@ -7803,6 +7803,8 @@ describe('external SessionEngine with fake runtime', () => {
       },
     );
     const sessionId = 'session-codex-reset-mutation-lease';
+    // Production bootstrap owns the Product binding before desktop sends.
+    await (await import('../session-engine/product-session-binding')).setCurrentProductSessionId(sessionId);
     const workspacePath = join(harness.home, 'workspace');
     const sent = await harness.engine.sendDesktopMessage(
       desktopRequest(sessionId, workspacePath, 'first question'),
@@ -7824,7 +7826,7 @@ describe('external SessionEngine with fake runtime', () => {
     )!;
     const indexedBefore =
       harness.sessionStore.getSessionsByAgentDir(workspacePath).length;
-    const reset = harness.engine.resetForNewDesktopSession(workspacePath);
+    const reset = harness.engine.transitionDesktopSession(workspacePath, { sourceSessionId: sessionId, targetSessionId: '4d2c043d-e1ac-432d-9d3a-7f1619842ac0', channelBound: false });
 
     try {
       await waitFor(

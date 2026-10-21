@@ -1073,6 +1073,7 @@
       "providerSwitchChannelTransferFailed": "The new chat opened, but the Channel binding was not migrated.",
       "createNewSessionFailed": "Failed to create new chat.",
       "imagesNotTransferred": "Image attachments cannot be carried into the new chat. Add them again.",
+      "newConversationFailed": "Could not create a new conversation.",
       "channelRebindFailedNewCancelled": "Channel rebind failed. The new conversation was cancelled.",
       "channelRebindFailedDeleteCancelled": "Channel rebind failed. Delete was cancelled.",
       "reselectModelFirst": "Select the model again in the model picker first.",

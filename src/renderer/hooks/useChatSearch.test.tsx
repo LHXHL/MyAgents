@@ -147,7 +147,11 @@ describe('useChatSearch', () => {
   it.each([false, true])('refines a mounted virtualized match only while navigation is current (cancelled=%s)', (cancelled) => {
     let navigationCurrent = true;
     const scrollToMessage = vi.fn(() => () => navigationCurrent);
-    const scrollBy = vi.fn();
+    const pauseAutoScroll = vi.fn();
+    const scrollBy = vi.fn(() => {
+      expect(pauseAutoScroll).toHaveBeenCalledTimes(1);
+      expect(pauseAutoScroll.mock.invocationCallOrder[0]).toBeGreaterThan(scrollToMessage.mock.invocationCallOrder[0]);
+    });
     const scroller = document.createElement('div');
     Object.defineProperty(scroller, 'scrollBy', {
       configurable: true,
@@ -172,7 +176,7 @@ describe('useChatSearch', () => {
       messages,
       scrollerRef: { current: scroller },
       scrollToMessage,
-      pauseAutoScroll: vi.fn(),
+      pauseAutoScroll,
     }));
 
     act(() => {

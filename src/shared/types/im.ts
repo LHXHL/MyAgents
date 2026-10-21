@@ -67,6 +67,9 @@ export interface ImBotConfig {
 
   // ===== Platform connection =====
   botToken: string;             // Telegram Bot Token
+  accessMode?: 'review' | 'open';
+  blockedUserIds?: string[];
+  blockedGroupIds?: string[];
   allowedUsers: string[];       // user_id or username
   /** Display metadata only; authorization continues to use allowedUsers IDs. */
   userDisplayNames?: Record<string, string>;

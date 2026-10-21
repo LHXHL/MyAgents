@@ -513,13 +513,14 @@ export interface SessionEngine {
   updateDesktopInteractionScenario(
     scenario: Extract<InteractionScenario, { type: 'desktop' }>,
   ): Promise<{ success: boolean; skipped?: string; error?: string }>;
-  resetForNewDesktopSession(workspacePath: string): Promise<{ success: boolean; sessionId?: string; error?: string }>;
-  migrateBoundSurfaceSession(
+  transitionDesktopSession(
     workspacePath: string,
     options: {
+      sourceSessionId: string;
       targetSessionId: string;
+      channelBound: boolean;
       metadataBirthPending?: boolean;
       metadataIndexed?: boolean;
     },
-  ): Promise<{ success: boolean; sessionId?: string; error?: string }>;
+  ): Promise<{ success: boolean; sessionId?: string; error?: string; sourceUnchanged?: true; errorCode?: 'session_busy' }>;
 }

@@ -8,12 +8,14 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { createServer } from 'vite';
 import { chromium, webkit } from 'playwright';
+import { verifyScrollOwnership } from './chat-scroll-ownership-cases.mjs';
 import { patchReactVirtuoso } from './patch-react-virtuoso.mjs';
 
 const repo = resolve(import.meta.dirname, '..');
 patchReactVirtuoso(resolve(repo, 'node_modules/react-virtuoso'), true);
 const output = await mkdtemp(resolve(tmpdir(), 'myagents-scroll-verification-'));
 const engine = process.argv[2] ?? 'webkit';
+const ownershipOnly = process.argv.includes('--ownership-only');
 const followOnly = process.argv.includes('--follow-only');
 assert.ok(['webkit', 'chrome', 'chromium'].includes(engine), 'Choose webkit, chrome or chromium');
 const entryId = repo + '/src/renderer/__scroll_audit.tsx';
@@ -38,6 +40,8 @@ const mixedHistory=Array.from({length:300},(_,i)=>mk('h'+i,i%20!==1?'Short user 
 ].join(nl),i%20!==1?'user':'assistant'));
 const history=seedMode?mixedHistory:Array.from({length:25},(_,i)=>mk('h'+i,('History paragraph '+i+' with stable lines. ').repeat(15)));
 function Fixture(){
+ const [active,setActive]=useState(true);
+ const [session,setSession]=useState('audit');
  const [loaded,setLoaded]=useState(seedMode!=='deferred');
  const [sm,setSm]=useState(mk('stream','Streaming start.'));
  const [loading,setLoading]=useState(true);
@@ -46,10 +50,10 @@ function Fixture(){
  const [height,setHeight]=useState(640);
  const [spacer,setSpacer]=useState(176);
  const rootRef=useRef(null);
- const model=useChatScrollModel({historyMessages:loaded?history:[],streamingMessage:loaded?sm:null,sessionId:'audit'});
- const ctrl=useChatScrollController({messages:model.data,isActive:true,sessionId:'audit',rootRef});
+ const model=useChatScrollModel({historyMessages:loaded?history:[],streamingMessage:loaded?sm:null,sessionId:session});
+ const ctrl=useChatScrollController({messages:model.data,isActive:active,sessionId:session,rootRef});
  const search=useChatSearch({active:searchOpen,messages:model.data,scrollerRef:ctrl.scrollerRef,scrollToMessage:ctrl.scrollToMessage,pauseAutoScroll:ctrl.pauseAutoScroll});
- useLayoutEffect(()=>{window.audit={ctrl,search,load:()=>setLoaded(true),seed:model.heightEstimateSeed,
+ useLayoutEffect(()=>{window.audit={ctrl,search,setActive,setSession,setLoaded,load:()=>setLoaded(true),seed:model.heightEstimateSeed,
  readState:()=>new Promise(resolve=>ctrl.virtuosoRef.current.getState(resolve)),setSearchOpen,setLoading,setHeight,setSpacer,setPermission,
  showDisclosure:()=>setSm(prev=>({...prev,content:[{type:'thinking',thinking:'Expanded thinking content with many lines. '.repeat(100),isComplete:true},{type:'text',text:'Disclosure tail.'}]})),
  growDisclosure:()=>setSm(prev=>({...prev,content:prev.content.map(block=>block.type==='text'?{...block,text:block.text+' Later output below the open content. '.repeat(20)}:block)})),append:text=>setSm(prev=>({...prev,content:prev.content+text})),replace:text=>setSm(prev=>({...prev,content:text})),snapshot:()=>{
@@ -60,7 +64,7 @@ function Fixture(){
   return {top:el?.scrollTop,height:el?.scrollHeight,viewport:el?.clientHeight,gap:el?el.scrollHeight-el.scrollTop-el.clientHeight:null,follow:ctrl.followEnabledRef.current,statusY:status?.getBoundingClientRect().top,statusH:status?.getBoundingClientRect().height,anchor:anchor?.dataset.messageId,anchorY:anchor?anchor.getBoundingClientRect().top-er.top:null};
  }}});
  return <div ref={rootRef} style={{height,width:760,display:'flex',flexDirection:'column',position:'relative',overflow:'hidden'}}>
- <MessageList firstItemIndex={100000} messages={model.data} streamingMessage={loaded?sm:null} isLoading={loading} sessionState={loading?'running':'idle'} isStreaming={loading} sessionId="audit"
+ <MessageList firstItemIndex={100000} messages={model.data} streamingMessage={loaded?sm:null} isLoading={loading} sessionState={loading?'running':'idle'} isStreaming={loading} sessionId={session} isActive={active}
  heightEstimateSeed={model.heightEstimateSeed} layoutByMessageId={model.layoutByMessageId} virtuosoRef={ctrl.virtuosoRef}
  onScrollerRef={ctrl.attachScroller} followEnabledRef={ctrl.followEnabledRef} scrollToBottom={ctrl.scrollToBottom} handleAtBottomChange={ctrl.handleAtBottomChange}
  onViewportAdmissionChanged={ctrl.onViewportAdmissionChanged} onItemsRendered={ctrl.onItemsRendered} isViewportRecoveryFenced={ctrl.isViewportRecoveryFenced}
@@ -105,6 +109,8 @@ try {
   page.on('pageerror', error => errors.push(error.message));
   const address = server.httpServer.address();
   const fixtureUrl = `http://127.0.0.1:${address.port}/__scroll_audit`;
+  await verifyScrollOwnership(page, fixtureUrl, output);
+  if (!ownershipOnly) {
   const seedEvidence = {};
   for (const mode of followOnly ? [] : ['immediate', 'deferred']) {
     await page.goto(`${fixtureUrl}?seed=${mode}`);
@@ -155,6 +161,34 @@ try {
     assert.notEqual(state.follow, false, `${label}: follow was disabled`);
     return state;
   };
+  const geometry = async label => {
+    const measured = await page.evaluate(() => {
+      const list = document.querySelector('[data-testid="virtuoso-item-list"]');
+      const footer = list.nextElementSibling;
+      const viewport = list.parentElement;
+      const extent = viewport.querySelector('[data-virtuoso-scroll-extent]');
+      return {
+        rows: [...list.children].map(row => ({
+          index: Number(row.dataset.index), known: Number(row.dataset.knownSize),
+          actual: row.getBoundingClientRect().height,
+        })),
+        footerHeight: footer.getBoundingClientRect().height,
+        naturalEnd: footer.getBoundingClientRect().bottom - viewport.getBoundingClientRect().top,
+        projectedEnd: extent.getBoundingClientRect().height,
+        scrollHeight: window.audit.ctrl.scrollerRef.current.scrollHeight,
+        endPadding: parseFloat(list.style.paddingBottom),
+      };
+    });
+    assert.ok(measured.rows.some(row => !Number.isInteger(row.actual)), `${label}: fractional fixture lost coverage`);
+    for (const row of measured.rows) {
+      assert.equal(row.known, row.actual, `${label}: row ${row.index} lost measurement precision`);
+    }
+    assert.equal(measured.naturalEnd, measured.projectedEnd, `${label}: model and natural layout disagree`);
+    assert.equal(measured.naturalEnd, measured.scrollHeight, `${label}: native extent disagrees`);
+    assert.ok(measured.endPadding >= 0 && measured.endPadding < 1, `${label}: tail padding accumulated`);
+    evidence[`${label}Geometry`] = measured;
+    return measured;
+  };
   const sameAnchor = (before, after, label) => {
     assert.equal(after.follow, false, `${label}: reading was overridden`);
     assert.equal(after.anchor, before.anchor, `${label}: anchor changed`);
@@ -175,6 +209,7 @@ try {
   });
   await page.waitForTimeout(400);
   const initial = await bottom('initial');
+  await geometry('initial');
   const status = await page.locator('[data-chat-status-row]').elementHandle();
   for (let i = 0; i < 80; i++) {
     await append(` New content ${i} grows while loading stays true.`);
@@ -182,6 +217,7 @@ try {
   }
   await page.waitForTimeout(300);
   const streamed = await bottom('streamed');
+  await geometry('streamed');
   assert.equal(streamed.statusY, initial.statusY);
   assert.ok(await status.evaluate(el => el === document.querySelector('[data-chat-status-row]')));
 
@@ -372,11 +408,36 @@ try {
   });
   assert.ok(Math.abs(blankTail) <= 1, `scroll extent left ${blankTail}px beyond natural footer`);
 
+  await geometry('shrunkTail');
+
+  // A fractional footer belongs to the same extent model as fractional rows.
+  // Its own ResizeObserver must not round away the fraction or consume the
+  // trailing extent padding and feed that padding back into its measurement.
+  // The composer spacer helper intentionally ceils its input, so a fractional
+  // prop would silently lose coverage. Exercise actual fractional CSS geometry.
+  await page.addStyleTag({ content: '[data-chat-footer-spacer] { height: 216.375px !important; }' });
+  await page.evaluate(() => window.audit.setLoading(true));
+  await page.waitForTimeout(500);
+  const fractionalFooter = await bottom('fractionalFooter');
+  const footerGeometry = await geometry('fractionalFooter');
+  assert.ok(!Number.isInteger(footerGeometry.footerHeight), 'fractional Footer fixture lost coverage');
+  await append(' Fractional footer streaming content.'.repeat(40));
+  await page.waitForTimeout(500);
+  const fractionalGrowth = await bottom('fractionalGrowth');
+  await geometry('fractionalGrowth');
+  assert.equal(fractionalGrowth.statusY, fractionalFooter.statusY);
+  await page.evaluate(() => window.audit.replace('Short again.'));
+  await page.waitForTimeout(500);
+  const fractionalShrink = await bottom('fractionalShrink');
+  await geometry('fractionalShrink');
+  assert.equal(fractionalShrink.statusY, fractionalFooter.statusY);
+
   assert.deepEqual(errors, []);
   await page.evaluate(() => { window.record = false; });
   await writeFile(resolve(output, 'samples.json'), JSON.stringify(await page.evaluate(() => window.samples)));
   await writeFile(resolve(output, 'results.json'), JSON.stringify(evidence, null, 2));
   console.log(`Chat scroll ${engine}: smooth/rapid follow, active cancellation, reduced motion, ${followOnly ? 'height seeds skipped (--follow-only), ' : 'height seeds, '}reading, footer/viewport growth, navigation and terminal checks passed. Evidence: ${output}`);
+  }
 } finally {
   clearTimeout(deadline);
   if (page && !page.isClosed()) {

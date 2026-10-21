@@ -52,11 +52,19 @@ impl KeyedLifecycleRegistry {
     }
 
     pub(crate) async fn try_acquire(&self, key: &str) -> Option<KeyedLifecycleGuard> {
-        let lock = self.locks_for(&[key]).await.into_iter().next()?;
-        let guard = lock.try_lock_owned().ok()?;
-        Some(KeyedLifecycleGuard {
-            _guards: vec![guard],
-        })
+        self.try_acquire_many(&[key]).await
+    }
+
+    pub(crate) async fn try_acquire_many(&self, keys: &[&str]) -> Option<KeyedLifecycleGuard> {
+        let locks = self.locks_for(keys).await;
+        if locks.is_empty() {
+            return None;
+        }
+        let mut guards = Vec::with_capacity(locks.len());
+        for lock in locks {
+            guards.push(lock.try_lock_owned().ok()?);
+        }
+        Some(KeyedLifecycleGuard { _guards: guards })
     }
 }
 

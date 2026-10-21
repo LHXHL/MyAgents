@@ -58,10 +58,13 @@ const sseHarness = vi.hoisted(() => {
 
 const tauriHarness = vi.hoisted(() => ({
   proxyFetch: vi.fn(),
+  newDesktopSession: vi.fn(),
   ensureSessionSidecar: vi.fn(async () => undefined),
   isTauri: false,
   listeners: new Map<string, (event: { payload: unknown }) => void>(),
 }));
+
+vi.mock('@/api/sessionHandoverClient', () => ({ newDesktopSession: tauriHarness.newDesktopSession }));
 
 vi.mock('@/api/SseConnection', () => ({
   createSseConnection: () => sseHarness.connection,
@@ -99,6 +102,7 @@ vi.mock('@/utils/frontendLogger', () => ({
 }));
 
 vi.mock('@/api/tauriClient', () => ({
+  releaseTabSession: vi.fn(async () => false),
   getTabServerUrl: vi.fn(async () => 'http://127.0.0.1:1234'),
   sessionSidecarFetch: vi.fn(async (
     _sessionId: string,
@@ -489,6 +493,7 @@ describe('TabProvider session activity ownership', () => {
   });
   beforeEach(() => {
     vi.clearAllMocks();
+    tauriHarness.newDesktopSession.mockReset();
     sseHarness.state.connected = false;
     sseHarness.state.generation = 1;
     sseHarness.state.eventHandler = null;
@@ -1747,6 +1752,7 @@ describe('TabProvider session activity ownership', () => {
   });
 
   it('keeps history and identity when reset is rejected', async () => {
+    tauriHarness.newDesktopSession.mockRejectedValue(new Error('reset rejected'));
     tauriHarness.proxyFetch.mockImplementation(async (url: string) => new Response(JSON.stringify(
       url.endsWith('/api/session-state') ? { sessionId: 'pending-reset-rejected', sessionState: 'idle', isBusy: false } : { success: false, error: 'reset rejected' }
     ), { status: 200 }));
@@ -1755,7 +1761,7 @@ describe('TabProvider session activity ownership', () => {
     emit('chat:message-replay', { replayKind: 'live-user-echo', sessionId: 'pending-reset-rejected', message: { id: 'retained-user', role: 'user', content: 'retain this', timestamp: new Date(0).toISOString() } });
     expect(readActivity().historyCount).toBe(1);
     fireEvent.click(screen.getByRole('button', { name: 'reset session' }));
-    await waitFor(() => expect(screen.getByTestId('agent-error')).toHaveTextContent('reset rejected'));
+    await waitFor(() => expect(screen.getByTestId('agent-error')).toHaveTextContent('新对话创建失败'));
     expect(readActivity().historyCount).toBe(1);
     expect(readActivity().sessionId).toBe('pending-reset-rejected');
   });
@@ -1791,21 +1797,20 @@ describe('TabProvider session activity ownership', () => {
     expect(readActivity()).toMatchObject({ sessionState: newer, isLoading: newerBusy });
   });
 
-  it('adopts the authoritative binding after a lost reset response', async () => {
-    tauriHarness.proxyFetch.mockImplementation(async (url: string) => {
-      if (url.endsWith('/chat/reset')) throw new Error('response lost');
-      return new Response(JSON.stringify({ sessionId: 'session-reset-committed', sessionState: 'idle', isBusy: false }), { status: 200 });
-    });
+  it('does not guess a new identity when the lifecycle command is rejected', async () => {
+    tauriHarness.newDesktopSession.mockRejectedValue(new Error('response lost'));
     const onSessionIdChange = vi.fn().mockResolvedValue(true);
     render(<TabProvider tabId="reset-lost" agentDir="/tmp/workspace" sessionId="pending-reset-lost" onSessionIdChange={onSessionIdChange} claimSessionOpeningTransition={allowSessionOpening}><Probe /></TabProvider>);
     await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
     fireEvent.click(screen.getByRole('button', { name: 'reset session' }));
-    await waitFor(() => expect(readActivity().sessionId).toBe('session-reset-committed'));
-    expect(onSessionIdChange).toHaveBeenCalledWith('session-reset-committed', { newConversation: true });
-    expect(tauriHarness.proxyFetch.mock.calls.filter(([url]) => url.endsWith('/chat/reset'))).toHaveLength(1);
+    await waitFor(() => expect(screen.getByTestId('agent-error')).toHaveTextContent('新对话创建失败'));
+    expect(readActivity().sessionId).toBe('pending-reset-lost');
+    expect(onSessionIdChange).not.toHaveBeenCalled();
+    expect(tauriHarness.proxyFetch).not.toHaveBeenCalled();
   });
 
   it('keeps the live SSE owner when reset upgrades a real session on the same sidecar', async () => {
+    tauriHarness.newDesktopSession.mockResolvedValue({ newSessionId: 'session-reset-b', createNewSidecar: false });
     let resolveSessionC!: (response: Response) => void;
     const sessionCResponse = new Promise<Response>((resolve) => {
       resolveSessionC = resolve;
@@ -1831,12 +1836,6 @@ describe('TabProvider session activity ownership', () => {
             liveStreamingMessage: null,
             hasMoreBefore: false,
           },
-        }), { status: 200 });
-      }
-      if (url.endsWith('/chat/reset') && init?.method === 'POST') {
-        return new Response(JSON.stringify({
-          success: true,
-          sessionId: 'session-reset-b',
         }), { status: 200 });
       }
       throw new Error(`Unexpected proxyFetch call: ${init?.method ?? 'GET'} ${url}`);
@@ -1876,7 +1875,7 @@ describe('TabProvider session activity ownership', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'reset session' }));
 
-    await waitFor(() => expect(onSessionIdChange).toHaveBeenCalledWith('session-reset-b', { newConversation: true }));
+    await waitFor(() => expect(onSessionIdChange).toHaveBeenCalledWith('session-reset-b', { sidecarAlreadyMigrated: true, newConversation: true }));
     await waitFor(() => expect(readActivity().sessionId).toBe('session-reset-b'));
     expect(sseHarness.connection.disconnect).not.toHaveBeenCalled();
     expect(sseHarness.connection.connect).not.toHaveBeenCalled();
@@ -1963,6 +1962,7 @@ describe('TabProvider session activity ownership', () => {
   });
 
   it('moves reset scope before parent adoption without letting connected status relabel it', async () => {
+    tauriHarness.newDesktopSession.mockResolvedValue({ newSessionId: 'session-reset-race-b', createNewSidecar: false });
     let resolveAdoption!: (accepted: boolean) => void;
     const adoption = new Promise<boolean>((resolve) => {
       resolveAdoption = resolve;
@@ -1984,12 +1984,6 @@ describe('TabProvider session activity ownership', () => {
             liveStreamingMessage: null,
             hasMoreBefore: false,
           },
-        }), { status: 200 });
-      }
-      if (url.endsWith('/chat/reset') && init?.method === 'POST') {
-        return new Response(JSON.stringify({
-          success: true,
-          sessionId: 'session-reset-race-b',
         }), { status: 200 });
       }
       if (url.endsWith('/chat/send') && init?.method === 'POST') {
@@ -2035,7 +2029,7 @@ describe('TabProvider session activity ownership', () => {
     sseHarness.connection.connect.mockClear();
     fireEvent.click(screen.getByRole('button', { name: 'reset session' }));
 
-    await waitFor(() => expect(onSessionIdChange).toHaveBeenCalledWith('session-reset-race-b', { newConversation: true }));
+    await waitFor(() => expect(onSessionIdChange).toHaveBeenCalledWith('session-reset-race-b', { sidecarAlreadyMigrated: true, newConversation: true }));
     expect(readActivity().sessionId).toBe('session-reset-race-b');
 
     act(() => {
@@ -2374,11 +2368,9 @@ describe('TabProvider session activity ownership', () => {
     { boundary: 'migration', format: 1 }, { boundary: 'migration', format: 2 },
     { boundary: 'reset', format: 1 }, { boundary: 'reset', format: 2 },
   ])('recovers the first offline IM turn after $boundary (V$format)', async ({ boundary, format }) => {
+    tauriHarness.newDesktopSession.mockResolvedValue({ newSessionId: 'session-migrated-b', createNewSidecar: false });
     let targetReads = 0;
-    tauriHarness.proxyFetch.mockImplementation(async (url: string, init?: RequestInit) => {
-      if (url.endsWith('/chat/reset') && init?.method === 'POST') {
-        return new Response(JSON.stringify({ success: true, sessionId: 'session-migrated-b' }));
-      }
+    tauriHarness.proxyFetch.mockImplementation(async (url: string) => {
       const target = url.includes('/sessions/session-migrated-b?');
       expect(url).toMatch(/\/sessions\/session-migrated-[ab]\?/);
       if (target) targetReads++;
@@ -2468,6 +2460,59 @@ describe('TabProvider session activity ownership', () => {
     await waitFor(() => expect(sseHarness.connection.connect).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(readActivity().sessionId).toBe('session-switch-b'));
   });
+
+  it.each(['session-retained', 'pending-retained'])(
+    'starts a clean projection when replacing %s with a separate pending conversation',
+    async source => {
+      tauriHarness.proxyFetch.mockImplementation(async () => new Response(JSON.stringify({
+        success: true,
+        session: {
+          id: source, agentDir: '/tmp/workspace', title: 'Old conversation',
+          messages: [], snapshotRevision: 0, liveSessionState: 'idle', hasMoreBefore: false,
+        },
+      })));
+      let state!: ReturnType<typeof useTabState>;
+      function Capture() {
+        const current = useTabState();
+        useEffect(() => { state = current; }, [current]);
+        return <Probe />;
+      }
+      const onTitleChange = vi.fn();
+      const content = (id: string) => (
+        <TabProvider tabId="separate-birth" agentDir="/tmp/workspace" sessionId={id}
+          onTitleChange={onTitleChange} claimSessionOpeningTransition={allowSessionOpening}>
+          <Capture />
+        </TabProvider>
+      );
+      const view = render(content(source));
+      await waitFor(() => expect(state.isConnected && !state.isSessionLoading).toBe(true));
+      act(() => state.setMessages([
+        { id: '1', role: 'user', content: 'old user', timestamp: new Date(0) },
+        { id: '2', role: 'assistant', content: 'old answer', timestamp: new Date(0) },
+      ]));
+      emit('chat:status', { sessionState: 'running' });
+      expect(readActivity().historyCount).toBe(2);
+
+      view.rerender(content('pending-separate-birth'));
+      await waitFor(() => expect(state.sessionId).toBe('pending-separate-birth'));
+      expect(readActivity().historyCount).toBe(0);
+      expect(readStreamingContent()).toBeNull();
+      expect(readActivity().isLoading).toBe(false);
+      expect(onTitleChange).toHaveBeenLastCalledWith('New Chat');
+
+      // New Sessions reuse transcript-local IDs; they must not match old rows.
+      emit('chat:init', { sessionId: 'pending-separate-birth', transcriptFormat: 2, sessionState: 'idle' });
+      for (const [id, role, content] of [['1', 'user', 'new user'], ['2', 'assistant', 'new answer']]) {
+        emit('chat:transcript-operation', {
+          sessionId: 'pending-separate-birth',
+          operation: { kind: 'message-create', message: { id, role, content, timestamp: new Date(1).toISOString() } },
+        });
+      }
+      expect(screen.getByTestId('history-content')).toHaveTextContent('new user');
+      expect(screen.getByTestId('history-content')).not.toHaveTextContent('old');
+      expect(readStreamingContent()).toBe('new answer');
+    },
+  );
 
   it('clears runtime tool metadata when switching to another session', async () => {
     const view = render(

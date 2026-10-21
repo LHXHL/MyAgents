@@ -1503,6 +1503,7 @@ mod tests {
         router.upsert_peer_session(known);
         // The next event is from a different member whose name is unavailable.
         let mut msg = ImMessage {
+            access_admission: None,
             source_metadata: Default::default(),
             chat_id: "g".into(),
             message_id: "m".into(),

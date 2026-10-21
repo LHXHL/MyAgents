@@ -3061,18 +3061,17 @@ export default function App({ rendererAttachment = COLD_RENDERER_ATTACHMENT }: {
   );
 
   /**
-   * Handle "New Session" from Chat component.
-   * If AI is running, starts background completion on old session and creates new Sidecar.
-   * Returns true if handled (Chat should NOT call resetSession), false if AI is idle (Chat falls back to resetSession).
+   * Rust retained the source for active work, shared owners or a Channel.
+   * Prepare a distinct conversation before releasing this Tab's source owner.
    */
   const handleNewSession = useCallback(
-    async (tabId: string): Promise<boolean> => {
+    async (tabId: string, sourceSessionId: string): Promise<boolean> => {
       const currentTab = tabWorkspaceController
         .getSnapshot()
         .tabs.find((t) => t.id === tabId);
       if (
         currentTab?.view !== 'chat' ||
-        !currentTab.sessionId ||
+        currentTab.sessionId !== sourceSessionId ||
         !currentTab.agentDir
       ) {
         return false;
@@ -3080,34 +3079,9 @@ export default function App({ rendererAttachment = COLD_RENDERER_ATTACHMENT }: {
 
       const oldSessionId = currentTab.sessionId;
 
-      // Check if AI is running → start background completion
-      const bgResult = await startBackgroundCompletion(oldSessionId);
-      if (!bgResult.started) {
-        // AI is idle → let Chat handle it via resetSession (more efficient, reuses Sidecar)
-        return false;
-      }
-
-      // AI is running → release old Sidecar (BG owner keeps it alive), create new one
-      console.log(
-        `[App] handleNewSession: AI running on ${oldSessionId}, background completion started`,
-      );
-
+      // Each birth needs its own slot, including when the source is pending.
+      const pendingSessionId = createPendingSessionId(`${tabId}-${crypto.randomUUID()}`);
       try {
-        await stopSseProxy(tabId);
-        await releaseTabSession(oldSessionId, tabId);
-
-        // PRD 0.2.19 cross-review fix (B4): mark the upcoming session_new as
-        // 'new_chat_button' provenance. handleNewSession is the AI-running variant
-        // of resetSession (user clicked "新对话" while AI was still streaming) —
-        // without this, chat:system-init would fall back to 'launcher_input' and
-        // silently misclassify all AI-running new-session opens.
-        setPendingSessionBirth(
-          tabId,
-          birthContextForSurface('new_chat_button'),
-        );
-
-        // Create new pending session with new Sidecar
-        const pendingSessionId = createPendingSessionId(tabId);
         await ensureSessionSidecar(
           pendingSessionId,
           currentTab.agentDir,
@@ -3119,6 +3093,22 @@ export default function App({ rendererAttachment = COLD_RENDERER_ATTACHMENT }: {
             `Rust refused owner reconcile for session ${pendingSessionId} and tab ${tabId}`,
           );
         }
+        const sourceTab = tabWorkspaceController.getSnapshot().tabs.find(tab => tab.id === tabId);
+        if (sourceTab?.view !== 'chat' || sourceTab.sessionId !== oldSessionId) {
+          await releaseTabSession(pendingSessionId, tabId);
+          return false;
+        }
+        await stopSseProxy(tabId);
+
+        // PRD 0.2.19 cross-review fix (B4): mark the upcoming session_new as
+        // 'new_chat_button' provenance. handleNewSession is the AI-running variant
+        // of resetSession (user clicked "新对话" while AI was still streaming) —
+        // without this, chat:system-init would fall back to 'launcher_input' and
+        // silently misclassify all AI-running new-session opens.
+        setPendingSessionBirth(
+          tabId,
+          birthContextForSurface('new_chat_button'),
+        );
 
         // Update tab state → TabProvider will detect sessionId change and reconnect
         // Fresh sidecar for the new session → 'push' (overwrites any stale disposition)
@@ -3130,11 +3120,20 @@ export default function App({ rendererAttachment = COLD_RENDERER_ATTACHMENT }: {
           initialMessage: undefined,
           sidecarConfigDisposition: 'push',
         }));
+        // Rust already retained source work/recovery with its background owner.
+        // Retire only this old Tab token after publishing the ready target;
+        // source lifecycle settlement must not delay use of the new conversation.
+        void releaseTabSession(oldSessionId, tabId).catch(error => {
+          console.warn('[App] Failed to release previous conversation Tab owner:', error);
+        });
         const fbResult = await migrateFloatingBallSessionBinding(
           oldSessionId,
           pendingSessionId,
-        );
-        if (fbResult.migrated) {
+        ).catch(error => {
+          console.warn('[App] Floating ball binding did not follow the new conversation:', error);
+          return null;
+        });
+        if (fbResult?.migrated) {
           console.log(
             `[App] Floating ball session binding migrated to pending session: ${oldSessionId} -> ${pendingSessionId}, notified=${fbResult.notified}`,
           );
@@ -3144,6 +3143,9 @@ export default function App({ rendererAttachment = COLD_RENDERER_ATTACHMENT }: {
         );
         return true;
       } catch (error) {
+        await releaseTabSession(pendingSessionId, tabId).catch(cleanupError => {
+          console.warn('[App] Failed to release unadopted new conversation:', cleanupError);
+        });
         console.error('[App] handleNewSession failed:', error);
         throw error;
       }
@@ -4712,7 +4714,7 @@ export default function App({ rendererAttachment = COLD_RENDERER_ATTACHMENT }: {
   // System tray event handling (minimize to tray, exit confirmation)
   useTrayEvents({
     minimizeToTray: config.minimizeToTray,
-    onOpenSettings: () => handleOpenSettings('general'),
+    onOpenSettings: () => handleOpenSettings(),
     onCmdWCloseTab: () => {
       // Cmd+W bottom: overlay → split → tab → launcher → STOP.
       closeCurrentTab(); // Last tab auto-creates launcher; launcher is a no-op.

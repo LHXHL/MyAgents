@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use reqwest::Client;
 use serde_json::{json, Value};
-use tokio::sync::{mpsc, Mutex, RwLock};
+use tokio::sync::{mpsc, Mutex};
 use tokio::time::{sleep, Instant};
 
 use super::types::{
@@ -121,6 +121,7 @@ impl MessageCoalescer {
 
             // Check if this is a continuation fragment
             let is_continuation = is_fragment
+                && msg.sender_id == batch.sender_id
                 && msg_id_i64 == batch.last_msg_id + 1
                 && time_since_last < self.fragment_merge_ms;
 
@@ -222,6 +223,7 @@ impl MessageCoalescer {
     /// Flush a pending batch, reconstructing a full ImMessage with stored metadata.
     fn flush_batch_to_msg(&mut self, chat_id: &str) -> Option<ImMessage> {
         self.pending.remove(chat_id).map(|batch| ImMessage {
+            access_admission: None,
             source_metadata: batch.source_metadata,
             chat_id: batch.chat_id,
             message_id: batch.last_msg_id.to_string(),
@@ -248,8 +250,6 @@ impl MessageCoalescer {
 /// Telegram Bot API adapter
 pub struct TelegramAdapter {
     bot_token: String,
-    /// Shared mutable whitelist — updated from processing loop when a user binds via QR code.
-    allowed_users: Arc<RwLock<Vec<String>>>,
     client: Client,
     message_tx: mpsc::Sender<ImMessage>,
     coalescer: Arc<Mutex<MessageCoalescer>>,
@@ -273,7 +273,6 @@ impl TelegramAdapter {
     pub fn new(
         config: &ImConfig,
         message_tx: mpsc::Sender<ImMessage>,
-        allowed_users: Arc<RwLock<Vec<String>>>,
         approval_tx: mpsc::Sender<ApprovalCallback>,
         group_event_tx: mpsc::Sender<GroupEvent>,
     ) -> Self {
@@ -295,7 +294,6 @@ impl TelegramAdapter {
 
         Self {
             bot_token: config.bot_token.clone(),
-            allowed_users,
             client,
             message_tx,
             coalescer: Arc::new(Mutex::new(MessageCoalescer::new())),
@@ -1356,23 +1354,9 @@ impl TelegramAdapter {
             return None;
         }
 
-        // Allow /start BIND_ messages to bypass whitelist (QR code binding flow)
+        // Channel owner applies current access policy after trusted platform parsing.
+
         let is_bind_request = combined_text.starts_with("/start BIND_");
-
-        // Whitelist check for private chats (bypassed for bind requests and group messages —
-        // group access control is handled in mod.rs)
-        if source_type == ImSourceType::Private
-            && !is_bind_request
-            && !self.is_allowed(sender_id, from["username"].as_str()).await
-        {
-            ulog_debug!(
-                "[telegram] Rejected message from non-whitelisted user: {} ({:?})",
-                sender_id,
-                sender_name
-            );
-            return None;
-        }
-
         // Detect @Bot mention, /ask command, and reply-to-bot
         let bot_username = self.bot_username.lock().await;
         let is_at_mention = bot_username
@@ -1406,6 +1390,7 @@ impl TelegramAdapter {
         }
 
         Some(ImMessage {
+            access_admission: None,
             source_metadata: super::inbound_metadata::telegram(
                 message,
                 self.bot_user_id.lock().await.map(|id| id.to_string()),
@@ -1485,27 +1470,6 @@ impl TelegramAdapter {
             }
             _ => None,
         }
-    }
-
-    /// Check if a user is in the whitelist
-    async fn is_allowed(&self, user_id: i64, username: Option<&str>) -> bool {
-        let allowed_users = self.allowed_users.read().await;
-        if allowed_users.is_empty() {
-            return false; // Empty whitelist = reject all (default safe)
-        }
-
-        let user_id_str = user_id.to_string();
-        for allowed in allowed_users.iter() {
-            if allowed == &user_id_str {
-                return true;
-            }
-            if let Some(uname) = username {
-                if allowed.eq_ignore_ascii_case(uname) {
-                    return true;
-                }
-            }
-        }
-        false
     }
 }
 
@@ -1872,13 +1836,7 @@ mod tests {
         let (tx, _) = mpsc::channel(2);
         let (approval, _) = mpsc::channel(2);
         let (groups, _) = mpsc::channel(2);
-        let adapter = TelegramAdapter::new(
-            &ImConfig::default(),
-            tx,
-            Arc::new(RwLock::new(vec!["trusted_handle".into(), "43".into()])),
-            approval,
-            groups,
-        );
+        let adapter = TelegramAdapter::new(&ImConfig::default(), tx, approval, groups);
         let update = |id, username: &str, name: &str, chat_type: &str| {
             serde_json::json!({"message": {
                 "message_id":1,"chat":{"id":id,"type":chat_type,"title":"Team"},
@@ -1894,10 +1852,10 @@ mod tests {
             accepted.source_metadata.sender_username.as_deref(),
             Some("trusted_handle")
         );
-        assert!(adapter
-            .process_update(&update(44, "attacker", "trusted_handle", "private"))
-            .await
-            .is_none());
+        let untrusted = adapter.process_update(&update(44, "attacker", "trusted_handle", "private")).await.unwrap();
+        // The adapter only parses identity; Channel admission owns authorization.
+        assert_eq!(untrusted.sender_id, "44");
+        assert_eq!(untrusted.source_metadata.sender_username.as_deref(), Some("attacker"));
         assert!(adapter
             .process_update(&update(43, "other", "Bob", "private"))
             .await
@@ -1966,6 +1924,7 @@ mod tests {
 
     fn make_test_msg(chat_id: &str, msg_id: i64, text: &str) -> ImMessage {
         ImMessage {
+            access_admission: None,
             source_metadata: Default::default(),
             chat_id: chat_id.to_string(),
             message_id: msg_id.to_string(),

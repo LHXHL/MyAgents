@@ -38,6 +38,9 @@ vi.mock('@/hooks/useVirtuosoScroll', () => ({
   },
 }));
 
+// Cancellation uses a zero-distance command; these assertions concern position.
+const corrections = () => controls.scrollBy.mock.calls.filter(([location]) => location.top !== 0);
+
 function msg(id: string, content = 'text'): Message {
   return { id, role: 'assistant', content, timestamp: new Date('2026-07-02T00:00:00Z') };
 }
@@ -74,6 +77,31 @@ describe('useChatScrollController', () => {
     controls.scrollerRef.current = null;
     controls.followEnabledRef.current = true;
     controls.onUserScrollIntent = undefined;
+  });
+
+  it.each([true, false] as const)('revokes library motion on suspension without changing follow=%s', follow => {
+    const { result } = renderHook(() => useChatScrollController({ messages: [msg('m1')], isActive: true, sessionId: 'one' }));
+    controls.followEnabledRef.current = follow;
+    act(() => result.current.onViewportAdmissionChanged(true, 0));
+    act(() => result.current.onViewportAdmissionChanged(false, 0));
+    expect(controls.scrollBy).toHaveBeenCalledExactlyOnceWith({ top: 0, behavior: 'auto' });
+    expect(controls.followEnabledRef.current).toBe(follow);
+    act(() => result.current.onViewportAdmissionChanged(false, 0));
+    expect(controls.scrollBy).toHaveBeenCalledTimes(1);
+  });
+
+  it('retires the captured virtualizer on Session replacement and unmount', () => {
+    const { rerender, unmount } = renderHook(({ sessionId }) => useChatScrollController({ messages: [], isActive: true, sessionId }), {
+      initialProps: { sessionId: 'one' },
+    });
+    const replacementScrollBy = vi.fn();
+    controls.virtuosoRef.current = { scrollToIndex: vi.fn(), scrollBy: replacementScrollBy };
+    rerender({ sessionId: 'two' });
+    expect(controls.scrollBy).toHaveBeenCalledExactlyOnceWith({ top: 0, behavior: 'auto' });
+    expect(replacementScrollBy).not.toHaveBeenCalled();
+    controls.virtuosoRef.current = null;
+    unmount();
+    expect(replacementScrollBy).toHaveBeenCalledExactlyOnceWith({ top: 0, behavior: 'auto' });
   });
 
   it('scrollToMessage pauses follow and delegates to Virtuoso inside the controller', () => {
@@ -154,6 +182,24 @@ describe('useChatScrollController', () => {
     });
   });
 
+  it('retires index mounting before precise tool positioning', () => {
+    const scroller = document.createElement('div');
+    const tool = document.createElement('div');
+    tool.dataset.toolId = 't1';
+    tool.scrollIntoView = vi.fn(() => expect(controls.pauseAutoScroll).toHaveBeenCalledTimes(2));
+    scroller.appendChild(tool);
+    controls.scrollerRef.current = scroller;
+    const frames: FrameRequestCallback[] = [];
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => { frames.push(callback); return frames.length; });
+    const { result } = renderHook(() => useChatScrollController({ messages: [msg('m1')], isActive: true }));
+    act(() => result.current.onViewportAdmissionChanged(true, 0));
+    act(() => result.current.scrollToTool('t1', 'm1'));
+    expect(controls.scrollToIndex).toHaveBeenCalledTimes(1);
+    act(() => { frames.shift()?.(0); frames.shift()?.(16); });
+    expect(tool.scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'center' });
+    raf.mockRestore();
+  });
+
   it('scrollToTool resolves server_tool_use hosts inside the controller', () => {
     const messages: Message[] = [
       msg('m1'),
@@ -201,7 +247,7 @@ describe('useChatScrollController', () => {
     });
 
     expect(controls.scrollToBottom).not.toHaveBeenCalled();
-    expect(controls.scrollBy).not.toHaveBeenCalled();
+    expect(corrections()).toHaveLength(0);
     expect(controls.scrollToIndex).not.toHaveBeenCalled();
   });
 
@@ -220,7 +266,7 @@ describe('useChatScrollController', () => {
       });
 
       expect(controls.scrollToBottom).not.toHaveBeenCalled();
-      expect(controls.scrollBy).not.toHaveBeenCalled();
+      expect(corrections()).toHaveLength(0);
       expect(controls.scrollToIndex).not.toHaveBeenCalled();
     },
   );
@@ -270,7 +316,7 @@ describe('useChatScrollController', () => {
       setRect(row, { top: 80, bottom: 150 });
     });
 
-    expect(controls.scrollBy).not.toHaveBeenCalled();
+    expect(corrections()).toHaveLength(0);
     expect(controls.scrollToIndex).not.toHaveBeenCalled();
     expect(controls.scrollToBottom).not.toHaveBeenCalled();
   });
@@ -337,7 +383,7 @@ describe('useChatScrollController', () => {
 
       expect(controls.scrollToBottom).toHaveBeenCalledTimes(1);
       expect(controls.scrollToBottom).toHaveBeenCalledWith('auto');
-      expect(controls.scrollBy).not.toHaveBeenCalled();
+      expect(corrections()).toHaveLength(0);
       expect(result.current.isViewportRecoveryFenced).toBe(false);
     },
   );
@@ -383,7 +429,7 @@ describe('useChatScrollController', () => {
     act(() => result.current.onViewportAdmissionChanged(true, 1));
 
     expect(controls.scrollToBottom).not.toHaveBeenCalled();
-    expect(controls.scrollBy).toHaveBeenCalledTimes(1);
+    expect(corrections()).toHaveLength(1);
     expect(controls.scrollBy).toHaveBeenCalledWith({ top: 50, behavior: 'auto' });
     expect(controls.followEnabledRef.current).toBe(false);
     expect(result.current.isViewportRecoveryFenced).toBe(false);
@@ -434,7 +480,7 @@ describe('useChatScrollController', () => {
       result.current.onViewportAdmissionChanged(true, generation - 1);
       result.current.onRowLayoutChanged('m1', 'attachment-settle');
     });
-    expect(controls.scrollBy).not.toHaveBeenCalled();
+    expect(corrections()).toHaveLength(0);
     act(() => {
       result.current.onViewportAdmissionChanged(true, generation);
       result.current.onRowLayoutChanged('m1', 'attachment-settle');
@@ -491,7 +537,7 @@ describe('useChatScrollController', () => {
       result.current.onItemsRendered();
     });
 
-    expect(controls.scrollBy).not.toHaveBeenCalled();
+    expect(corrections()).toHaveLength(0);
     expect(controls.scrollToBottom).not.toHaveBeenCalled();
     expect(controls.handleAtBottomChange).not.toHaveBeenCalled();
     expect(result.current.isViewportRecoveryFenced).toBe(true);
@@ -501,7 +547,7 @@ describe('useChatScrollController', () => {
     rerender({ presentation: RESTORED_PRESENTATION });
     act(() => result.current.onViewportAdmissionChanged(true, 1));
 
-    expect(controls.scrollBy).toHaveBeenCalledTimes(1);
+    expect(corrections()).toHaveLength(1);
     expect(controls.scrollBy).toHaveBeenCalledWith({ top: 50, behavior: 'auto' });
     expect(result.current.isViewportRecoveryFenced).toBe(false);
   });
@@ -524,7 +570,7 @@ describe('useChatScrollController', () => {
     act(() => result.current.onViewportAdmissionChanged(true, 0));
 
     expect(controls.scrollToBottom).not.toHaveBeenCalled();
-    expect(controls.scrollBy).not.toHaveBeenCalled();
+    expect(corrections()).toHaveLength(0);
     expect(controls.scrollToIndex).not.toHaveBeenCalled();
     expect(result.current.isViewportRecoveryFenced).toBe(false);
   });
@@ -555,7 +601,7 @@ describe('useChatScrollController', () => {
     setRect(row, { top: 80, bottom: 150 });
     scroller.appendChild(row);
     act(() => result.current.onItemsRendered());
-    expect(controls.scrollBy).not.toHaveBeenCalled();
+    expect(corrections()).toHaveLength(0);
   });
 
   it('coalesces inactive-Tab and native-surface suspension into one recovery', () => {
@@ -601,7 +647,7 @@ describe('useChatScrollController', () => {
     expect(controls.followEnabledRef.current).toBe(true);
   });
 
-  it('settles an unmounted continuity anchor from itemsRendered without a timer guess', () => {
+  it.each([0, 50])('settles an unmounted continuity anchor with offset %s and retires its index stage', delta => {
     const scroller = document.createElement('div');
     const row = document.createElement('div');
     row.setAttribute('data-chat-search-scope', '');
@@ -630,12 +676,12 @@ describe('useChatScrollController', () => {
     });
     expect(result.current.isViewportRecoveryFenced).toBe(true);
 
-    setRect(row, { top: 80, bottom: 150 });
+    controls.scrollBy.mockClear();
+    setRect(row, { top: 30 + delta, bottom: 100 + delta });
     scroller.appendChild(row);
     act(() => result.current.onItemsRendered());
 
-    expect(controls.scrollBy).toHaveBeenCalledTimes(1);
-    expect(controls.scrollBy).toHaveBeenCalledWith({ top: 50, behavior: 'auto' });
+    expect(controls.scrollBy).toHaveBeenCalledExactlyOnceWith({ top: delta, behavior: 'auto' });
     expect(result.current.isViewportRecoveryFenced).toBe(false);
   });
 
@@ -670,7 +716,7 @@ describe('useChatScrollController', () => {
     setRect(row, { top: 80, bottom: 150 });
     scroller.appendChild(row);
     act(() => result.current.onItemsRendered());
-    expect(controls.scrollBy).not.toHaveBeenCalled();
+    expect(corrections()).toHaveLength(0);
   });
 
   it('lets explicit bottom navigation cancel an in-flight continuity recovery', () => {
@@ -703,7 +749,7 @@ describe('useChatScrollController', () => {
     setRect(row, { top: 80, bottom: 150 });
     scroller.appendChild(row);
     act(() => result.current.onItemsRendered());
-    expect(controls.scrollBy).not.toHaveBeenCalled();
+    expect(corrections()).toHaveLength(0);
   });
 
   it('lets newer direct viewport input cancel an in-flight continuity recovery', () => {
@@ -734,6 +780,6 @@ describe('useChatScrollController', () => {
     setRect(row, { top: 80, bottom: 150 });
     scroller.appendChild(row);
     act(() => result.current.onItemsRendered());
-    expect(controls.scrollBy).not.toHaveBeenCalled();
+    expect(corrections()).toHaveLength(0);
   });
 });

@@ -2,7 +2,7 @@
 //!
 //! Two Tauri commands surface here:
 //!
-//! * [`cmd_session_new_with_surface_migration`] — desktop user clicks "+新对话"
+//! * [`new_channel_desktop_session`] — desktop user clicks "+新对话"
 //!   on a channel-bound session. The Tab and any attached matching Agent owner,
 //!   Router binding, and Node Runtime move together to a fresh `session_id`.
 //!   This is deliberately different from IM `/new`, which only rotates the
@@ -79,16 +79,12 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use axum::{
-        routing::{get, post},
-        Json, Router,
-    };
+    use axum::{routing::post, Json, Router};
     use serde_json::Value;
     use tokio::sync::{oneshot, Mutex as AsyncMutex};
 
     use super::{
-        acquire_peer_operation_fence, freeze_current_via_sidecar, migrate_surface_via_sidecar,
-        target_consumer_needs_cancel,
+        acquire_peer_operation_fence, freeze_current_via_sidecar, target_consumer_needs_cancel,
     };
 
     #[tokio::test]
@@ -150,7 +146,111 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn freeze_current_via_sidecar_sends_metadata_indexed_flag() {
+    async fn desktop_new_preserves_channel_binding_without_waiting_for_source_work() {
+        for blocker in ["peer", "projection", "router", "lifecycle"] {
+            let app = tauri::test::mock_app();
+            let directory = tempfile::tempdir().unwrap();
+            let router = Arc::new(AsyncMutex::new(super::SessionRouter::new(
+                directory.path().into(),
+            )));
+            let source = format!("channel-new-{blocker}");
+            let key = "agent:a:telegram:private:user";
+            router.lock().await.upsert_peer_session(super::PeerSession {
+                session_key: key.into(),
+                session_id: source.clone(),
+                sidecar_port: 0,
+                workspace_path: directory.path().into(),
+                source_type: super::ImSourceType::Private,
+                source_id: "user".into(),
+                source_display_name: None,
+                last_sender_name: None,
+                message_count: 1,
+                metadata_birth_pending: false,
+                metadata_indexed: true,
+                last_active: std::time::Instant::now(),
+            });
+            let health = Arc::new(super::HealthManager::new(
+                directory.path().join("health.json"),
+            ));
+            let peer_locks = Arc::new(AsyncMutex::new(std::collections::HashMap::new()));
+            let manager = Arc::new(Mutex::new(crate::sidecar::SidecarManager::new()));
+            let tab = crate::sidecar::SidecarOwner::Tab("tab".into());
+            let channel = crate::sidecar::SidecarOwner::Agent(key.into());
+            {
+                let mut state = manager.lock().unwrap();
+                state.insert_test_ready_frontend_sidecar(&source, 12345, tab.clone());
+                state.add_session_owner(&source, channel.clone());
+            }
+            let peer = if blocker == "peer" {
+                Some(acquire_peer_operation_fence(&peer_locks, key).await)
+            } else {
+                None
+            };
+            let projection = if blocker == "projection" {
+                Some(health.lock_active_sessions_projection().await)
+            } else {
+                None
+            };
+            let router_guard = if blocker == "router" {
+                Some(router.lock().await)
+            } else {
+                None
+            };
+            let lifecycle = if blocker == "lifecycle" {
+                Some(crate::sidecar::acquire_session_lifecycle(&[&source]).await)
+            } else {
+                None
+            };
+            let result = tokio::time::timeout(
+                Duration::from_millis(250),
+                super::new_channel_desktop_session_with_binding(
+                    app.handle(),
+                    &manager,
+                    &source,
+                    "tab",
+                    (
+                        key.into(),
+                        router.clone(),
+                        health.clone(),
+                        peer_locks.clone(),
+                    ),
+                ),
+            )
+            .await
+            .expect(blocker)
+            .unwrap()
+            .unwrap();
+            assert_eq!(
+                serde_json::to_value(result).unwrap()["createNewSidecar"],
+                true
+            );
+            drop((peer, projection, router_guard, lifecycle));
+            assert_eq!(
+                router
+                    .lock()
+                    .await
+                    .peer_session_snapshot(key)
+                    .unwrap()
+                    .session_id,
+                source
+            );
+            // IM can still rotate its own binding after desktop has branched.
+            router
+                .lock()
+                .await
+                .stage_materialized_session_binding(key, "im-new");
+            let state = manager.lock().unwrap();
+            assert!(state.session_has_exact_owner(&source, &tab));
+            assert!(state.session_has_exact_owner(&source, &channel));
+            assert!(state.session_has_exact_owner(
+                &source,
+                &crate::sidecar::SidecarOwner::BackgroundCompletion(source.clone())
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn freeze_current_via_sidecar_uses_current_generation_and_metadata_flags() {
         let (tx, rx) = oneshot::channel::<Value>();
         let tx = Arc::new(Mutex::new(Some(tx)));
         let app = Router::new().route(
@@ -179,93 +279,50 @@ mod tests {
             let _ = axum::serve(listener, app).await;
         });
 
-        freeze_current_via_sidecar(port, false, false)
-            .await
-            .expect("freeze-current succeeds");
+        let manager = Arc::new(Mutex::new(crate::sidecar::SidecarManager::new()));
+        // The prior Router endpoint can be stale or zero; freeze resolves the
+        // replacement from the logical Session, not that cached endpoint.
+        manager.lock().unwrap().insert_test_ready_frontend_sidecar(
+            "recovered-source",
+            1,
+            crate::sidecar::SidecarOwner::Tab("tab".into()),
+        );
+        let previous_generation = manager
+            .lock()
+            .unwrap()
+            .acquire_session_dispatch("recovered-source")
+            .unwrap()
+            .unwrap()
+            .generation();
+        manager.lock().unwrap().insert_test_ready_frontend_sidecar(
+            "recovered-source",
+            port,
+            crate::sidecar::SidecarOwner::Tab("tab".into()),
+        );
+        assert_ne!(
+            manager
+                .lock()
+                .unwrap()
+                .acquire_session_dispatch("recovered-source")
+                .unwrap()
+                .unwrap()
+                .generation(),
+            previous_generation
+        );
+        assert!(
+            freeze_current_via_sidecar(&manager, "recovered-source", false, false)
+                .await
+                .expect("freeze-current succeeds on the manager's current port")
+        );
+        assert!(
+            !freeze_current_via_sidecar(&manager, "offline-source", false, false)
+                .await
+                .expect("offline source uses existing file preservation")
+        );
 
         let payload = rx.await.expect("captured freeze-current payload");
         assert_eq!(payload["metadataBirthPending"].as_bool(), Some(false));
         assert_eq!(payload["metadataIndexed"].as_bool(), Some(false));
-
-        server.abort();
-    }
-
-    #[tokio::test]
-    async fn surface_migration_via_sidecar_sends_the_proven_target() {
-        let (tx, rx) = oneshot::channel::<Value>();
-        let tx = Arc::new(Mutex::new(Some(tx)));
-        let app = Router::new().route(
-            "/api/session/surface-migration",
-            post({
-                let tx = tx.clone();
-                move |Json(payload): Json<Value>| {
-                    let tx = tx.clone();
-                    async move {
-                        if let Some(tx) = tx.lock().expect("capture mutex").take() {
-                            let _ = tx.send(payload.clone());
-                        }
-                        Json(serde_json::json!({
-                            "sessionId": payload["targetSessionId"],
-                        }))
-                    }
-                }
-            }),
-        );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind test server");
-        let port = listener
-            .local_addr()
-            .expect("test server local addr")
-            .port();
-        let server = tauri::async_runtime::spawn(async move {
-            let _ = axum::serve(listener, app).await;
-        });
-        let target = "6d57334a-44d8-4fe1-a4f2-cd57fc8beb85";
-
-        migrate_surface_via_sidecar(port, target, true, false)
-            .await
-            .expect("surface migration succeeds");
-
-        let payload = rx.await.expect("captured migration payload");
-        assert_eq!(payload["targetSessionId"].as_str(), Some(target));
-        assert_eq!(payload["metadataBirthPending"].as_bool(), Some(true));
-        assert_eq!(payload["metadataIndexed"].as_bool(), Some(false));
-
-        server.abort();
-    }
-
-    #[tokio::test]
-    async fn surface_migration_accepts_a_verified_post_commit_error() {
-        let target = "6d57334a-44d8-4fe1-a4f2-cd57fc8beb85";
-        let app = Router::new()
-            .route(
-                "/api/session/surface-migration",
-                post(|| async {
-                    (
-                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                        "late failure",
-                    )
-                }),
-            )
-            .route(
-                "/api/session-state",
-                get(move || async move { Json(serde_json::json!({ "sessionId": target })) }),
-            );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind test server");
-        let port = listener
-            .local_addr()
-            .expect("test server local addr")
-            .port();
-        let server = tauri::async_runtime::spawn(async move {
-            let _ = axum::serve(listener, app).await;
-        });
-
-        migrate_surface_via_sidecar(port, target, false, true)
-            .await
-            .expect("verified target is already committed");
 
         server.abort();
     }
@@ -281,12 +338,23 @@ fn short_id(s: &str) -> String {
 }
 
 async fn freeze_current_via_sidecar(
-    port: u16,
+    manager: &ManagedSidecarManager,
+    session_id: &str,
     metadata_birth_pending: bool,
     metadata_indexed: bool,
-) -> Result<(), String> {
+) -> Result<bool, String> {
+    // Router owns the binding, not its cached process endpoint. Pin the
+    // current generation under the same lifecycle used by recovery/reset.
+    let _lifecycle = crate::sidecar::acquire_session_lifecycle(&[session_id]).await;
+    let Some(dispatch) = manager
+        .lock()
+        .map_err(|error| error.to_string())?
+        .acquire_session_dispatch(session_id)?
+    else {
+        return Ok(false);
+    };
     let client = crate::local_http::json_client(Duration::from_secs(30));
-    let url = format!("http://127.0.0.1:{}/api/session/freeze-current", port);
+    let url = dispatch.url_for_path("/api/session/freeze-current")?;
     let resp = client
         .post(&url)
         .json(&json!({
@@ -301,307 +369,283 @@ async fn freeze_current_via_sidecar(
         let body = resp.text().await.unwrap_or_default();
         return Err(format!("freeze-current returned {}: {}", status, body));
     }
-    Ok(())
+    // Consume the response while the dispatch lease still pins the writer.
+    resp.bytes().await.map_err(|error| error.to_string())?;
+    Ok(true)
 }
 
-async fn migrate_surface_via_sidecar(
-    port: u16,
-    target_session_id: &str,
-    metadata_birth_pending: bool,
-    metadata_indexed: bool,
-) -> Result<(), String> {
-    let client = crate::local_http::json_client(Duration::from_secs(30));
-    let url = format!("http://127.0.0.1:{}/api/session/surface-migration", port);
-    let response = client
-        .post(&url)
-        .json(&json!({
-            "targetSessionId": target_session_id,
-            "metadataBirthPending": metadata_birth_pending,
-            "metadataIndexed": metadata_indexed,
-        }))
-        .send()
-        .await;
-    match response {
-        Ok(response) if response.status().is_success() => return Ok(()),
-        Ok(response) => {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            if sidecar_runtime_session_id(&client, port).await.as_deref() == Some(target_session_id)
-            {
-                // The Runtime commit is authoritative even if optional
-                // post-commit work produced a non-success response.
-                return Ok(());
-            }
-            return Err(format!("surface-migration returned {status}: {body}"));
-        }
-        Err(error) => {
-            if sidecar_runtime_session_id(&client, port).await.as_deref() == Some(target_session_id)
-            {
-                // A loopback response can disappear after Node committed.
-                // Verify the identity once instead of rolling Rust back across
-                // an already-committed Runtime.
-                return Ok(());
-            }
-            return Err(format!("surface-migration HTTP send failed: {error}"));
-        }
-    }
-}
+/// Resolve the current Router authority, never the renderer's polled status.
+/// Busy discovery means process reuse is unavailable, not that New is unavailable.
+/// Never wait on a Router that IM may hold while waiting for source recovery.
+type DesktopChannelBinding = (
+    String,
+    std::sync::Arc<tokio::sync::Mutex<SessionRouter>>,
+    std::sync::Arc<HealthManager>,
+    PeerLocks,
+);
 
-async fn sidecar_runtime_session_id(client: &reqwest::Client, port: u16) -> Option<String> {
-    let url = format!("http://127.0.0.1:{port}/api/session-state");
-    let response = client.get(url).send().await.ok()?;
-    if !response.status().is_success() {
-        return None;
-    }
-    let body: serde_json::Value = response.json().await.ok()?;
-    body.get("sessionId")?.as_str().map(str::to_string)
-}
-
-// ============================================================================
-// 1. New conversation with surface migration
-// ============================================================================
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NewSessionResult {
-    pub new_session_id: String,
-}
-
-/// Desktop "+新对话" on a channel-bound session.
-///
-/// Rust verifies the Router binding and admits only the participating Tab
-/// plus its Channel execution lease, if attached. Router projection is
-/// staged durably before Node mutation, then the same target identity is
-/// adopted by SidecarManager and the SessionEngine facade.
-#[tauri::command]
-#[allow(non_snake_case)]
-pub async fn cmd_session_new_with_surface_migration<R: Runtime>(
-    app: AppHandle<R>,
-    oldSessionId: String,
-    tabId: String,
-    sessionKey: String,
-) -> Result<NewSessionResult, String> {
-    ulog_info!(
-        "[handover] operation=surface_session_migration stage=start session={} tab={} key={}",
-        short_id(&oldSessionId),
-        tabId,
-        sessionKey,
-    );
-
-    let agent_state: tauri::State<'_, ManagedAgents> = app
-        .try_state()
-        .ok_or_else(|| "Agent state unavailable".to_string())?;
-    let manager: tauri::State<'_, ManagedSidecarManager> = app
-        .try_state()
-        .ok_or_else(|| "Sidecar manager unavailable".to_string())?;
-
-    // Locate the channel that owns this session_key. We scan ManagedAgents
-    // because session_key encodes agent_id but ChannelInstance routers don't
-    // expose a reverse index.
-    let parts: Vec<&str> = sessionKey.split(':').collect();
-    if parts.len() < 5 || parts[0] != "agent" {
-        return Err(format!("Invalid session_key format: {}", sessionKey));
-    }
-    let target_agent_id = parts[1];
-
-    let found_binding = {
-        let agents = agent_state.lock().await;
-        let agent = agents.get(target_agent_id).ok_or_else(|| {
-            format!(
-                "Agent {} not found (channel may be offline)",
-                target_agent_id
-            )
-        })?;
-
-        // The router sits on each ChannelInstance.bot_instance. Find the
-        // channel whose router actually has this peer_session entry. The
-        // common case is a single-channel agent so the loop is cheap.
-        let mut found = None;
-        for ch in agent.channels.values() {
-            let router_guard = ch.bot_instance.router.lock().await;
-            if router_guard.has_peer_session(&sessionKey) {
-                drop(router_guard);
-                found = Some((
-                    ch.bot_instance.router.clone(),
-                    ch.bot_instance.health.clone(),
-                    ch.bot_instance.peer_locks.clone(),
-                ));
-                break;
-            }
-        }
-        found
+async fn desktop_channel_binding<R: Runtime>(
+    app: &AppHandle<R>,
+    session_id: &str,
+) -> Result<Option<DesktopChannelBinding>, ()> {
+    let agents = app.state::<ManagedAgents>();
+    let mut snapshots = {
+        let agents = agents.try_lock().map_err(|_| ())?;
+        agents
+            .values()
+            .flat_map(|agent| {
+                agent.channels.values().map(|channel| {
+                    let bot = &channel.bot_instance;
+                    (
+                        bot.router.clone(),
+                        bot.health.clone(),
+                        bot.peer_locks.clone(),
+                    )
+                })
+            })
+            .collect::<Vec<_>>()
     };
-
-    let (router_arc, health, peer_locks) = found_binding.ok_or_else(|| {
-        format!(
-            "No active channel binds session_key {}; cannot migrate",
-            sessionKey
-        )
-    })?;
-
-    // Reuse the exact enqueue fence used by `/new`, normal IM turns, and
-    // heartbeat. No second migration mutex/state machine is introduced.
-    let peer_lock = {
-        let mut locks = peer_locks.lock().await;
-        locks
-            .entry(sessionKey.clone())
-            .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
-            .clone()
-    };
-    let _peer_guard = peer_lock.lock().await;
-
-    // Match the active-session projection lock order used by every Router
-    // writer. The peer fence excludes `/new` and ordinary IM turns for this
-    // binding until all three identities have converged.
-    let _projection = health.lock_active_sessions_projection().await;
-    let mut router = router_arc.lock().await;
-    let prior = router
-        .peer_session_snapshot(&sessionKey)
-        .ok_or_else(|| format!("No peer binding for {sessionKey}"))?;
-    if prior.session_id != oldSessionId {
-        return Err(format!(
-            "Channel binding changed before migration: expected {}, found {}",
-            short_id(&oldSessionId),
-            short_id(&prior.session_id)
-        ));
-    }
-
-    let new_session_id = uuid::Uuid::new_v4().to_string();
-    let _lifecycle = crate::sidecar::acquire_session_lifecycle(&[
-        oldSessionId.as_str(),
-        new_session_id.as_str(),
-    ])
-    .await;
-    if crate::sidecar::has_persisted_session_owner(&oldSessionId).await?
-        || crate::sidecar::has_persisted_session_owner(&new_session_id).await?
+    let bots = app.state::<super::ManagedImBots>();
     {
-        return Err("Cannot migrate a Session with a persistent Goal or task owner".to_string());
-    }
-
-    let (sidecar_port, channel_sidecar_port) = {
-        let mut manager_guard = manager.lock().map_err(|error| error.to_string())?;
-        if !manager_guard.surface_session_migration_is_admissible(
-            &oldSessionId,
-            &tabId,
-            &sessionKey,
-        ) {
-            return Err(
-                "Session owners changed; only the current Tab and Channel may migrate together"
-                    .to_string(),
-            );
+        let bots = bots.try_lock().map_err(|_| ())?;
+        for bot in bots.values() {
+            if !snapshots
+                .iter()
+                .any(|(router, _, _)| std::sync::Arc::ptr_eq(router, &bot.router))
+            {
+                snapshots.push((
+                    bot.router.clone(),
+                    bot.health.clone(),
+                    bot.peer_locks.clone(),
+                ));
+            }
         }
-        let port = manager_guard
-            .get_session_port(&oldSessionId)
-            .ok_or_else(|| "Source Sidecar is not ready for surface migration".to_string())?;
-        let channel_port = if manager_guard
-            .session_has_exact_owner(&oldSessionId, &SidecarOwner::Agent(sessionKey.clone()))
+    }
+    let mut found = None;
+    for (router, health, peer_locks) in snapshots {
+        let keys = router
+            .try_lock()
+            .map_err(|_| ())?
+            .peer_sessions_iter()
+            .filter(|peer| peer.session_id == session_id)
+            .map(|peer| peer.session_key.clone())
+            .collect::<Vec<_>>();
+        for key in keys {
+            if found.is_some() {
+                return Err(());
+            }
+            found = Some((key, router.clone(), health.clone(), peer_locks.clone()));
+        }
+    }
+    Ok(found)
+}
+
+/// Channel half of the Session lifecycle's desktop-new command. None means
+/// the caller must still prove absence of dormant bindings under its fence.
+pub(crate) async fn new_channel_desktop_session<R: Runtime>(
+    app: &AppHandle<R>,
+    manager: &ManagedSidecarManager,
+    old_session_id: &str,
+    tab_id: &str,
+) -> Result<Option<crate::sidecar::session_lifecycle::NewDesktopSessionResult>, String> {
+    let binding = match desktop_channel_binding(app, old_session_id).await {
+        Ok(Some(binding)) => binding,
+        Ok(None) => return Ok(None),
+        // Discovery may be locked by IM waiting on recovery. It is needed
+        // only to migrate a binding, never to preserve it and create separately.
+        Err(()) => {
+            return crate::sidecar::session_lifecycle::preserve_desktop_session(
+                app,
+                manager,
+                old_session_id,
+                tab_id,
+            )
+            .await
+            .map(Some)
+        }
+    };
+    new_channel_desktop_session_with_binding(app, manager, old_session_id, tab_id, binding).await
+}
+
+async fn new_channel_desktop_session_with_binding<R: Runtime>(
+    app: &AppHandle<R>,
+    manager: &ManagedSidecarManager,
+    old_session_id: &str,
+    tab_id: &str,
+    (session_key, router_arc, health, peer_locks): DesktopChannelBinding,
+) -> Result<Option<crate::sidecar::session_lifecycle::NewDesktopSessionResult>, String> {
+    // Keep the established peer → projection → Router → lifecycle order,
+    // but do not wait for source work just to attempt optional process reuse.
+    let peer = peer_locks
+        .try_lock()
+        .ok()
+        .map(|mut locks| {
+            locks
+                .entry(session_key.clone())
+                .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+                .clone()
+        })
+        .and_then(|lock| lock.try_lock_owned().ok());
+    let projection = health.try_lock_active_sessions_projection();
+    let router = router_arc.try_lock();
+    let (Some(_peer), Some(_projection), Ok(mut router)) = (peer, projection, router) else {
+        return crate::sidecar::session_lifecycle::preserve_desktop_session(
+            app,
+            manager,
+            old_session_id,
+            tab_id,
+        )
+        .await
+        .map(Some);
+    };
+    let Some(prior) = router
+        .peer_session_snapshot(&session_key)
+        .filter(|prior| prior.session_id == old_session_id)
+    else {
+        // IM may have rotated this binding since desktop discovered it.
+        // Let the ordinary desktop path re-admit the source under its lifecycle
+        // lock; it still checks the exact Tab owner and any remaining bindings.
+        return Ok(None);
+    };
+    let target = uuid::Uuid::new_v4().to_string();
+    let Some(_lifecycle) = crate::sidecar::session_lifecycle::try_acquire_session_lifecycle(&[
+        old_session_id,
+        &target,
+    ])
+    .await
+    else {
+        return crate::sidecar::session_lifecycle::preserve_desktop_session(
+            app,
+            manager,
+            old_session_id,
+            tab_id,
+        )
+        .await
+        .map(Some);
+    };
+    let retained_identity = crate::sidecar::has_persisted_session_owner(old_session_id).await?;
+    let Some(port) = crate::sidecar::session_lifecycle::desktop_session_reset_port(
+        manager,
+        old_session_id,
+        tab_id,
+        Some(&session_key),
+        retained_identity,
+    )?
+    else {
+        return crate::sidecar::session_lifecycle::preserve_desktop_session(
+            app,
+            manager,
+            old_session_id,
+            tab_id,
+        )
+        .await
+        .map(Some);
+    };
+    let background_app = app.clone();
+    let background_manager = manager.clone();
+    let background_source = old_session_id.to_string();
+    let background = tauri::async_runtime::spawn_blocking(move || {
+        crate::sidecar::background::start_background_completion(
+            &background_app,
+            &background_manager,
+            &background_source,
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    if !matches!(background, Ok(ref result) if !result.started) {
+        return crate::sidecar::session_lifecycle::preserve_desktop_session(
+            app,
+            manager,
+            old_session_id,
+            tab_id,
+        )
+        .await
+        .map(Some);
+    }
+    let channel_port = {
+        let state = manager.lock().map_err(|error| error.to_string())?;
+        if state.session_has_exact_owner(old_session_id, &SidecarOwner::Agent(session_key.clone()))
         {
             port
         } else {
             0
-        };
-        (port, channel_port)
+        }
     };
-
-    // Stage and durably project B while the Router is fenced. If persistence
-    // fails, exact compare-and-rollback restores A before any Runtime identity
-    // changes.
-    let transition = router.stage_surface_session_migration(
-        &sessionKey,
-        &oldSessionId,
-        &new_session_id,
-        channel_sidecar_port,
-    )?;
+    // Keep both durable routing and Manager identity on A until Node confirms B.
+    // Any failure first retires the uncertain writer under the same lifecycle.
+    let Some(dispatch) = crate::sidecar::session_lifecycle::transition_desktop_runtime(
+        manager,
+        old_session_id,
+        &target,
+        port,
+        true,
+        prior.metadata_birth_pending,
+        prior.metadata_indexed,
+    )
+    .await?
+    else {
+        return crate::sidecar::session_lifecycle::preserve_desktop_session(
+            app,
+            manager,
+            old_session_id,
+            tab_id,
+        )
+        .await
+        .map(Some);
+    };
+    let transition = match router.stage_surface_session_migration(
+        &session_key,
+        old_session_id,
+        &target,
+        channel_port,
+    ) {
+        Ok(transition) => transition,
+        Err(error) => {
+            crate::sidecar::session_lifecycle::retire_failed_desktop_transition(
+                manager,
+                old_session_id,
+                dispatch,
+            )
+            .await?;
+            return Err(error);
+        }
+    };
     if let Err(error) = health
         .persist_active_sessions_snapshot(router.active_sessions())
         .await
     {
-        let rolled_back = router.rollback_peer_binding_transition(&transition);
-        ulog_warn!(
-            "[handover] operation=surface_session_migration stage=persist result=failed old={} new={} rollback={} durable_state=unchanged error={}",
-            short_id(&oldSessionId),
-            short_id(&new_session_id),
-            rolled_back,
-            error
-        );
+        crate::sidecar::session_lifecycle::retire_failed_desktop_transition(
+            manager,
+            old_session_id,
+            dispatch,
+        )
+        .await?;
+        router.rollback_peer_binding_transition(&transition);
         return Err(format!("Failed to save Channel migration: {error}"));
     }
-
-    let manager_upgraded = manager
-        .lock()
-        .map_err(|error| error.to_string())?
-        .upgrade_session_id_for_surface_migration(
-            &oldSessionId,
-            &new_session_id,
-            &tabId,
-            &sessionKey,
-        );
-    if !manager_upgraded {
-        let rolled_back = router.rollback_peer_binding_transition(&transition);
-        let rollback_persisted = rolled_back
-            && health
-                .persist_active_sessions_snapshot(router.active_sessions())
-                .await
-                .is_ok();
-        ulog_warn!(
-            "[handover] operation=surface_session_migration stage=manager-rekey result=failed old={} new={} rollback={} rollback_persisted={}",
-            short_id(&oldSessionId),
-            short_id(&new_session_id),
-            rolled_back,
-            rollback_persisted
-        );
-        return Err("Sidecar owner admission changed before migration".to_string());
-    }
-
-    if let Err(error) = migrate_surface_via_sidecar(
-        sidecar_port,
-        &new_session_id,
-        prior.metadata_birth_pending,
-        prior.metadata_indexed,
+    if !crate::sidecar::session_lifecycle::commit_desktop_runtime_transition(
+        manager,
+        old_session_id,
+        &target,
+        tab_id,
+        Some(&session_key),
+        dispatch,
     )
-    .await
+    .await?
     {
-        let manager_rolled_back = manager
-            .lock()
-            .map_err(|lock_error| lock_error.to_string())?
-            .upgrade_session_id_for_surface_migration(
-                &new_session_id,
-                &oldSessionId,
-                &tabId,
-                &sessionKey,
-            );
-        let router_rolled_back = router.rollback_peer_binding_transition(&transition);
-        let rollback_persisted = router_rolled_back
-            && health
-                .persist_active_sessions_snapshot(router.active_sessions())
-                .await
-                .is_ok();
-        ulog_warn!(
-            "[handover] operation=surface_session_migration stage=runtime result=failed old={} new={} manager_rollback={} router_rollback={} rollback_persisted={} error={}",
-            short_id(&oldSessionId),
-            short_id(&new_session_id),
-            manager_rolled_back,
-            router_rolled_back,
-            rollback_persisted,
-            error
-        );
-        if !manager_rolled_back || !router_rolled_back || !rollback_persisted {
-            return Err(format!(
-                "Surface migration failed and could not restore its owner snapshot: {error}"
-            ));
-        }
-        return Err(error);
+        // Only settled refusal permits rollback. Retirement failure propagates
+        // above, keeping the target binding while its writer is uncertain.
+        router.rollback_peer_binding_transition(&transition);
+        health
+            .persist_active_sessions_snapshot(router.active_sessions())
+            .await?;
+        return Err("Session owners changed before migration committed".to_string());
     }
-
-    ulog_info!(
-        "[handover] operation=surface_session_migration result=committed old={} new={} tab={} key={}",
-        short_id(&oldSessionId),
-        short_id(&new_session_id),
-        tabId,
-        sessionKey,
-    );
-
-    Ok(NewSessionResult { new_session_id })
+    ulog_info!("[handover] operation=surface_session_migration result=committed old={} new={} tab={} key={}", short_id(old_session_id), short_id(&target), tab_id, session_key);
+    Ok(Some(
+        crate::sidecar::session_lifecycle::NewDesktopSessionResult::migrated(target),
+    ))
 }
 
 // ============================================================================
@@ -908,62 +952,29 @@ pub(super) async fn handover_session_to_channel<R: Runtime>(
                     router.classify_peer_session_metadata_for_binding_rotation(&target_session_key),
                 )
             };
-            let freeze_result = if !peer_binding_source_requires_freeze(prior_metadata_disposition)
-            {
-                ulog_info!(
-                    "[handover] step4b skipped freeze for unmaterialized prior session {} disposition={:?}",
-                    short_id(&prior_for_freeze.session_id),
-                    prior_metadata_disposition,
-                );
-                Ok(())
-            } else if prior_for_freeze.sidecar_port != 0 {
-                freeze_current_via_sidecar(
-                    prior_for_freeze.sidecar_port,
-                    prior_for_freeze.metadata_birth_pending,
-                    prior_for_freeze.metadata_indexed,
-                )
-                .await
-                .map(|_| {
+            let freeze_result = async {
+                if !peer_binding_source_requires_freeze(prior_metadata_disposition) {
                     ulog_info!(
-                        "[handover] step4b froze prior session {} via sidecar port {}",
-                        short_id(&prior_for_freeze.session_id),
-                        prior_for_freeze.sidecar_port
+                        "[handover] step4b skipped freeze for unmaterialized prior session {} disposition={:?}",
+                        short_id(&prior_for_freeze.session_id), prior_metadata_disposition,
                     );
-                })
-            } else {
-                runtime_change::freeze_via_file_lock_status(
-                    &prior_for_freeze.session_id,
-                )
-                .await
-                .and_then(|outcome| {
-                    runtime_change::resolve_peer_file_lock_freeze_outcome(
-                        outcome,
-                        prior_for_freeze.metadata_birth_pending,
-                        prior_for_freeze.metadata_indexed,
-                        &prior_for_freeze.session_id,
-                    )
-                })
-                .map(|disposition| match disposition {
-                        runtime_change::PeerFileLockFreezeDisposition::Frozen | runtime_change::PeerFileLockFreezeDisposition::PreservedLegacy => {
-                            ulog_info!(
-                                "[handover] step4b preserved offline prior session {} without reconstructing settings",
-                                short_id(&prior_for_freeze.session_id)
-                            );
-                        }
-                        runtime_change::PeerFileLockFreezeDisposition::MissingBirthPending => {
-                            ulog_info!(
-                                "[handover] step4b skipped freeze for birth-pending prior session {} missing from SessionStore",
-                                short_id(&prior_for_freeze.session_id)
-                            );
-                        }
-                        runtime_change::PeerFileLockFreezeDisposition::MissingUnindexedPeerSession => {
-                            ulog_info!(
-                                "[handover] step4b skipped freeze for unindexed prior peer session {} missing from SessionStore",
-                                short_id(&prior_for_freeze.session_id)
-                            );
-                        }
-                    })
-            };
+                    return Ok(());
+                }
+                if freeze_current_via_sidecar(
+                    manager.inner(), &prior_for_freeze.session_id,
+                    prior_for_freeze.metadata_birth_pending, prior_for_freeze.metadata_indexed,
+                ).await? {
+                    ulog_info!("[handover] step4b froze prior session {} via its current Sidecar", short_id(&prior_for_freeze.session_id));
+                    return Ok(());
+                }
+                let outcome = runtime_change::freeze_via_file_lock_status(&prior_for_freeze.session_id).await?;
+                let disposition = runtime_change::resolve_peer_file_lock_freeze_outcome(
+                    outcome, prior_for_freeze.metadata_birth_pending,
+                    prior_for_freeze.metadata_indexed, &prior_for_freeze.session_id,
+                )?;
+                ulog_info!("[handover] step4b preserved offline prior session {} disposition={:?}", short_id(&prior_for_freeze.session_id), disposition);
+                Ok::<(), String>(())
+            }.await;
             if let Err(e) = freeze_result {
                 let _ = release_session_sidecar(manager.inner(), &sessionId, &owner).await;
                 ulog_warn!(

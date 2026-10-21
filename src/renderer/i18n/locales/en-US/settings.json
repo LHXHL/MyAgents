@@ -562,7 +562,11 @@
       "delete": "Delete",
       "save": "Save",
       "deleteTitle": "Delete Provider",
-      "deleteMessage": "Delete \"{{name}}\"? This cannot be undone."
+      "deleteMessage": "Delete \"{{name}}\"? This cannot be undone.",
+      "apiKeyPlaceholder": "Enter an API key for this provider, or configure it later",
+      "noModelsSelected": "No models selected",
+      "selectedModels": "Selected models: {{count}}",
+      "primaryModelSummary": "Primary: {{name}}"
     },
     "order": {
       "fixedFirst": "Pinned first",
@@ -1190,9 +1194,8 @@
       "deliveryTitle": "Message delivery",
       "delivery_auto": "Automatic",
       "delivery_tool_only": "Tool only",
-      "deliveryDescription_auto": "Ordinary replies are sent to the channel automatically. The agent can also send selected text, images, or files.",
-      "deliveryDescription_tool_only": "Ordinary replies stay in the desktop session. The agent must use the sending tool to reach channel users. Required approvals and management interactions remain available.",
-      "deliveryNextTurn": "Changes apply from the next turn. A running turn keeps its original delivery mode.",
+      "deliveryDescription_auto": "Replies are sent automatically. Tools can also send messages.",
+      "deliveryDescription_tool_only": "Only tools send messages. Approval and management prompts still appear.",
       "pluginLabel": "Plugin: {{name}}",
       "noExtraConfig": "This plugin needs no extra configuration",
       "inputPlaceholder": "Enter {{key}}",
@@ -1262,7 +1265,7 @@
       "userBinding": "User binding",
       "usersCount_one": "{{count}} user",
       "usersCount_other": "{{count}} users",
-      "qrBindingOnly": "Scan the QR code to use it. No manual user binding is required.",
+      "qrBindingOnly": "Scan to start chatting.",
       "loggedIn": "Logged in",
       "scanLogin": "Scan to log in",
       "retry": "Retry",
@@ -1278,7 +1281,7 @@
       "mentionMode": "@mention",
       "alwaysMode": "All messages",
       "draftStreamingTitle": "Draft streaming mode",
-      "draftStreamingDescription": "Use sendMessageDraft for a typewriter effect. Enabled by default. Disable it if messages load abnormally. Restart the Channel after changing this option.",
+      "draftStreamingDescription": "Show replies as they stream. Disable if needed. Restart the channel after changes.",
       "overridesTitle": "Configuration overrides",
       "customized": "Customized",
       "overridesDescription": "Empty options inherit the Agent defaults. Set values here to apply only to this Channel.",
@@ -1292,7 +1295,9 @@
       "platformMentionOnlyDescription": "This channel only receives group messages that @mention the bot. All messages is not supported.",
       "groupPrerequisite_telegram": "To receive all messages, make the bot a group admin, or disable privacy mode in BotFather and re-add it to the group.",
       "groupPrerequisite_feishu": "To receive all messages, enable im:message.group_msg in the Feishu developer console and publish the app.",
-      "groupPrerequisite_plugin": "Available messages depend on the plugin and platform permissions."
+      "groupPrerequisite_plugin": "Available messages depend on the plugin and platform permissions.",
+      "userManagement": "User management",
+      "bindingUnavailable": "Start the channel to bind."
     },
     "channelWizard": {
       "toast": {
@@ -1559,7 +1564,6 @@
       "placeholderUser": "User ID",
       "noWhitelistUsers": "No whitelisted users yet. Start the Bot and bind by code, or add user IDs manually.",
       "pendingReview": "Pending review",
-      "approvedGroups": "Approved groups",
       "addedBy": "Added by {{name}}",
       "allow": "Allow",
       "reject": "Reject",
@@ -1594,6 +1598,26 @@
       "cardTemplateId": "Card template ID",
       "cardTemplatePlaceholder": "Enter card template ID",
       "cardTemplateHint": "Create an AI Card template in DingTalk Open Platform and enter the template ID. If empty, messages fall back to normal Markdown."
+    },
+    "channelAccess": {
+      "mode": "Permission mode",
+      "review": "Whitelist mode",
+      "open": "Open mode",
+      "reviewDescription": "Send the code below to bind and join the whitelist.",
+      "openDescription": "No binding required. Start chatting.",
+      "users": "Private chat users",
+      "blocked": "Blocked",
+      "block": "Block",
+      "unblock": "Unblock",
+      "remove": "Remove",
+      "removeDescription": "Removed users can return. Block to prevent access.",
+      "emptyUsers": "No users yet",
+      "stableIdRequired": "Blocking requires a numeric Telegram ID.",
+      "savedRefreshFailed": "Saved, but refreshing the configuration failed: ",
+      "discovered": "Discovered, not used yet",
+      "groups": "Groups",
+      "saved": "Saved",
+      "reviewDescriptionQr": "Scan the QR code below to bind and join the whitelist."
     }
   },
   "resourceDetail": {

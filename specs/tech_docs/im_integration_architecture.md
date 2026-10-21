@@ -50,6 +50,10 @@ GUI 只修复“多个其它方面有效的 Project 声明同一 Agent”这一�
 
 用户启用/停用渠道走 `cmd_set_agent_channel_enabled`：在既有 Channel lifecycle lock 内，经配置锁更新磁盘最新 `enabled`，再执行对应连接启动/停止。配置意图已保存但连接处理失败时返回错误，UI 刷新配置并显示失败，不能静默声称停用完成。停止入口根据「已启用或仍在线/连接中」提供，不能因连接失败而让用户无法取消自动重连；连接状态单独展示，不替代 enabled 意图。内部临时重连与删除仍用 runtime lifecycle 入口，不改写用户的 enabled 意图。
 
+显式启用必须校验本次 `enabled=true` 的候选配置；不能拿旧 `enabled=false` 的运行投影作为启用前提，否则凭据完整的已停止渠道也会被误拒。候选在同一配置锁内校验，失败不写盘；自动恢复仍按当前已提交的 desired state 筛选。
+
+群授权的批准、拒绝和移除同样属于持久配置修改，渠道停止时也可执行。先提交当前配置中的 ID 级意图，再对仍在线的实例更新展示、清理群历史或发送批准通知；缺少在线实例不能否决配置修改。
+
 ### 3.1 启动
 
 标准启动顺序：
@@ -104,7 +108,7 @@ private和group使用不同、稳定的peer session key。每个binding记录Pro
 
 IM与Desktop可以共享同一个Product Session，但owner保持独立。Tab关闭只释放Tab，Channel轮换只释放目标Agent owner；两边都不能reset或迁移无关使用方的owner。
 
-peer binding 是持久关联，Agent owner 是当前进程的执行租约：重启恢复或空闲释放后，binding 可以存在而 Agent owner 不存在。桌面「新对话」由 Router 校验当前 binding，SidecarManager 允许当前 Tab 单独、或连同对应 Agent 租约一起迁移；其它 owner 与 recovering 实例仍禁止整进程迁移。当前端口只由 SidecarManager 提供，迁移时按实际 Agent 租约更新 Router 端口：已持有则保留当前端口以继续空闲回收，未持有则为 0，下次 Channel ensure 重新关联执行租约与 consumer。私聊 `/new` 只轮换 binding，不要求旧 Agent 租约仍在；活跃来源从 SidecarManager 获取端口完成 freeze，保留其它使用方和历史。
+peer binding 是持久关联，Agent owner 是当前进程的执行租约：重启恢复或空闲释放后，binding 可以存在而 Agent owner 不存在。桌面「新对话」由 Router 校验当前 binding，SidecarManager 允许当前 Tab 单独、或连同对应 Agent 租约一起迁移；其它 owner 与 recovering 实例仍禁止整进程迁移，但桌面可打开独立新会话，原渠道 binding 保留在 source。忙碌的渠道会话同样保留已有执行与绑定，只有空闲且可迁移的会话才联合移动 Tab 与渠道。离线渠道绑定不会阻止桌面另起对话。所有桌面新对话入口统一经 Rust Session lifecycle，不能根据前端尚未加载或过期的渠道标签选择普通 reset。迁移先在 Node 的 mutation boundary 内校验 source、freeze、reset 并完成新元数据持久化，再发布 Router / Manager target；任何不确定结果须先退休原 writer，才允许 source 恢复，避免超时后的迟到 reset 穿透回滚。当前端口只由 SidecarManager 提供，迁移时按实际 Agent 租约更新 Router 端口：已持有则保留当前端口以继续空闲回收，未持有则为 0，下次 Channel ensure 重新关联执行租约与 consumer。私聊 `/new` 只轮换 binding，不要求旧 Agent 租约仍在；活跃来源从 SidecarManager 获取端口完成 freeze，保留其它使用方和历史。
 
 `/new` 仅支持私聊，在 per-peer fence 内处理：
 
@@ -279,7 +283,7 @@ detached/new-session Goal需要独立parent/return-target设计，不能混入cu
 
 `config.json` 是 Agent 出生模板和 Channel transport 配置的 authority。Channel 不再拥有独立执行配置；详情与 writer 移除 model/provider/runtime/permission 覆盖，旧字段只读保留以免损坏存量信息，正常解析不采用。连接凭据、白名单、群规则和 toolsDeny 仍由 Channel 实时拥有。所有写入在config lock内fresh read-modify-write；Renderer提交typed intent并在成功后refresh完整snapshot，不能用可能过期的React state覆盖其它Channel。
 
-群聊与绑定用户的展示名保存于同一 Channel 配置：`groupPermissions[].groupName` 与 `userDisplayNames[userId]`。名称只用于展示，授权、群发现去重与路由继续使用 ID；不再把群名当作历史 ID 迁移依据。设置页显示 `名称（ID）`，未知或等于 ID 时只显示 ID。Rust 在配置锁内按最新已有 ID 合并名字，不创建授权记录，不修改群状态，查询失败/空值不清除旧名字。绑定成功和后续入站更新此元数据，沿 `im:bot-config-changed` 刷新 UI。
+群聊与绑定用户的展示名保存于同一 Channel 配置：`groupPermissions[].groupName` 与 `userDisplayNames[userId]`。名称只用于展示，授权、群发现去重与路由继续使用 ID；不再把群名当作历史 ID 迁移依据。设置页显示 `名称（ID）`；私聊用户名称未知或等于 ID 时只显示 ID，群聊的未知/同 ID 名称留空并显示 `（ID）`。Rust 在配置锁内按最新已有 ID 合并名字，不创建授权记录，不修改群状态，查询失败/空值不清除旧名字。绑定成功和后续入站更新此元数据，沿 `im:bot-config-changed` 刷新 UI。
 
 渠道启动时用既有 peer snapshot 补缺失名称；企微另经 Bridge `/peer-names` 查询当前账号的 `wecom-cli message aibot sessions list`，新平台证据更新名称。该接口仅返回最近 20 个会话，无分页，因此旧且不可见的会话保留已有名称或 ID；后续入站可补齐。Bridge 对 `single/group + chat_id` 做唯一精确匹配，不从 `extra_identity_context` 的授权人描述猜测昵称；账号级在途查询去重和超时只约束查询，不启动 Session、不发消息、不定时扫描。
 
@@ -287,9 +291,23 @@ detached/new-session Goal需要独立parent/return-target设计，不能混入cu
 
 Channel credential、token、App Secret和provider env不得进入日志、analytics、Tauri event或错误正文。配置持久化方式的现实限制应由credential owner和安全设计统一解决，本文不维护“以后迁移”计划。
 
+### 10.1 权限模式与黑名单的入口边界
+
+`im/access.rs` 在同一 `mutate_bot_config` / config lock 内 fresh-read、裁决新消息并合并必要登记。支持权限模式的渠道只存在白名单/自由两种有效策略，`accessMode` 缺失等价 `review`，新建及旧数据一致；打开设置不补写配置。此默认统一覆盖先前按平台保留旧行为的设计：钉钉与空名单 Bridge 也要求新私聊用户绑定。Telegram 继续兼容可信 username（忽略大小写），缺省与显式白名单的 sender qualification 相同；昵称不授权。微信扫码例外见下文。
+
+界面将 `review` 称为“白名单模式”、`open` 称为“自由模式”，持久化值不变。显式 `review` 统一为新私聊需绑定、群批准或已绑定成员例外；显式 `open` 在首条真实使用中将稳定 sender ID 写入原 `allowedUsers`，群有效触发还将原群记录批准。普通群发言、仅发现群、纯 help/start 不登记，平台 Mention/Always 能力仍生效。有效绑定保留；自动登记与绑定享有相同 `senderIsOwner`，没有新增权限等级。切换模式只写模式字段，不重置资格、封禁或 Session。
+
+`blockedUserIds` 对本 Channel 的私聊及全部群生效，`blockedGroupIds` 对该群全部成员生效；任一命中先于绑定/群批准/自动登记拒绝，Bridge 通过原 dispatcher terminal 静默结算，不进入群历史、命令或 AI。黑名单与资格正交，解除一项不会解除另一项。设置提交 ID intent，绑定、发现和群审批也按最新集合合并；发现事件不能把已批准群降回 pending。缺失字段兼容旧数据，未知模式/损坏集合报错，不开放兜底。
+
+准入发生在新消息分流、媒体聚合和 Session 准备之前；结果作为 `ImMessage.access_admission` 固化本次 sender qualification、群批准和触发事实，并随 `BufferedMessage` 保留。媒体合并重入沿原受理事实；原缓冲重放/Node 队列/Runtime 启动与执行不再查询黑名单。保存封禁只影响锁顺序在后的新 query，不撤回之前已受理的请求、历史或回复。旧请求的权限/提问沿既有 callback 继续，文本 fallback 固化精确 pending request ID / 类型，并在消费时复核同一请求、requester 和有效期；已消失或过期则静默结算，不能改选其它请求或运行新绑定/命令。Telegram 长消息聚合也要求发送者 ID 相同，不能将被封禁者的分片并入他人的请求。其他人引用的正文照常处理，不做跨发送者内容过滤。
+
+微信 `openclaw:weixin` / `openclaw:openclaw-weixin` 在共享平台能力表声明 `accessControl: false`：只展示扫码连接，不展示多人权限、私聊名单或群管理；Rust 准入不应用旧通用模式/名单/封禁，也不自动登记或清除这些历史配置，保留既有 sender owner 计算。该路径依赖平台扫码认证，不新增 MyAgents 对不同发送者的身份绑定保证；generic QR 支持本身不意味着其它插件也豁免准入。企微和飞书继续支持两种模式。
+
+模式及个人/群封禁可离线保存；保存成功后新入站读取磁盘，不依赖迟到的 Runtime 配置投影。已存在的 Task/Goal/Heartbeat 仍按其自身生命周期执行及发送，默认主动通知对象继续沿当前规则选择。
+
 ## 11. 安全不变量
 
-- 私聊管理命令与普通聊天复用同一准入边界；不得对原生 adapter 已放行的消息再按 sender ID 建第二套命令白名单（Telegram 还支持用户名）。Bridge 的既有策略为空名单允许私聊、非空名单精确匹配，检查必须发生在命令与聊天分流之前；Telegram/飞书仍在 adapter 按原有空名单拒绝策略准入。QR bind 与公开 help/start 保持各自既有豁免，群管理命令仍不开放。
+- 私聊管理命令与普通聊天复用 Rust Channel 的 `access::admit_input` 准入；原生 adapter 只提供可信平台身份，不再用启动名单提前过滤。Telegram 的旧用户名匹配只读 `sender_username`，昵称不能授权。群管理命令仍不开放；平台凭据、扫码登录、群触发能力不随使用模式改变。
 - group默认Mention，未证明mention的事件不能触发AI。
 - 新 IM Session 由 snapshot compiler 固定最高 unattended 权限（DSH 为 `full-autonomous`）；`/mode` 与渠道权限覆盖已移除。已有 snapshot 权限保持原值，桌面主动修改仍按 Session 规则生效，不能在恢复或每轮隐式提权。
 - credentials、prompt正文、tool参数、群history和platform payload不写常规日志。

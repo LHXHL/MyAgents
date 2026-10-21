@@ -15,6 +15,17 @@ pub(crate) async fn acquire_session_lifecycle(session_ids: &[&str]) -> SessionLi
         .await
 }
 
+/// Reusing a source is optional for desktop New. Never queue that optimization
+/// behind recovery or another source mutation; independent birth needs neither.
+pub(crate) async fn try_acquire_session_lifecycle(
+    session_ids: &[&str],
+) -> Option<SessionLifecycleGuard> {
+    SESSION_LIFECYCLE_LOCKS
+        .get_or_init(crate::keyed_lifecycle::KeyedLifecycleRegistry::new)
+        .try_acquire_many(session_ids)
+        .await
+}
+
 /// Close one active generation under the manager lock, wait without that
 /// lock, then move the exact process into manager-owned recovery state.
 fn replace_session_sidecar_after_drain<'a>(
@@ -64,6 +75,403 @@ pub(crate) async fn has_persisted_session_owner(session_id: &str) -> Result<bool
         .await
         .map_err(|error| error.to_string())?
         || crate::task_scheduler::has_persistent_task_for_session(session_id).await)
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewDesktopSessionResult {
+    new_session_id: Option<String>,
+    create_new_sidecar: bool,
+}
+
+impl NewDesktopSessionResult {
+    pub(crate) fn migrated(session_id: String) -> Self {
+        Self {
+            new_session_id: Some(session_id),
+            create_new_sidecar: false,
+        }
+    }
+}
+
+/// Protecting a source from reset does not prevent this Tab from starting a
+/// separate conversation. The source's owners and Channel binding stay put.
+pub(crate) fn desktop_session_reset_port(
+    manager: &ManagedSidecarManager,
+    source: &str,
+    tab_id: &str,
+    channel_key: Option<&str>,
+    retained_identity: bool,
+) -> Result<Option<u16>, String> {
+    let mut state = manager.lock().map_err(|error| error.to_string())?;
+    if !state.session_has_exact_owner(source, &SidecarOwner::Tab(tab_id.to_string())) {
+        return Err("The Tab no longer owns this Session".to_string());
+    }
+    let migratable = match channel_key {
+        Some(key) => state.surface_session_migration_is_admissible(source, tab_id, key),
+        None => state.desktop_session_migration_is_admissible(source, tab_id),
+    };
+    Ok(if retained_identity || !migratable {
+        None
+    } else {
+        state.get_session_port(source)
+    })
+}
+
+pub(crate) async fn preserve_desktop_session<R: Runtime>(
+    app: &AppHandle<R>,
+    manager: &ManagedSidecarManager,
+    source: &str,
+    tab_id: &str,
+) -> Result<NewDesktopSessionResult, String> {
+    if !manager
+        .lock()
+        .map_err(|error| error.to_string())?
+        .session_has_exact_owner(source, &SidecarOwner::Tab(tab_id.to_string()))
+    {
+        return Err("The Tab no longer owns this Session".to_string());
+    }
+    let app = app.clone();
+    let manager = manager.clone();
+    let source = source.to_string();
+    // Reuse the existing handoff owner even when the source is recovering or
+    // its activity cannot currently be sampled. The existing poller settles it.
+    tauri::async_runtime::spawn_blocking(move || {
+        super::background::start_headless_background_completion(&app, &manager, &source)
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    Ok(NewDesktopSessionResult {
+        new_session_id: None,
+        create_new_sidecar: true,
+    })
+}
+
+/// New conversation authority is shared by every desktop entry, independently
+/// of the renderer's Channel status projection. Router -> lifecycle lock order
+/// is the same as IM enqueue/handover; the unbound path checks disk while fenced.
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn cmd_new_desktop_session<R: Runtime>(
+    app: AppHandle<R>,
+    state: tauri::State<'_, ManagedSidecarManager>,
+    oldSessionId: String,
+    tabId: String,
+) -> Result<NewDesktopSessionResult, String> {
+    if let Some(result) =
+        crate::im::handover::new_channel_desktop_session(&app, state.inner(), &oldSessionId, &tabId)
+            .await?
+    {
+        return Ok(result);
+    }
+    let target = uuid::Uuid::new_v4().to_string();
+    let Some(_lifecycle) = try_acquire_session_lifecycle(&[&oldSessionId, &target]).await else {
+        return preserve_desktop_session(&app, state.inner(), &oldSessionId, &tabId).await;
+    };
+    // A dormant binding is still authoritative. A concurrently attached live
+    // Channel first acquires its Agent owner under this same lifecycle fence.
+    let retained_identity =
+        crate::im::session_delivery::configured_session_binding_exists(&oldSessionId)
+            || has_persisted_session_owner(&oldSessionId).await?;
+    let Some(port) = desktop_session_reset_port(
+        state.inner(),
+        &oldSessionId,
+        &tabId,
+        None,
+        retained_identity,
+    )?
+    else {
+        return preserve_desktop_session(&app, state.inner(), &oldSessionId, &tabId).await;
+    };
+    // Admit the existing background owner here, once, under the source fence.
+    // App consumes this decision and never re-samples activity after it returns.
+    let background_app = app.clone();
+    let background_manager = state.inner().clone();
+    let background_source = oldSessionId.clone();
+    let background = tauri::async_runtime::spawn_blocking(move || {
+        super::background::start_background_completion(
+            &background_app,
+            &background_manager,
+            &background_source,
+        )
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    if !matches!(background, Ok(ref result) if !result.started) {
+        return preserve_desktop_session(&app, state.inner(), &oldSessionId, &tabId).await;
+    }
+    let Some(dispatch) = transition_desktop_runtime(
+        state.inner(),
+        &oldSessionId,
+        &target,
+        port,
+        false,
+        false,
+        true,
+    )
+    .await?
+    else {
+        return preserve_desktop_session(&app, state.inner(), &oldSessionId, &tabId).await;
+    };
+    if !commit_desktop_runtime_transition(
+        state.inner(),
+        &oldSessionId,
+        &target,
+        &tabId,
+        None,
+        dispatch,
+    )
+    .await?
+    {
+        return Err("Session owners changed before new conversation committed".to_string());
+    }
+    Ok(NewDesktopSessionResult::migrated(target))
+}
+
+enum DesktopTransitionFailure {
+    Busy,
+    Rejected(String),
+    Uncertain(String),
+}
+
+async fn request_desktop_runtime_transition(
+    client: &reqwest::Client,
+    port: u16,
+    payload: &serde_json::Value,
+) -> Result<(), DesktopTransitionFailure> {
+    let response = client
+        .post(format!(
+            "http://127.0.0.1:{port}/api/session/new-conversation"
+        ))
+        .json(payload)
+        .send()
+        .await;
+    let failure = match response {
+        Ok(response) if response.status().is_success() => {
+            let result: serde_json::Value = response
+                .json()
+                .await
+                .map_err(|error| DesktopTransitionFailure::Uncertain(error.to_string()))?;
+            if result.get("sessionId") == payload.get("targetSessionId") {
+                return Ok(());
+            }
+            "Runtime returned an unexpected Session identity".to_string()
+        }
+        Ok(response) => {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            // Only the adapter can confirm that it refused before entering
+            // reset. Preserve the admitted operation which won its mutation
+            // lease; HTTP timeout or a post-reset failure carries no such proof.
+            if status == reqwest::StatusCode::CONFLICT {
+                if let Ok(result) = serde_json::from_str::<serde_json::Value>(&body) {
+                    if result.get("sourceUnchanged") == Some(&serde_json::Value::Bool(true)) {
+                        if result.get("errorCode").and_then(serde_json::Value::as_str)
+                            == Some("session_busy")
+                        {
+                            return Err(DesktopTransitionFailure::Busy);
+                        }
+                        return Err(DesktopTransitionFailure::Rejected(
+                            result
+                                .get("error")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("Session transition was not started")
+                                .to_string(),
+                        ));
+                    }
+                }
+            }
+            format!("Session transition returned {status}: {body}")
+        }
+        Err(error) => format!("Session transition response unavailable: {error}"),
+    };
+    // Only the completed response proves the whole adapter mutation, including
+    // durable metadata publication. Reading the target ID alone cannot prove
+    // that publication finished or that a still-queued operation has stopped.
+    Err(DesktopTransitionFailure::Uncertain(failure))
+}
+
+/// Caller holds the source lifecycle guard. Manager identity stays on source
+/// until commit, so the existing replacement owner can retire an uncertain
+/// writer without rekeying a recovering generation or losing its owners.
+pub(crate) async fn transition_desktop_runtime(
+    manager: &ManagedSidecarManager,
+    source: &str,
+    target: &str,
+    port: u16,
+    channel_bound: bool,
+    metadata_birth_pending: bool,
+    metadata_indexed: bool,
+) -> Result<Option<super::manager::SidecarHttpDispatch>, String> {
+    let client = crate::local_http::json_client(Duration::from_secs(30));
+    transition_desktop_runtime_with_client(
+        manager,
+        source,
+        target,
+        port,
+        channel_bound,
+        metadata_birth_pending,
+        metadata_indexed,
+        &client,
+    )
+    .await
+}
+
+async fn transition_desktop_runtime_with_client(
+    manager: &ManagedSidecarManager,
+    source: &str,
+    target: &str,
+    port: u16,
+    channel_bound: bool,
+    metadata_birth_pending: bool,
+    metadata_indexed: bool,
+    client: &reqwest::Client,
+) -> Result<Option<super::manager::SidecarHttpDispatch>, String> {
+    // Keep this exact writer manager-owned even if its final Tab closes while
+    // Node is processing the request. A timeout does not release this lease.
+    let Some(dispatch) = manager
+        .lock()
+        .map_err(|error| error.to_string())?
+        .acquire_session_dispatch(source)?
+    else {
+        // No mutation was sent. Source recovery must not block a separate birth.
+        return Ok(None);
+    };
+    if dispatch.url_for_path("/")? != format!("http://127.0.0.1:{port}/") {
+        return Err("Source Sidecar generation changed".to_string());
+    }
+    // pending-* names the Rust bootstrap slot, not a Product Session. Resolve
+    // its Runtime identity from this pinned process before entering the adapter
+    // mutation boundary; ordinary canonical sources must still match exactly.
+    let runtime_source = if source.starts_with("pending-") {
+        let probe = async {
+            let result: serde_json::Value = client
+                .get(dispatch.url_for_path("/api/session-state")?)
+                .send()
+                .await
+                .map_err(|error| error.to_string())?
+                .error_for_status()
+                .map_err(|error| error.to_string())?
+                .json()
+                .await
+                .map_err(|error| error.to_string())?;
+            result
+                .get("sessionId")
+                .and_then(serde_json::Value::as_str)
+                .filter(|id| uuid::Uuid::parse_str(id).is_ok())
+                .map(str::to_string)
+                .ok_or_else(|| "Bootstrap Runtime identity is unavailable".to_string())
+        }
+        .await;
+        match probe {
+            Ok(identity) => identity,
+            Err(error) => {
+                ulog_warn!(
+                    "[sidecar] New conversation retains bootstrap source {}: {}",
+                    source,
+                    error
+                );
+                return Ok(None);
+            }
+        }
+    } else {
+        source.to_string()
+    };
+    let payload = serde_json::json!({
+        "sourceSessionId": runtime_source, "targetSessionId": target, "channelBound": channel_bound,
+        "metadataBirthPending": metadata_birth_pending, "metadataIndexed": metadata_indexed,
+    });
+    if let Err(failure) = request_desktop_runtime_transition(client, port, &payload).await {
+        return match failure {
+            DesktopTransitionFailure::Busy => Ok(None),
+            DesktopTransitionFailure::Rejected(error) => Err(error),
+            DesktopTransitionFailure::Uncertain(error) => {
+                retire_failed_desktop_transition(manager, source, dispatch).await?;
+                Err(error)
+            }
+        };
+    }
+    Ok(Some(dispatch))
+}
+
+/// Commit only the owners admitted for this transition. A concurrent release
+/// may invalidate the final owner set; settle its writer before returning that
+/// refusal to the Router or renderer. `Ok(false)` proves the writer retired;
+/// `Err` means retirement is unconfirmed and must never authorize rollback.
+pub(crate) async fn commit_desktop_runtime_transition(
+    manager: &ManagedSidecarManager,
+    source: &str,
+    target: &str,
+    tab_id: &str,
+    channel_key: Option<&str>,
+    dispatch: super::manager::SidecarHttpDispatch,
+) -> Result<bool, String> {
+    let rekeyed = {
+        let mut state = manager.lock().map_err(|error| error.to_string())?;
+        match channel_key {
+            Some(key) => {
+                state.upgrade_session_id_for_surface_migration(source, target, tab_id, key)
+            }
+            None => state.upgrade_session_id_for_tab(source, target, tab_id),
+        }
+    };
+    if !rekeyed {
+        retire_failed_desktop_transition(manager, source, dispatch).await?;
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+pub(crate) async fn retire_failed_desktop_transition(
+    manager: &ManagedSidecarManager,
+    source: &str,
+    dispatch: super::manager::SidecarHttpDispatch,
+) -> Result<(), String> {
+    let manager = manager.clone();
+    let source = source.to_string();
+    tauri::async_runtime::spawn_blocking(move || {
+        // Close admission and stop the exact writer while our dispatch lease
+        // still pins it. Otherwise last-owner release could remove the entry
+        // before process termination, making absence look like cancellation.
+        {
+            let mut state = manager.lock().map_err(|error| error.to_string())?;
+            if state.current_generation(&source) != dispatch.generation() {
+                return Err("Session writer generation changed during transition".to_string());
+            }
+            let _closed = state.prepare_session_sidecar_replacement(&source);
+            let writer = state
+                .sidecars
+                .get_mut(&source)
+                .ok_or_else(|| "Session writer disappeared during transition".to_string())?;
+            writer
+                .process
+                .kill()
+                .map_err(|error| format!("Cannot retire Session transition writer: {error}"))?;
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let exited = manager
+                .lock()
+                .map_err(|error| error.to_string())?
+                .sidecars
+                .get_mut(&source)
+                .ok_or_else(|| "Session writer disappeared before confirmed exit".to_string())?
+                .process
+                .try_wait()
+                .map_err(|error| error.to_string())?
+                .is_some();
+            if exited {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err("Session transition writer exit is unconfirmed".to_string());
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        drop(dispatch);
+        retire_session_writer(&manager, &source)
+    })
+    .await
+    .map_err(|error| format!("Session transition retirement failed: {error}"))?
 }
 
 /// Product metadata may still be queued in SessionStore while a Session is
@@ -1698,14 +2106,10 @@ pub async fn cmd_session_has_persistent_owners(
         || has_non_tab_session_owner(&sessionId, agent_state.inner(), im_state.inner()).await?)
 }
 
-/// Deletion keeps owner tokens until the storage result, but the previous
-/// process must have exited before Global can unlink its transcript. Reuse
-/// the ordinary generation replacement state so a failed delete remains
-/// recoverable by the same mounted owners.
-fn retire_session_writer_for_delete(
-    sidecars: &ManagedSidecarManager,
-    session_id: &str,
-) -> Result<(), String> {
+/// Retire a writer before storage deletion or recovery from an uncertain
+/// identity transition. Existing owner tokens stay in ordinary generation
+/// recovery, so mounted owners can resume the unchanged source identity.
+fn retire_session_writer(sidecars: &ManagedSidecarManager, session_id: &str) -> Result<(), String> {
     let drain = {
         let mut manager = sidecars.lock().map_err(|error| error.to_string())?;
         manager.prepare_session_sidecar_replacement(session_id)
@@ -1738,10 +2142,24 @@ fn retire_session_writer_for_delete(
             }
         };
         if exited {
+            let unowned = sidecars
+                .lock()
+                .map_err(|error| error.to_string())?
+                .prepare_unowned_session_retirement(session_id);
+            if let Some(unowned) = unowned {
+                unowned.wait();
+                let retired = sidecars
+                    .lock()
+                    .map_err(|error| error.to_string())?
+                    .finish_unowned_session_retirement(&unowned);
+                drop(retired);
+            }
             return Ok(());
         }
         if std::time::Instant::now() >= deadline {
-            return Err("Session writer has not exited; history was not deleted".to_string());
+            return Err(
+                "Session writer has not exited; lifecycle mutation was not committed".to_string(),
+            );
         }
         std::thread::sleep(Duration::from_millis(25));
     }
@@ -1855,7 +2273,7 @@ pub async fn cmd_delete_session_if_unowned(
         drop(manager);
         // A closed dispatch gate alone does not stop a writer's 100ms timer.
         // Do not unlink until the exact old Node process has actually exited.
-        retire_session_writer_for_delete(&sidecars, &sessionId)?;
+        retire_session_writer(&sidecars, &sessionId)?;
         let client = crate::local_http::blocking_builder()
             // Integrated DSH deletion verifies and starts the pinned Runtime,
             // tombstones native state, purges it, then commits Product removal.
@@ -1938,11 +2356,582 @@ pub async fn cmd_release_tab_session(
 mod session_lifecycle_tests {
     use super::{
         acquire_session_lifecycle, is_canonical_session_id, resolve_runtime_identity_for_owner,
-        retained_session_runtime_identity, retire_session_writer_for_delete,
+        retained_session_runtime_identity, retire_session_writer,
         validate_sidecar_runtime_invariant, EnsureSidecarResult, RuntimeIdentity,
         SessionDeleteCommandResult, SidecarManager, SidecarOwner,
     };
     use std::time::Duration;
+
+    #[tokio::test]
+    async fn desktop_new_does_not_wait_for_source_recovery() {
+        use tauri::Manager;
+        for source in [
+            "pending-recovering-desktop",
+            "370d8bc3-1de0-4090-b913-ce5830f70f27",
+        ] {
+            let app = tauri::test::mock_app();
+            let manager = super::create_sidecar_manager();
+            app.manage(manager.clone());
+            app.manage(crate::im::ManagedAgents::default());
+            app.manage(crate::im::ManagedImBots::default());
+            let owner = SidecarOwner::Tab("recovering-tab".into());
+            let epoch = {
+                let mut state = manager.lock().unwrap();
+                state.insert_test_ready_frontend_sidecar(source, 12345, owner.clone());
+                state.begin_session_sidecar_replacement(source);
+                state.recovering_sidecars[source].epoch
+            };
+            // Recovery holds this until the replacement is ready. Independent
+            // birth must settle while that operation is still suspended.
+            let recovery = acquire_session_lifecycle(&[source]).await;
+            let result = tokio::time::timeout(
+                Duration::from_millis(250),
+                super::cmd_new_desktop_session(
+                    app.handle().clone(),
+                    app.state(),
+                    source.into(),
+                    "recovering-tab".into(),
+                ),
+            )
+            .await
+            .expect("new conversation waited for source recovery")
+            .unwrap();
+            assert!(result.create_new_sidecar);
+            assert!(result.new_session_id.is_none());
+            {
+                let mut state = manager.lock().unwrap();
+                assert_eq!(state.recovering_sidecars[source].epoch, epoch);
+                assert!(state.session_has_exact_owner(source, &owner));
+                let background = SidecarOwner::BackgroundCompletion(source.into());
+                assert!(state.session_has_exact_owner(source, &background));
+                // A late old-Tab release cannot discard the ongoing recovery.
+                let _release = state.remove_session_owner(source, &owner);
+                assert!(state.has_session_recovery(source));
+                state.insert_test_ready_frontend_sidecar(source, 12346, background.clone());
+                assert!(state.commit_ready_session_sidecar(source).is_some());
+                assert!(!state.has_session_recovery(source));
+                assert!(state.session_has_exact_owner(source, &background));
+            }
+            drop(recovery);
+        }
+    }
+
+    #[tokio::test]
+    async fn desktop_new_does_not_wait_for_channel_discovery_but_requires_its_tab() {
+        use tauri::Manager;
+        let app = tauri::test::mock_app();
+        let manager = super::create_sidecar_manager();
+        app.manage(manager.clone());
+        app.manage(crate::im::ManagedAgents::default());
+        app.manage(crate::im::ManagedImBots::default());
+        manager.lock().unwrap().insert_test_ready_frontend_sidecar(
+            "discovery-source",
+            12345,
+            SidecarOwner::Tab("actual-tab".into()),
+        );
+        for legacy in [false, true] {
+            let agents = app.state::<crate::im::ManagedAgents>();
+            let bots = app.state::<crate::im::ManagedImBots>();
+            let agent_lock = if legacy {
+                None
+            } else {
+                Some(agents.lock().await)
+            };
+            let bot_lock = if legacy {
+                Some(bots.lock().await)
+            } else {
+                None
+            };
+            assert!(tokio::time::timeout(
+                Duration::from_millis(250),
+                super::cmd_new_desktop_session(
+                    app.handle().clone(),
+                    app.state(),
+                    "discovery-source".into(),
+                    "wrong-tab".into(),
+                )
+            )
+            .await
+            .unwrap()
+            .is_err());
+            let result = tokio::time::timeout(
+                Duration::from_millis(250),
+                super::cmd_new_desktop_session(
+                    app.handle().clone(),
+                    app.state(),
+                    "discovery-source".into(),
+                    "actual-tab".into(),
+                ),
+            )
+            .await
+            .expect("discovery blocked independent birth")
+            .unwrap();
+            assert!(result.create_new_sidecar);
+            drop((agent_lock, bot_lock));
+        }
+    }
+
+    // A real child HTTP writer. Running this test normally is a no-op; only
+    // the isolated parent case supplies its temporary directory in the child.
+    #[test]
+    fn desktop_transition_writer_child() {
+        use std::io::{BufRead, Read, Write};
+        let Some(directory) = std::env::var_os("MYAGENTS_TRANSITION_TEST_CHILD") else {
+            return;
+        };
+        let directory = std::path::PathBuf::from(directory);
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        std::fs::write(
+            directory.join("port.tmp"),
+            listener.local_addr().unwrap().port().to_string(),
+        )
+        .unwrap();
+        std::fs::rename(directory.join("port.tmp"), directory.join("port")).unwrap();
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+        let mut length = 0;
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            if line == "\r\n" {
+                break;
+            }
+            if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                length = value.trim().parse::<usize>().unwrap();
+            }
+        }
+        let mut body = vec![0; length];
+        reader.read_exact(&mut body).unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["sourceSessionId"], "source");
+        std::fs::write(directory.join("accepted"), "source").unwrap();
+        // Simulate a queued mutation which ignores HTTP client cancellation.
+        // The parent opens this gate only after the lifecycle call has failed.
+        while !directory.join("release").exists() {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        std::fs::write(directory.join("committed"), "target").unwrap();
+        let body = r#"{"sessionId":"target"}"#;
+        let _ = write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+    }
+
+    #[tokio::test]
+    async fn desktop_timeout_retires_the_actual_http_writer_before_delayed_mutation_can_commit() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut command = crate::process_cmd::new(std::env::current_exe().unwrap());
+        command.args(["--exact", "sidecar::session_lifecycle::session_lifecycle_tests::desktop_transition_writer_child", "--nocapture"])
+            .env("MYAGENTS_TRANSITION_TEST_CHILD", directory.path())
+            .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+        let child = crate::process_cmd::spawn_tree(&mut command).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !directory.path().join("port").exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "child HTTP writer did not become ready"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let port = std::fs::read_to_string(directory.path().join("port"))
+            .unwrap()
+            .parse::<u16>()
+            .unwrap();
+        let sidecars = std::sync::Arc::new(std::sync::Mutex::new(SidecarManager::new()));
+        {
+            let mut manager = sidecars.lock().unwrap();
+            manager.insert_test_ready_frontend_sidecar(
+                "source",
+                port,
+                SidecarOwner::Tab("tab".into()),
+            );
+            manager.sidecars.get_mut("source").unwrap().process = child;
+        }
+        let client = crate::local_http::json_client(Duration::from_millis(200));
+        assert!(super::transition_desktop_runtime_with_client(
+            &sidecars, "source", "target", port, true, false, true, &client,
+        )
+        .await
+        .is_err());
+        assert!(directory.path().join("accepted").exists());
+        {
+            let mut manager = sidecars.lock().unwrap();
+            assert!(!manager.sidecars.contains_key("source"));
+            assert!(!manager.sidecars.contains_key("target"));
+            let writer = manager.recovering_sidecars.get_mut("source").unwrap();
+            assert!(writer.process.try_wait().unwrap().is_some());
+            assert!(writer.owners.contains(&SidecarOwner::Tab("tab".into())));
+        }
+        // Opening the queued mutation gate after rollback cannot resurrect it.
+        std::fs::write(directory.path().join("release"), "go").unwrap();
+        assert!(!directory.path().join("committed").exists());
+    }
+
+    #[tokio::test]
+    async fn desktop_pending_slot_resolves_the_pinned_runtime_source_before_reset() {
+        use axum::{
+            routing::{get, post},
+            Json, Router,
+        };
+        let runtime_source = "b90ee5d4-0923-4c35-921c-8a2f87135df7";
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let service = Router::new()
+            .route(
+                "/api/session-state",
+                get(move || async move { Json(serde_json::json!({"sessionId":runtime_source})) }),
+            )
+            .route(
+                "/api/session/new-conversation",
+                post(move |Json(payload): Json<serde_json::Value>| async move {
+                    assert_eq!(payload["sourceSessionId"], runtime_source);
+                    Json(serde_json::json!({"sessionId":"target"}))
+                }),
+            );
+        let server =
+            tauri::async_runtime::spawn(
+                async move { axum::serve(listener, service).await.unwrap() },
+            );
+        let sidecars = std::sync::Arc::new(std::sync::Mutex::new(SidecarManager::new()));
+        sidecars.lock().unwrap().insert_test_ready_frontend_sidecar(
+            "pending-tab",
+            port,
+            SidecarOwner::Tab("tab".into()),
+        );
+        let client = crate::local_http::json_client(Duration::from_secs(1));
+        let dispatch = super::transition_desktop_runtime_with_client(
+            &sidecars,
+            "pending-tab",
+            "target",
+            port,
+            false,
+            false,
+            true,
+            &client,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        super::commit_desktop_runtime_transition(
+            &sidecars,
+            "pending-tab",
+            "target",
+            "tab",
+            None,
+            dispatch,
+        )
+        .await
+        .unwrap();
+        assert!(sidecars
+            .lock()
+            .unwrap()
+            .session_has_exact_owner("target", &SidecarOwner::Tab("tab".into())));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn desktop_source_loss_before_reset_allows_separate_birth_without_retirement() {
+        use axum::{routing::get, Router};
+        // The identity probe is read-only. Failure must not issue a reset or
+        // retire a writer that has not accepted a transition.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tauri::async_runtime::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().route(
+                    "/api/session-state",
+                    get(|| async { axum::http::StatusCode::SERVICE_UNAVAILABLE }),
+                ),
+            )
+            .await
+            .unwrap();
+        });
+        let sidecars = std::sync::Arc::new(std::sync::Mutex::new(SidecarManager::new()));
+        sidecars.lock().unwrap().insert_test_ready_frontend_sidecar(
+            "pending-source",
+            port,
+            SidecarOwner::Tab("tab".into()),
+        );
+        let client = crate::local_http::json_client(Duration::from_secs(1));
+        assert!(super::transition_desktop_runtime_with_client(
+            &sidecars,
+            "pending-source",
+            "target",
+            port,
+            false,
+            false,
+            true,
+            &client,
+        )
+        .await
+        .unwrap()
+        .is_none());
+        {
+            let mut state = sidecars.lock().unwrap();
+            assert!(
+                state.session_has_exact_owner("pending-source", &SidecarOwner::Tab("tab".into()))
+            );
+            assert_eq!(state.get_session_port("pending-source"), Some(port));
+            let source = state.sidecars.get_mut("pending-source").unwrap();
+            source.process.kill().unwrap();
+            source.process.wait().unwrap();
+        }
+        assert!(super::transition_desktop_runtime_with_client(
+            &sidecars,
+            "pending-source",
+            "target",
+            port,
+            false,
+            false,
+            true,
+            &client,
+        )
+        .await
+        .unwrap()
+        .is_none());
+        assert!(sidecars
+            .lock()
+            .unwrap()
+            .session_has_exact_owner("pending-source", &SidecarOwner::Tab("tab".into()),));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn desktop_explicit_refusal_keeps_the_source_writer_and_owners_usable() {
+        use axum::{routing::post, Json, Router};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let service = Router::new().route(
+            "/api/session/new-conversation",
+            post(|Json(payload): Json<serde_json::Value>| async move {
+                (
+                    axum::http::StatusCode::CONFLICT,
+                    Json(serde_json::json!({
+                        "success": false, "sourceUnchanged": true,
+                        "errorCode": (payload["targetSessionId"] == "busy-target").then_some("session_busy"),
+                        "error": "Wait for the current Session operation to finish",
+                    })),
+                )
+            }),
+        );
+        let server =
+            tauri::async_runtime::spawn(
+                async move { axum::serve(listener, service).await.unwrap() },
+            );
+        let sidecars = std::sync::Arc::new(std::sync::Mutex::new(SidecarManager::new()));
+        sidecars.lock().unwrap().insert_test_ready_frontend_sidecar(
+            "source",
+            port,
+            SidecarOwner::Tab("tab".into()),
+        );
+        let client = crate::local_http::json_client(Duration::from_secs(1));
+        assert!(super::transition_desktop_runtime_with_client(
+            &sidecars, "source", "target", port, true, false, true, &client,
+        )
+        .await
+        .is_err());
+        assert!(super::transition_desktop_runtime_with_client(
+            &sidecars,
+            "source",
+            "busy-target",
+            port,
+            true,
+            false,
+            true,
+            &client,
+        )
+        .await
+        .unwrap()
+        .is_none());
+        let mut state = sidecars.lock().unwrap();
+        assert_eq!(state.get_session_port("source"), Some(port));
+        assert!(state.session_has_exact_owner("source", &SidecarOwner::Tab("tab".into())));
+        assert!(!state.recovering_sidecars.contains_key("source"));
+        assert!(state.acquire_session_dispatch("source").unwrap().is_some());
+        server.abort();
+    }
+
+    #[test]
+    fn desktop_retained_sources_can_start_separately_without_resetting_other_owners() {
+        let sidecars = std::sync::Arc::new(std::sync::Mutex::new(SidecarManager::new()));
+        let tab = SidecarOwner::Tab("tab".into());
+        sidecars
+            .lock()
+            .unwrap()
+            .insert_test_ready_frontend_sidecar("source", 12345, tab.clone());
+        assert_eq!(
+            super::desktop_session_reset_port(&sidecars, "source", "tab", None, false).unwrap(),
+            Some(12345)
+        );
+        // A dormant Channel binding or persisted Task/Goal protects identity,
+        // not the user's ability to create a separate conversation.
+        assert_eq!(
+            super::desktop_session_reset_port(&sidecars, "source", "tab", None, true).unwrap(),
+            None
+        );
+        for owner in [
+            SidecarOwner::Companion("companion".into()),
+            SidecarOwner::Task("task".into()),
+            SidecarOwner::Tab("other-tab".into()),
+        ] {
+            sidecars
+                .lock()
+                .unwrap()
+                .add_session_owner("source", owner.clone());
+            assert_eq!(
+                super::desktop_session_reset_port(&sidecars, "source", "tab", None, false).unwrap(),
+                None
+            );
+            assert!(sidecars
+                .lock()
+                .unwrap()
+                .session_has_exact_owner("source", &owner));
+            let release = sidecars
+                .lock()
+                .unwrap()
+                .remove_session_owner("source", &owner);
+            assert!(release.drain.is_none());
+        }
+        let channel = SidecarOwner::Agent("peer".into());
+        sidecars
+            .lock()
+            .unwrap()
+            .add_session_owner("source", channel.clone());
+        assert_eq!(
+            super::desktop_session_reset_port(&sidecars, "source", "tab", Some("peer"), false)
+                .unwrap(),
+            Some(12345)
+        );
+        assert_eq!(
+            super::desktop_session_reset_port(&sidecars, "source", "tab", Some("peer"), true)
+                .unwrap(),
+            None
+        );
+        assert!(sidecars
+            .lock()
+            .unwrap()
+            .session_has_exact_owner("source", &channel));
+        assert!(
+            super::desktop_session_reset_port(&sidecars, "source", "wrong-tab", None, false)
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn desktop_rekey_refusal_after_runtime_ack_retires_writer_and_retains_remaining_owner() {
+        use axum::{routing::post, Json, Router};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let service = Router::new().route(
+            "/api/session/new-conversation",
+            post(|| async { Json(serde_json::json!({"sessionId":"target"})) }),
+        );
+        let server =
+            tauri::async_runtime::spawn(
+                async move { axum::serve(listener, service).await.unwrap() },
+            );
+        let sidecars = std::sync::Arc::new(std::sync::Mutex::new(SidecarManager::new()));
+        let channel = SidecarOwner::Agent("channel".into());
+        {
+            let mut manager = sidecars.lock().unwrap();
+            manager.insert_test_ready_frontend_sidecar(
+                "source",
+                port,
+                SidecarOwner::Tab("tab".into()),
+            );
+            manager.add_session_owner("source", channel.clone());
+        }
+        let client = crate::local_http::json_client(Duration::from_secs(1));
+        let dispatch = super::transition_desktop_runtime_with_client(
+            &sidecars, "source", "target", port, true, false, true, &client,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let _release = sidecars
+            .lock()
+            .unwrap()
+            .remove_session_owner("source", &SidecarOwner::Tab("tab".into()));
+        assert!(!super::commit_desktop_runtime_transition(
+            &sidecars,
+            "source",
+            "target",
+            "tab",
+            Some("channel"),
+            dispatch
+        )
+        .await
+        .unwrap());
+        let mut manager = sidecars.lock().unwrap();
+        assert!(!manager.sidecars.contains_key("target"));
+        let source = manager.recovering_sidecars.get_mut("source").unwrap();
+        assert!(source.process.try_wait().unwrap().is_some());
+        assert_eq!(source.owners, std::collections::HashSet::from([channel]));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn desktop_failure_settles_exact_writer_when_the_last_tab_closes() {
+        let sidecars = std::sync::Arc::new(std::sync::Mutex::new(SidecarManager::new()));
+        let (dispatch, release) = {
+            let mut manager = sidecars.lock().unwrap();
+            manager.insert_test_ready_frontend_sidecar(
+                "source",
+                31420,
+                SidecarOwner::Tab("tab".into()),
+            );
+            let dispatch = manager.acquire_session_dispatch("source").unwrap().unwrap();
+            let release = manager.remove_session_owner("source", &SidecarOwner::Tab("tab".into()));
+            (dispatch, release)
+        };
+        let release_manager = sidecars.clone();
+        let closing = tokio::task::spawn_blocking(move || {
+            super::finish_session_owner_release(&release_manager, release)
+        });
+        super::retire_failed_desktop_transition(&sidecars, "source", dispatch)
+            .await
+            .unwrap();
+        closing.await.unwrap().unwrap();
+        let manager = sidecars.lock().unwrap();
+        assert!(!manager.sidecars.contains_key("source"));
+        assert!(!manager.recovering_sidecars.contains_key("source"));
+    }
+
+    #[tokio::test]
+    async fn desktop_lost_response_does_not_treat_target_identity_as_completed_publication() {
+        use axum::{
+            routing::{get, post},
+            Json, Router,
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let service = Router::new()
+            .route(
+                "/api/session/new-conversation",
+                post(|| async { axum::http::StatusCode::BAD_GATEWAY }),
+            )
+            .route(
+                "/api/session-state",
+                get(|| async { Json(serde_json::json!({"sessionId": "target"})) }),
+            );
+        let server =
+            tauri::async_runtime::spawn(
+                async move { axum::serve(listener, service).await.unwrap() },
+            );
+        let client = crate::local_http::json_client(Duration::from_secs(1));
+        super::request_desktop_runtime_transition(
+            &client,
+            port,
+            &serde_json::json!({"sourceSessionId":"source", "targetSessionId":"target"}),
+        )
+        .await
+        .unwrap_err();
+        server.abort();
+    }
 
     #[test]
     fn deletion_retires_the_real_writer_before_storage_mutation_and_retains_tab_ownership() {
@@ -1955,7 +2944,7 @@ mod session_lifecycle_tests {
                 SidecarOwner::Tab("delete-tab".into()),
             );
         }
-        retire_session_writer_for_delete(&sidecars, "delete-writer").unwrap();
+        retire_session_writer(&sidecars, "delete-writer").unwrap();
         let mut manager = sidecars.lock().unwrap();
         assert!(manager.get_session_sidecar("delete-writer").is_none());
         assert!(manager.session_has_owners("delete-writer"));
@@ -1966,8 +2955,8 @@ mod session_lifecycle_tests {
         assert!(retained.process.try_wait().unwrap().is_some());
         drop(manager);
         // A missing/already-retired process is an idempotent boundary.
-        retire_session_writer_for_delete(&sidecars, "delete-writer").unwrap();
-        retire_session_writer_for_delete(&sidecars, "missing").unwrap();
+        retire_session_writer(&sidecars, "delete-writer").unwrap();
+        retire_session_writer(&sidecars, "missing").unwrap();
     }
 
     #[test]
@@ -1989,7 +2978,7 @@ mod session_lifecycle_tests {
                     runtime.unwrap_or("builtin")
                 );
             }
-            retire_session_writer_for_delete(&sidecars, "birth").unwrap();
+            retire_session_writer(&sidecars, "birth").unwrap();
             let manager = sidecars.lock().unwrap();
             assert_eq!(
                 retained_session_runtime_identity(&manager, "birth")

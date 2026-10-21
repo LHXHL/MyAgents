@@ -232,6 +232,10 @@ export function migrateImBotConfigsToAgents(config: AppConfig, projects: Project
         openclawPluginConfig: bot.openclawPluginConfig,
         openclawManifest: bot.openclawManifest,
         allowedUsers: bot.allowedUsers,
+        userDisplayNames: bot.userDisplayNames,
+        accessMode: bot.accessMode,
+        blockedUserIds: bot.blockedUserIds,
+        blockedGroupIds: bot.blockedGroupIds,
         groupPermissions: bot.groupPermissions,
         groupActivation: bot.groupActivation,
         overrides: hasOverrides ? overrides : undefined,
@@ -1235,6 +1239,10 @@ export async function invokeStartAgentChannel(
       openclawManifest: channel.openclawManifest,
       openclawEnabledToolGroups: channel.openclawEnabledToolGroups,
       allowedUsers: channel.allowedUsers || [],
+      userDisplayNames: channel.userDisplayNames,
+      accessMode: channel.accessMode,
+      blockedUserIds: channel.blockedUserIds,
+      blockedGroupIds: channel.blockedGroupIds,
       groupPermissions: channel.groupPermissions || [],
       groupActivation: channel.groupActivation,
       overrides: channel.overrides,
@@ -1261,4 +1269,17 @@ export function stopAndDisableAgentChannel(agentId: string, channelId: string): 
 
 export function startAndEnableAgentChannel(agentId: string, channelId: string): Promise<void> {
   return setAgentChannelEnabled(agentId, channelId, true);
+}
+
+
+/** ID-level mutations preserve concurrent first-use registration and blacklists. */
+export type ChannelAccessIntent =
+  | { kind: 'setMode'; mode: 'review' | 'open' }
+  | { kind: 'setUserBlocked'; userId: string; blocked: boolean }
+  | { kind: 'setGroupBlocked'; groupId: string; blocked: boolean }
+  | { kind: 'addUser' | 'removeUser'; userId: string };
+
+export async function mutateChannelAccess(channelId: string, intent: ChannelAccessIntent): Promise<void> {
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('cmd_channel_access', { botId: channelId, intent });
 }

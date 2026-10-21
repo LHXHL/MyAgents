@@ -890,8 +890,9 @@ const ModelSettingsEditor = function ModelSettingsEditor({
   const [saveError, setSaveError] = useState<string | null>(null);
   const mountedRef = useRef(true);
   const focusBeforeOpen = useRef(document.activeElement instanceof HTMLElement ? document.activeElement : null);
-  const focusEditor = useCallback((node: HTMLDivElement | null) => {
-    node?.querySelector<HTMLInputElement>('input')?.focus();
+  const editorRef = useRef<HTMLDivElement | null>(null);
+  const focusEditor = useCallback(() => {
+    editorRef.current?.focus({ preventScroll: true });
   }, []);
 
   const onCancelRef = useRef(onCancel);
@@ -974,14 +975,16 @@ const ModelSettingsEditor = function ModelSettingsEditor({
       onClose={handlePopoverClose}
       closeOnEscape={false}
       preserveTabOrder={false}
-      placement="bottom-end"
+      placement="bottom-start"
+      onPositioned={focusEditor}
       offset={8}
       zIndex={260}
       unstyled
-      className="w-[360px] max-w-[calc(100vw-32px)] origin-top-right animate-[popoverIn_0.22s_cubic-bezier(0.3,1.2,0.4,1)] rounded-[14px] border border-[var(--line-subtle)] bg-[var(--paper-elevated)] p-4 shadow-[var(--shadow-lg)]"
+      className="w-[360px] max-w-[calc(100vw-32px)] rounded-[14px] border border-[var(--line-subtle)] bg-[var(--paper-elevated)] p-4 shadow-[var(--shadow-lg)]"
     >
       <div
-        ref={focusEditor}
+        ref={editorRef}
+        className="outline-none"
         role="dialog"
         aria-modal="true"
         aria-label={t('providers.models.parameterTitle')}

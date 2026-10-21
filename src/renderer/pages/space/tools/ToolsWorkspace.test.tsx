@@ -782,12 +782,12 @@ describe("Space Tools workspace", () => {
     }
   });
 
-  it("closes the open admin menu before the drawer on Escape", () => {
+  it("closes the open admin menu before the drawer on Escape", async () => {
     const onSelectTool = vi.fn();
     renderTools({ selectedToolId: customTool.id, onSelectTool });
     const trigger = screen.getByRole("button", { name: "更多操作" });
     fireEvent.click(trigger);
-    expect(screen.getByText("删除工具")).toBeVisible();
+    await waitFor(() => expect(screen.getByText("删除工具")).toBeVisible());
 
     fireEvent.keyDown(trigger, { key: "Escape" });
     expect(screen.queryByText("删除工具")).toBeNull();

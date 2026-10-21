@@ -372,6 +372,7 @@ impl ImSourcePart {
 
 #[derive(Debug, Clone)]
 pub struct ImMessage {
+    pub access_admission: Option<super::access::InputAdmission>,
     pub source_metadata: ImSourceMetadata,
     pub chat_id: String,
     pub message_id: String,
@@ -420,6 +421,8 @@ impl ImMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImConfig {
+    #[serde(flatten)]
+    pub access: super::access::ChannelAccessConfig,
     #[serde(default)]
     pub message_delivery_mode: ChannelDeliveryMode,
     #[serde(default = "default_platform")]
@@ -525,6 +528,7 @@ fn default_platform() -> ImPlatform {
 impl Default for ImConfig {
     fn default() -> Self {
         Self {
+            access: Default::default(),
             message_delivery_mode: ChannelDeliveryMode::Auto,
             platform: ImPlatform::Telegram,
             name: None,
@@ -658,6 +662,8 @@ pub struct PeerSession {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BufferedMessage {
     #[serde(default)]
+    pub access_admission: Option<super::access::InputAdmission>,
+    #[serde(default)]
     pub source_metadata: ImSourceMetadata,
     pub chat_id: String,
     pub message_id: String,
@@ -701,6 +707,7 @@ pub struct BufferedMessage {
 impl BufferedMessage {
     pub fn from_im_message(msg: &ImMessage) -> Self {
         Self {
+            access_admission: msg.access_admission.clone(),
             source_metadata: msg.source_metadata.clone(),
             session_key: msg.session_key(),
             chat_id: msg.chat_id.clone(),
@@ -733,6 +740,7 @@ impl BufferedMessage {
     /// request-scoped plugin protocols retain their original identity.
     pub fn to_im_message(&self) -> ImMessage {
         ImMessage {
+            access_admission: self.access_admission.clone(),
             source_metadata: self.source_metadata.clone(),
             chat_id: self.chat_id.clone(),
             message_id: self.message_id.clone(),
@@ -1146,6 +1154,8 @@ pub struct ChannelOverrides {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChannelConfigRust {
+    #[serde(flatten)]
+    pub access: super::access::ChannelAccessConfig,
     #[serde(default)]
     pub message_delivery_mode: ChannelDeliveryMode,
     pub id: String,
@@ -1626,6 +1636,7 @@ impl ChannelConfigRust {
         let permission_mode = self.effective_permission_mode(agent);
 
         ImConfig {
+            access: self.access.clone(),
             message_delivery_mode: self.message_delivery_mode,
             platform: self.channel_type.clone(),
             // For OpenClaw channels, self.name is the npm package name (e.g., "larksuite/openclaw-lark")
@@ -1715,6 +1726,7 @@ mod tests {
     #[test]
     fn buffered_openclaw_reply_identity_is_process_scoped() {
         let message = ImMessage {
+            access_admission: None,
             source_metadata: Default::default(),
             chat_id: "chat-1".to_string(),
             message_id: "message-1".to_string(),
@@ -1785,6 +1797,7 @@ mod tests {
 
     fn base_channel() -> ChannelConfigRust {
         ChannelConfigRust {
+            access: Default::default(),
             message_delivery_mode: ChannelDeliveryMode::Auto,
             id: "channel-1".to_string(),
             channel_type: ImPlatform::Telegram,

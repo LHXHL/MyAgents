@@ -8,7 +8,36 @@ import { patchReactVirtuoso } from './patch-react-virtuoso.mjs';
 const installed = resolve(import.meta.dirname, '../node_modules/react-virtuoso');
 const names = ['index.mjs', 'index.cjs'];
 const sources = names.map(name => readFileSync(resolve(installed, 'dist', name), 'utf8'));
-const previous = source => source
+// Reconstruct each previously shipped byte contract, independently of the installer.
+const navigationRepair = source => source
+  .replace("  const extent = A(\"totalListHeight\") + a;\n  const endPadding = !r && !s && !h ? Math.ceil(extent) - extent : 0;\n  const E = A(\"EmptyPlaceholder\"), y = A(\"ScrollSeekPlaceholder\") ?? rr,", "  const E = A(\"EmptyPlaceholder\"), y = A(\"ScrollSeekPlaceholder\") ?? rr,")
+  .replace("paddingBottom: n.offsetBottom + endPadding,", "paddingBottom: n.offsetBottom,")
+  .replace("height: Math.ceil(scrollExtent), width: 1", "height: scrollExtent, width: 1")
+  .replace("const e = A(\"HeaderComponent\"), n = Ct(\"headerHeight\"), o = A(\"HeaderFooterTag\"), r = kt(\n    H.useMemo(\n      () => (i) => {\n        n(i.getBoundingClientRect().height);", "const e = A(\"HeaderComponent\"), n = Ct(\"headerHeight\"), o = A(\"HeaderFooterTag\"), r = kt(\n    H.useMemo(\n      () => (i) => {\n        n(Et(i, \"height\"));")
+  .replace("const e = A(\"FooterComponent\"), n = Ct(\"footerHeight\"), o = A(\"HeaderFooterTag\"), r = kt(\n    H.useMemo(\n      () => (i) => {\n        n(i.getBoundingClientRect().height);", "const e = A(\"FooterComponent\"), n = Ct(\"footerHeight\"), o = A(\"HeaderFooterTag\"), r = kt(\n    H.useMemo(\n      () => (i) => {\n        n(Et(i, \"height\"));")
+  .replace("T = v((u, g) => u.getBoundingClientRect()[Fo[g]])", "T = v((u, g) => Et(u, Fo[g]))")
+  .replace("const extent=A(\"totalListHeight\")+a;const endPadding=!r&&!s&&!h?Math.ceil(extent)-extent:0;const H=A(\"EmptyPlaceholder\"),y=A(\"ScrollSeekPlaceholder\")??nr,", "const H=A(\"EmptyPlaceholder\"),y=A(\"ScrollSeekPlaceholder\")??nr,")
+  .replace("paddingBottom:n.offsetBottom+endPadding,", "paddingBottom:n.offsetBottom,")
+  .replace("height:Math.ceil(scrollExtent),width:1", "height:scrollExtent,width:1")
+  .replace("const e=A(\"HeaderComponent\"),n=Ct(\"headerHeight\"),o=A(\"HeaderFooterTag\"),r=kt(b.useMemo(()=>i=>{n(i.getBoundingClientRect().height)", "const e=A(\"HeaderComponent\"),n=Ct(\"headerHeight\"),o=A(\"HeaderFooterTag\"),r=kt(b.useMemo(()=>i=>{n(Et(i,\"height\"))")
+  .replace("const e=A(\"FooterComponent\"),n=Ct(\"footerHeight\"),o=A(\"HeaderFooterTag\"),r=kt(b.useMemo(()=>i=>{n(i.getBoundingClientRect().height)", "const e=A(\"FooterComponent\"),n=Ct(\"footerHeight\"),o=A(\"HeaderFooterTag\"),r=kt(b.useMemo(()=>i=>{n(Et(i,\"height\"))")
+  .replace("v((u,g)=>u.getBoundingClientRect()[Lo[g]])", "v((u,g)=>Et(u,Lo[g]))");
+const extentRepair = source => navigationRepair(source)
+  .replace("      cancelScrollToIndex: S,\n      scrollTargetReached: w,", "      scrollTargetReached: w,")
+  .replace("    { scrollToIndex: y, cancelScrollToIndex },", "    { scrollToIndex: y },")
+  .replace("      scrollToIndex: y,\n      cancelScrollToIndex,", "      scrollToIndex: y,")
+  .replace("      if (S === \"scrollTo\") f.cancelScrollToIndex?.();\n      const y = f[e.methods[S]];", "      const y = f[e.methods[S]];")
+  .replace("    const w = p.behavior === \"smooth\", wasSmooth = l.current !== null;\n    if (c.current !== null) clearTimeout(c.current);\n    c.current = null;\n    l.current = null;", "    const w = p.behavior === \"smooth\";")
+  .replace("      if (wasSmooth) T.scrollTo(s === !0 ? { left: f, behavior: \"auto\" } : { top: f, behavior: \"auto\" });\n      t({ scrollHeight: h, scrollTop: f, viewportHeight: R }), w && e(!0);", "      t({ scrollHeight: h, scrollTop: f, viewportHeight: R }), w && e(!0);")
+  .replace("  function x(p) {\n    if (c.current !== null) clearTimeout(c.current);\n    c.current = null;\n    l.current = null;\n    s === !0", "  function x(p) {\n    s === !0")
+  .replace("{cancelScrollToIndex:S,scrollTargetReached:w,scrollToIndex:T,topListHeight:E}", "{scrollTargetReached:w,scrollToIndex:T,topListHeight:E}")
+  .replace("{scrollToIndex:y,cancelScrollToIndex},k,", "{scrollToIndex:y},k,")
+  .replace("scrollToIndex:y,cancelScrollToIndex,statefulTotalCount:", "scrollToIndex:y,statefulTotalCount:")
+  .replace("a[S]=H=>{if(S===\"scrollTo\")f.cancelScrollToIndex?.();const y=f[e.methods[S]];", "a[S]=H=>{const y=f[e.methods[S]];")
+  .replace("const w=p.behavior===\"smooth\",wasSmooth=l.current!==null;if(c.current!==null)clearTimeout(c.current);c.current=null;l.current=null;let E,h,f;", "const w=p.behavior===\"smooth\";let E,h,f;")
+  .replace("p.top===f){if(wasSmooth)T.scrollTo(s===!0?{left:f,behavior:\"auto\"}:{top:f,behavior:\"auto\"});t({scrollHeight:h,scrollTop:f,viewportHeight:E})", "p.top===f){t({scrollHeight:h,scrollTop:f,viewportHeight:E})")
+  .replace("function I(p){if(c.current!==null)clearTimeout(c.current);c.current=null;l.current=null;s===!0&&(p={...p.behavior", "function I(p){s===!0&&(p={...p.behavior");
+const previous = source => extentRepair(source)
   .replace('  const scrollExtent = A("totalListHeight") + A("deviation");\n', '')
   .replace('const scrollExtent=A("totalListHeight")+A("deviation");', '')
   .replace('children: [t, !s && G("div", { "data-virtuoso-scroll-extent": true, "aria-hidden": true, style: { position: "absolute", top: 0, height: scrollExtent, width: 1, pointerEvents: "none" } })]', 'children: t')
@@ -38,6 +67,20 @@ test('repairs both module formats and accepts exact idempotent reruns', () => fi
 }));
 test('upgrades the previously installed cancellation patch without reinstalling', () => fixture(directory => {
   names.forEach((name, index) => writeFileSync(resolve(directory, 'dist', name), previous(sources[index])));
+  assert.throws(() => patchReactVirtuoso(directory, true), /npm run postinstall/);
+  patchReactVirtuoso(directory);
+  patchReactVirtuoso(directory, true);
+  names.forEach((name, index) => assert.equal(readFileSync(resolve(directory, 'dist', name), 'utf8'), sources[index]));
+}));
+test('upgrades the extent repair while retaining internal index measurements', () => fixture(directory => {
+  names.forEach((name, index) => writeFileSync(resolve(directory, 'dist', name), extentRepair(sources[index])));
+  assert.throws(() => patchReactVirtuoso(directory, true), /npm run postinstall/);
+  patchReactVirtuoso(directory);
+  patchReactVirtuoso(directory, true);
+  names.forEach((name, index) => assert.equal(readFileSync(resolve(directory, 'dist', name), 'utf8'), sources[index]));
+}));
+test('upgrades the navigation repair to one coherent fractional geometry model', () => fixture(directory => {
+  names.forEach((name, index) => writeFileSync(resolve(directory, 'dist', name), navigationRepair(sources[index])));
   assert.throws(() => patchReactVirtuoso(directory, true), /npm run postinstall/);
   patchReactVirtuoso(directory);
   patchReactVirtuoso(directory, true);

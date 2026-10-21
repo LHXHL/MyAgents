@@ -1904,7 +1904,7 @@ describe('Bot settings shortcut', () => {
     expect(onOpenSettings).toHaveBeenCalledWith('agent');
     expect(screen.queryByRole('menu')).not.toBeInTheDocument();
     fireEvent.click(settings);
-    expect(onOpenSettings).toHaveBeenLastCalledWith('general');
+    expect(onOpenSettings).toHaveBeenLastCalledWith();
     fireEvent.keyDown(more, { key: 'ArrowRight' });
     expect(await screen.findByRole('menuitem', { name: '聊天机器人 Bot' })).toBeVisible();
     fireEvent.keyDown(document.activeElement!, { key: 'Escape' });

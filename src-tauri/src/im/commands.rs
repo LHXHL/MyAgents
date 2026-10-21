@@ -53,6 +53,9 @@ pub async fn cmd_start_im_bot(
         .map(|(_, c)| c);
 
     let config = ImConfig {
+        access: existing
+            .map(|config| config.access.clone())
+            .unwrap_or_default(),
         message_delivery_mode: existing
             .map(|c| c.message_delivery_mode)
             .unwrap_or_default(),
@@ -694,27 +697,24 @@ pub async fn cmd_remove_im_bot_config(
 // Helper resolves from both containers.
 
 /// Resolve group-related Arcs from either ManagedImBots (legacy) or ManagedAgents (v0.1.41+).
-/// Returns (group_permissions, group_history, adapter, platform_str) or "Bot not running" error.
+/// A stopped channel has no live projection; its saved configuration remains editable.
 async fn resolve_group_context(
     im_state: &ManagedImBots,
     agent_state: &ManagedAgents,
     bot_id: &str,
-) -> Result<
-    (
-        Arc<tokio::sync::RwLock<Vec<GroupPermission>>>,
-        Arc<Mutex<GroupHistoryBuffer>>,
-        Arc<AnyAdapter>,
-        String,
-    ),
+) -> Option<(
+    Arc<tokio::sync::RwLock<Vec<GroupPermission>>>,
+    Arc<Mutex<GroupHistoryBuffer>>,
+    Arc<AnyAdapter>,
     String,
-> {
+)> {
     // 1. Check ManagedAgents first (new Agent architecture)
     {
         let agents = agent_state.lock().await;
         for (_agent_id, agent) in agents.iter() {
             if let Some(ch) = agent.channels.get(bot_id) {
                 let inst = &ch.bot_instance;
-                return Ok((
+                return Some((
                     Arc::clone(&inst.group_permissions),
                     Arc::clone(&inst.group_history),
                     Arc::clone(&inst.adapter),
@@ -726,10 +726,8 @@ async fn resolve_group_context(
     // 2. Fallback: legacy ManagedImBots
     {
         let bots = im_state.lock().await;
-        let inst = bots
-            .get(bot_id)
-            .ok_or_else(|| "Bot not running".to_string())?;
-        Ok((
+        let inst = bots.get(bot_id)?;
+        Some((
             Arc::clone(&inst.group_permissions),
             Arc::clone(&inst.group_history),
             Arc::clone(&inst.adapter),
@@ -740,8 +738,8 @@ async fn resolve_group_context(
 
 #[tauri::command]
 #[allow(non_snake_case)]
-pub async fn cmd_approve_group(
-    app_handle: AppHandle,
+pub async fn cmd_approve_group<R: Runtime>(
+    app_handle: AppHandle<R>,
     imState: tauri::State<'_, ManagedImBots>,
     agentState: tauri::State<'_, ManagedAgents>,
     botId: String,
@@ -749,39 +747,32 @@ pub async fn cmd_approve_group(
 ) -> Result<(), String> {
     use adapter::ImAdapter;
 
-    let (group_perms, _group_history, adapter, _platform) =
-        resolve_group_context(&imState, &agentState, &botId).await?;
-
-    // Update permission status to Approved
+    super::access::mutate(
+        &botId,
+        super::access::AccessIntent::ApproveGroup {
+            group_id: groupId.clone(),
+        },
+    )
+    .await?;
+    if let Some((group_perms, _group_history, adapter, _platform)) =
+        resolve_group_context(&imState, &agentState, &botId).await
     {
-        let mut perms = group_perms.write().await;
-        if let Some(p) = perms.iter_mut().find(|p| p.group_id == groupId) {
-            p.status = GroupPermissionStatus::Approved;
-        } else {
-            return Err(format!("Group {} not found in permissions", groupId));
+        if let Some(group) = group_perms
+            .write()
+            .await
+            .iter_mut()
+            .find(|group| group.group_id == groupId)
+        {
+            group.status = GroupPermissionStatus::Approved;
         }
-    }
 
-    // Persist (lock-free)
-    let new_perms = group_perms.read().await.clone();
-    let bid = botId.clone();
-    let gid = groupId.clone();
-    tokio::task::spawn_blocking(move || {
-        let patch = BotConfigPatch {
-            group_permissions: Some(new_perms),
-            ..Default::default()
-        };
-        persist_bot_config_patch(&bid, &patch)
-    })
-    .await
-    .map_err(|e| format!("spawn_blocking: {}", e))??;
-
-    // Send confirmation message to group (lock-free)
-    if let Err(e) = adapter
-        .send_message(&groupId, "✅ 群聊已授权！所有成员现在可以 @我 提问互动。")
-        .await
-    {
-        ulog_warn!("[im-cmd] send_message (group approved) failed: {}", e);
+        // Send confirmation message to group (lock-free)
+        if let Err(e) = adapter
+            .send_message(&groupId, "✅ 群聊已授权！所有成员现在可以 @我 提问互动。")
+            .await
+        {
+            ulog_warn!("[im-cmd] send_message (group approved) failed: {}", e);
+        }
     }
 
     let _ = app_handle.emit(
@@ -789,44 +780,39 @@ pub async fn cmd_approve_group(
         json!({ "botId": botId, "event": "approved" }),
     );
     let _ = app_handle.emit("im:bot-config-changed", json!({ "botId": botId }));
-    ulog_info!("[im] Group approved: {} for bot {}", gid, botId);
+    ulog_info!("[im] Group approved: {} for bot {}", groupId, botId);
     Ok(())
 }
 
 #[tauri::command]
 #[allow(non_snake_case)]
-pub async fn cmd_reject_group(
-    app_handle: AppHandle,
+pub async fn cmd_reject_group<R: Runtime>(
+    app_handle: AppHandle<R>,
     imState: tauri::State<'_, ManagedImBots>,
     agentState: tauri::State<'_, ManagedAgents>,
     botId: String,
     groupId: String,
 ) -> Result<(), String> {
-    let (group_perms, group_history, _adapter, platform) =
-        resolve_group_context(&imState, &agentState, &botId).await?;
-
-    // Remove pending permission
+    super::access::mutate(
+        &botId,
+        super::access::AccessIntent::RemoveGroup {
+            group_id: groupId.clone(),
+        },
+    )
+    .await?;
+    if let Some((group_perms, group_history, _adapter, platform)) =
+        resolve_group_context(&imState, &agentState, &botId).await
     {
-        let mut perms = group_perms.write().await;
-        perms.retain(|p| p.group_id != groupId);
+        // Remove pending permission
+        {
+            let mut perms = group_perms.write().await;
+            perms.retain(|p| p.group_id != groupId);
+        }
+
+        // Clean up group history buffer
+        let session_key = format!("im:{}:group:{}", platform, groupId);
+        group_history.lock().await.clear(&session_key);
     }
-
-    // Clean up group history buffer
-    let session_key = format!("im:{}:group:{}", platform, groupId);
-    group_history.lock().await.clear(&session_key);
-
-    // Persist (lock-free)
-    let new_perms = group_perms.read().await.clone();
-    let bid = botId.clone();
-    tokio::task::spawn_blocking(move || {
-        let patch = BotConfigPatch {
-            group_permissions: Some(new_perms),
-            ..Default::default()
-        };
-        persist_bot_config_patch(&bid, &patch)
-    })
-    .await
-    .map_err(|e| format!("spawn_blocking: {}", e))??;
 
     let _ = app_handle.emit(
         "im:group-permission-changed",
@@ -839,38 +825,33 @@ pub async fn cmd_reject_group(
 
 #[tauri::command]
 #[allow(non_snake_case)]
-pub async fn cmd_remove_group(
-    app_handle: AppHandle,
+pub async fn cmd_remove_group<R: Runtime>(
+    app_handle: AppHandle<R>,
     imState: tauri::State<'_, ManagedImBots>,
     agentState: tauri::State<'_, ManagedAgents>,
     botId: String,
     groupId: String,
 ) -> Result<(), String> {
-    let (group_perms, group_history, _adapter, platform) =
-        resolve_group_context(&imState, &agentState, &botId).await?;
-
-    // Remove approved permission
+    super::access::mutate(
+        &botId,
+        super::access::AccessIntent::RemoveGroup {
+            group_id: groupId.clone(),
+        },
+    )
+    .await?;
+    if let Some((group_perms, group_history, _adapter, platform)) =
+        resolve_group_context(&imState, &agentState, &botId).await
     {
-        let mut perms = group_perms.write().await;
-        perms.retain(|p| p.group_id != groupId);
+        // Remove approved permission
+        {
+            let mut perms = group_perms.write().await;
+            perms.retain(|p| p.group_id != groupId);
+        }
+
+        // Clean up group history buffer
+        let session_key = format!("im:{}:group:{}", platform, groupId);
+        group_history.lock().await.clear(&session_key);
     }
-
-    // Clean up group history buffer
-    let session_key = format!("im:{}:group:{}", platform, groupId);
-    group_history.lock().await.clear(&session_key);
-
-    // Persist (lock-free)
-    let new_perms = group_perms.read().await.clone();
-    let bid = botId.clone();
-    tokio::task::spawn_blocking(move || {
-        let patch = BotConfigPatch {
-            group_permissions: Some(new_perms),
-            ..Default::default()
-        };
-        persist_bot_config_patch(&bid, &patch)
-    })
-    .await
-    .map_err(|e| format!("spawn_blocking: {}", e))??;
 
     let _ = app_handle.emit(
         "im:group-permission-changed",
@@ -2198,4 +2179,107 @@ pub(crate) async fn reload_agent_config_from_disk<R: Runtime>(
 
     let _ = app_handle.emit("agent:config-changed", json!({}));
     Ok(())
+}
+
+// HOME isolates config IO on Unix; Windows resolves the profile through Known Folders.
+// Platform-independent access policy coverage lives in im::access.
+#[cfg(all(test, unix))]
+mod group_access_tests {
+    use super::*;
+    use tauri::Manager;
+
+    #[test]
+    fn stopped_group_commands_update_saved_config() {
+        let home = tempfile::tempdir().unwrap();
+        let output = crate::process_cmd::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "im::commands::group_access_tests::stopped_group_commands_child",
+                "--nocapture",
+            ])
+            .env("HOME", home.path())
+            .env("MYAGENTS_GROUP_ACCESS_TEST_HOME", home.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[tokio::test]
+    async fn stopped_group_commands_child() {
+        let Some(home) = std::env::var_os("MYAGENTS_GROUP_ACCESS_TEST_HOME") else {
+            return;
+        };
+        let home = std::path::PathBuf::from(home);
+        assert_eq!(dirs::home_dir().unwrap(), home);
+        let path = home.join(".myagents/config.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let app = tauri::test::mock_app();
+        app.manage(ManagedImBots::default());
+        app.manage(ManagedAgents::default());
+        for legacy in [false, true] {
+            let channel = json!({"id":"channel", "type":"telegram", "enabled":false,
+                "groupPermissions":[{"groupId":"group", "groupName":"Test", "platform":"telegram", "status":"pending", "discoveredAt":"2026-01-01"}]});
+            let config = if legacy {
+                json!({"imBotConfigs":[channel]})
+            } else {
+                json!({"agents":[{"id":"agent", "channels":[channel]}]})
+            };
+            std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+            let read_group = || {
+                let config: serde_json::Value =
+                    serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                if legacy {
+                    config["imBotConfigs"][0]["groupPermissions"].clone()
+                } else {
+                    config["agents"][0]["channels"][0]["groupPermissions"].clone()
+                }
+            };
+            cmd_approve_group(
+                app.handle().clone(),
+                app.state(),
+                app.state(),
+                "channel".into(),
+                "group".into(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(read_group()[0]["status"], "approved");
+            cmd_remove_group(
+                app.handle().clone(),
+                app.state(),
+                app.state(),
+                "channel".into(),
+                "group".into(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(read_group(), json!([]));
+            std::fs::write(&path, serde_json::to_vec(&config).unwrap()).unwrap();
+            cmd_reject_group(
+                app.handle().clone(),
+                app.state(),
+                app.state(),
+                "channel".into(),
+                "group".into(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(read_group(), json!([]));
+            assert!(cmd_approve_group(
+                app.handle().clone(),
+                app.state(),
+                app.state(),
+                "channel".into(),
+                "missing".into()
+            )
+            .await
+            .is_err());
+            assert_eq!(read_group(), json!([]));
+        }
+    }
 }
