@@ -629,7 +629,15 @@ for TARGET in "${BUILD_TARGETS[@]}"; do
     node "${PROJECT_DIR}/scripts/prepare-cuse-bundle.mjs" "$TARGET"
     codesign --force --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" "${PROJECT_DIR}/bundled-skills/cuse/scripts/cuse"
 
-    npm run tauri:build:prepared -- --target "$TARGET" --config "$BUILD_ASSETS_CONFIG"
+    echo -e "  ${CYAN}Apple 公证上传：关闭 S3 加速${NC}"
+    PATH="${PROJECT_DIR}/scripts/macos-notary-tools:$PATH" npm run tauri:build:prepared -- --target "$TARGET" --config "$BUILD_ASSETS_CONFIG"
+
+    # Tauri 2.11.4 does not check stapler's exit status. Confirm the actual ticket
+    # before reporting this target as complete (also catches skipped notarization).
+    TARGET_APP="${PROJECT_DIR}/src-tauri/target/${TARGET}/release/bundle/macos/MyAgents.app"
+    codesign --verify --deep --strict "$TARGET_APP"
+    xcrun stapler validate "$TARGET_APP"
+    spctl --assess --type exec "$TARGET_APP"
 
     echo -e "${GREEN}✓ $TARGET 构建完成${NC}"
 done

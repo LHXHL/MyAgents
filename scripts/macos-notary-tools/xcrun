@@ -1,0 +1,12 @@
+#!/bin/bash
+# Tauri 2.11.4 has no option for notarytool's upload transport. Keep its complete
+# signing/notarization/stapling pipeline, changing only the submit arguments.
+# This directory is on PATH only for the formal macOS build invocation.
+# See specs/tech_docs/build_resource_preparation.md#macos-公证上传
+if [[ "${1:-}" == "notarytool" && "${2:-}" == "submit" ]]; then
+    set -- "$@" --no-s3-acceleration
+fi
+
+# Use the system executable directly: resolving xcrun through PATH recurses.
+# exec preserves stdout (Tauri parses JSON), stderr, exit status and signals.
+exec "/usr/bin/xcrun" "$@"
