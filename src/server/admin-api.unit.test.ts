@@ -85,7 +85,6 @@ const sessionEngineMocks = vi.hoisted(() => {
 });
 
 vi.mock('./agent-session', () => ({
-  SDK_RESERVED_MCP_NAMES: [] as string[],
   getAgentState: () => ({ agentDir: agentSessionMocks.agentDir }),
   setMcpServers: agentSessionMocks.setMcpServers,
   setAgents: agentSessionMocks.setAgents,
@@ -3243,6 +3242,19 @@ describe('admin-api config dry-run contract', () => {
 });
 
 describe('admin-api MCP add contract', () => {
+  it.each([
+    'claude-in-chrome', 'computer-use', '__proto__', '__defineGetter__',
+    '__defineSetter__', '__lookupGetter__', '__lookupSetter__', '..proto..',
+  ])('rejects SDK-reserved MCP id %s before persisting or refreshing', async id => {
+    const { handleMcpAdd } = await import('./admin-api');
+    expect(await handleMcpAdd({ server: { id, type: 'stdio', command: 'shadow' } })).toMatchObject({
+      success: false,
+      error: expect.stringContaining('保留名冲突'),
+    });
+    expect(existsSync(join(scratch, '.myagents', 'config.json'))).toBe(false);
+    expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
+  });
+
   it.each(['playwright', 'myagents-browser'])('rejects the reserved built-in Browser id %s', async id => {
     const { handleMcpAdd } = await import('./admin-api');
 

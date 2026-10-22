@@ -132,6 +132,8 @@ SDK `result.modelUsage` 是按模型累计的快照；0.3.277 起恢复和 fork 
 
 Builtin 的 `messageGenerator()` 是常驻 generator。配置需要重建 Query 时，经既有 abort / restart 路径处理，并沿用 metadata 中的 SDK identity 与 resume 决策。Pre-warm 创建的真实 SDK session 会被后续复用，初始化不能只放在非 pre-warm 分支。
 
+Claude 推理强度是可热更新的 Query 设置：config owner 保存 desired 值，lifecycle owner 按 exact Query 串行执行 `applyFlagSettings({ effortLevel })` 并记录已确认的有效值。空闲切换等待控制回执；已有 active/promoted turn 时只更新 desired，在下一轮最终 admission 前完成设置。Realtime 输入加入当前 turn 时保持该轮设置，切换不触发 Query 重启。`default` 显式发送 `null`，恢复模型默认；省略字段不能撤销先前覆盖。控制失败或 Query replacement 不得把旧回执当作生效证明，未通过设置检查的输入不能进入 SDK。OpenAI bridge 保持既有逐请求解析路径。
+
 每次 SDK Query launch 都有只属于该 Query object 的 identity authority。`system_init` 只有在 authority 未撤销、Product binding 未改变且 SDK Session id 与启动期望相同时，才可更新 metadata。旧 Query、旧 generation 或未知 identity 的迟到事件一律丢弃。
 
 desktop 连续发送支持 realtime 与 turn-boundary 两种策略，但两者仍共享同一个 Runtime queue owner。Stop 中止当前 turn，不凭空取消 SDK 已接纳但尚未消费的项；queue receipt、replay 或 assistant-start 才能确认后续项的真实状态。

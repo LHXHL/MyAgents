@@ -601,6 +601,7 @@ describe('materializePendingDesktopSession rollback guard', () => {
         close: vi.fn(),
         mcpServerStatus: vi.fn(async () => []),
         setModel: vi.fn(async () => undefined),
+        applyFlagSettings: vi.fn(async () => undefined),
         setPermissionMode: vi.fn(async () => undefined),
         setMcpServers: vi.fn(async () => undefined),
       });

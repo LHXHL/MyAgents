@@ -4,14 +4,13 @@ import { OFFICIAL_DEEPSEEK_ANTHROPIC_BASE_URL } from './integrated-runtimes/prov
 //
 // Issue #324: expose per-session control over the provider's reasoning-depth
 // knob. One UI selector, three wire mappings:
-//   - builtin + Anthropic-protocol → Claude Agent SDK `query({ effort })`
+//   - builtin + Anthropic-protocol → Claude Agent SDK effort / applyFlagSettings
 //   - builtin + OpenAI-protocol   → OpenAI bridge injects `reasoning_effort`
 //     (chat_completions) / `reasoning.effort` (responses)
 //   - external runtimes           → Claude Code `--effort`, Codex `turn/start.effort`
 //
-// 'default' = follow provider/runtime default = the pre-#324 behavior (builtin
-// keeps SDK effort 'high', which the Anthropic API defines as identical to
-// omitting the parameter; the OpenAI bridge omits reasoning fields entirely).
+// 'default' = follow provider/runtime default. Builtin Claude explicitly resets
+// to the model default; the OpenAI bridge omits reasoning fields entirely.
 //
 // Storage convention: session snapshot / agent config persist the LITERAL
 // string 'default'. That keeps the `sessionMeta.x ?? agent.x` fallback chain

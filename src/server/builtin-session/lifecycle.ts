@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Query, SDKBackgroundTasksChangedMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { SystemInitInfo } from '../../shared/types/system';
+import type { SdkEffortLevel } from '../../shared/reasoningEffort';
 import { compareBackgroundTaskRuns } from '../../shared/backgroundTaskRun';
 import {
   MCP_PREWARM_GRACE_MS,
@@ -80,10 +81,19 @@ let systemInitAuthority: BuiltinQueryAuthority | null = null;
 let sdkControlReady = false;
 let liveRevision = 0;
 let sessionMutationBarrier: Promise<void> | null = null;
+let queryEffortOwner: {
+  query: Query;
+  effective: SdkEffortLevel | null | undefined;
+  tail: Promise<void>;
+  retired: Promise<void>;
+  retire(): void;
+} | null = null;
 
 function replaceQuerySession(session: Query | null): void {
   if (querySession === session) return;
   const previousQuery = querySession;
+  queryEffortOwner?.retire();
+  queryEffortOwner = null;
   queryAuthorityRecord?.revoke();
   queryAuthorityRecord = null;
   resetControlPlaneState();
@@ -183,6 +193,42 @@ export function getQuerySession(): Query | null {
 
 export function getQueryGeneration(): number {
   return queryGeneration;
+}
+
+/** Seed the exact Query's spawn setting; undefined must explicitly reset model default. */
+export function initializeQueryReasoningEffort(query: Query, effort: SdkEffortLevel | undefined): void {
+  if (querySession !== query || queryEffortOwner?.query === query) return;
+  let retire!: () => void;
+  const retired = new Promise<void>(resolve => { retire = resolve; });
+  queryEffortOwner = { query, effective: effort, tail: Promise.resolve(), retired, retire };
+}
+
+/** Serialize flag writes and reject stale acknowledgements before admission can use them. */
+export function applyQueryReasoningEffort(query: Query, effort: SdkEffortLevel | null): Promise<void> {
+  initializeQueryReasoningEffort(query, undefined);
+  const owner = queryEffortOwner;
+  if (!owner || owner.query !== query || querySession !== query) {
+    return Promise.reject(new Error('Query was replaced before reasoning effort could be applied'));
+  }
+  const assertCurrent = () => {
+    if (queryEffortOwner !== owner || querySession !== query || abortRequested) {
+      throw new Error('Query was replaced or stopped while applying reasoning effort');
+    }
+  };
+  const operation = owner.tail.catch(() => undefined).then(async () => {
+    assertCurrent();
+    if (owner.effective === effort) return;
+    // A rejected control acknowledgement cannot prove the native setting stayed unchanged.
+    owner.effective = undefined;
+    await Promise.race([
+      query.applyFlagSettings({ effortLevel: effort }),
+      owner.retired.then(() => { throw new Error('Query was replaced while applying reasoning effort'); }),
+    ]);
+    assertCurrent();
+    owner.effective = effort;
+  });
+  owner.tail = operation;
+  return operation;
 }
 
 export function hasQuerySession(): boolean {
@@ -518,6 +564,7 @@ export function isAbortRequested(): boolean {
 }
 
 export function requestAbort(): void {
+  queryEffortOwner?.retire();
   queryAuthorityRecord?.revoke();
   resetControlPlaneState();
   abortRequested = true;
@@ -764,6 +811,8 @@ export function snapshotLifecycle(): BuiltinLifecycleSnapshot {
 }
 
 export function resetLifecycleForTest(): void {
+  queryEffortOwner?.retire();
+  queryEffortOwner = null;
   for (const waiter of queryExitWaiters) waiter.resolve();
   queryExitWaiters.clear();
   queryMcpMutationOwner?.settle({

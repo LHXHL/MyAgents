@@ -50,7 +50,7 @@ import {
   removeCustomMcpServerCascade,
   McpRemovalError,
 } from './services/mcp-removal';
-import { SDK_RESERVED_MCP_NAMES } from './agent-session';
+import { SDK_RESERVED_MCP_NAMES } from './sdk-builtin-tools';
 import {
   findMissingEnvKeys,
   findPathCollision,

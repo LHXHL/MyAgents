@@ -81,7 +81,6 @@ export function macNativePathPolicy(platform) {
     ]),
     helperPaths: new Set([
       `${root}/codex-path/rg`,
-      `${root}/codex-resources/zsh/bin/zsh`,
     ]),
   };
 }

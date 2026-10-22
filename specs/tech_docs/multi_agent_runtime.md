@@ -273,6 +273,8 @@ Renderer 对 MCP 只提交 ID intent；Sidecar 必须重新读取 command/env/ur
 
 动态工具目录绑定 native thread birth 和 process generation。未知、已删除、参数无效、重复或 stale tool call 只失败该调用；不得因 catalog 漂移清空 transcript、制造空 thread 或建立第二套 Agent loop。
 
+Managed Codex 的 Host 调用与审批也受原生 `dynamicToolCall` item terminal 约束。Codex 0.163 可取消单个 Code Mode cell 而保留 root turn；adapter 必须按当前 process 内的 `threadId + turnId + callId` 精确匹配，复用 `abortPendingHostCall` 取消 signal、释放审批并丢弃迟到结果。子线程、旧 turn 或其他 item 的完成不能释放当前调用；已经正常响应的调用不重复结算。原生 item wire 的失败结果以 `status` / `success` / `contentItems` 表达，不从底层 event 猜测额外字段。
+
 Project Skill resolver 默认依次合并 `.claude/skills` 与 `.agents/skills`；相同有效 folder 由前者获胜，invalid candidate 不遮蔽后根。Managed Codex 按 exact native path 禁用未进入 effective inventory 的 `.agents/skills` 候选，选中项仍由原生 parser 读取。全局兼容投影继续只维护 `.claude/skills`，不建立第二套用户级目录。
 
 ## 8. Skill、Command 与工具能力

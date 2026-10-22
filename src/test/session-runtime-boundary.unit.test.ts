@@ -26,7 +26,7 @@ describe('Session Runtime configuration import boundary', () => {
   });
 
   it('allows the selected engine and SDK read-only imports in Admin handlers', async () => {
-    const code = "import { getSessionEngine } from './session-engine';\nimport { getSidecarPort, SDK_RESERVED_MCP_NAMES } from './agent-session';";
+    const code = "import { getSessionEngine } from './session-engine';\nimport { getSidecarPort } from './agent-session';\nimport { SDK_RESERVED_MCP_NAMES } from './sdk-builtin-tools';";
     expect(await boundaryErrors(code, 'src/server/admin-api.ts')).toEqual([]);
   });
 
