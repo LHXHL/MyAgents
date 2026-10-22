@@ -234,3 +234,52 @@ describe("DSH ModelExecutionProfile compiler", () => {
     expect(fallback.effort).toBeUndefined();
   });
 });
+
+describe('DSH explicit conversation updates', () => {
+  it.each([
+    ['anthropic:messages', 'anthropic-messages', 'in-history', 'supportsMidConvoToolChanges'],
+    ['openai:chat-completions', 'openai-completions', 'addition-only', 'supportsMidConvoToolAdditions'],
+    ['openai:responses', 'openai-responses', 'additional-tools', 'supportsAdditionalTools'],
+    ['openai:responses', 'openai-responses', 'tool-search', 'supportsToolSearch'],
+  ] as const)('maps only the selected %s model declaration using %s/%s', (protocol, family, tools, wireFlag) => {
+    const provider = preset('tokendance');
+    const model = provider.models[0];
+    model.supportedProtocols = [protocol];
+    model.conversationUpdates = { [protocol]: { systemPrompt: 'in-history', tools } };
+    const original = JSON.stringify(provider);
+    const profile = compileDshModelExecutionProfile({ provider, modelId: model.model });
+    expect(profile.api).toBe(family);
+    expect(profile.compatibility?.wireCompat).toMatchObject({ supportsMidConvoSystemMessages: true, [wireFlag]: true });
+    const otherFlags = ['supportsMidConvoToolChanges', 'supportsMidConvoToolAdditions', 'supportsAdditionalTools', 'supportsToolSearch']
+      .filter(flag => flag !== wireFlag);
+    for (const flag of otherFlags) expect(profile.compatibility?.wireCompat).not.toHaveProperty(flag);
+    expect(JSON.stringify(provider)).toBe(original);
+    expect(Object.isFrozen(profile.compatibility?.wireCompat)).toBe(true);
+    model.conversationUpdates = {};
+    const undeclared = compileDshModelExecutionProfile({ provider, modelId: model.model });
+    expect(undeclared.compatibility?.wireCompat ?? {}).not.toHaveProperty('supportsMidConvoSystemMessages');
+    expect(undeclared.revision).not.toBe(profile.revision);
+  });
+
+  it('does not inherit another transport or another model capability', () => {
+    const provider = preset('zhipu-ai');
+    provider.models[0].conversationUpdates = { 'anthropic:messages': { systemPrompt: 'in-history', tools: 'in-history' } };
+    const selected = provider.models[0].model;
+    provider.models.push({ model: 'separate', modelName: 'Other', modelSeries: 'test',
+      conversationUpdates: { 'openai:chat-completions': { systemPrompt: 'in-history', tools: 'addition-only' } } });
+    expect(compileDshModelExecutionProfile({ provider, modelId: selected }).compatibility?.wireCompat ?? {})
+      .not.toHaveProperty('supportsMidConvoSystemMessages');
+  });
+
+  it.each([
+    { systemPrompt: 'in-history', tools: 'in-history' },
+    { tools: 'addition-only' },
+    { systemPrompt: 'prefix-only' },
+    { systemPrompt: 'in-history', unknown: true },
+  ])('rejects unsupported or incomplete chat declaration %j', declaration => {
+    const provider = preset('zhipu-ai');
+    provider.models[0].conversationUpdates = { 'openai:chat-completions': declaration } as never;
+    expect(() => compileDshModelExecutionProfile({ provider, modelId: provider.models[0].model }))
+      .toThrowError(expect.objectContaining({ code: 'model-capabilities-invalid' }));
+  });
+});

@@ -689,3 +689,23 @@ describe('Managed Codex provider readiness', () => {
     expect(providers[0].runtimeReady).toBe(true);
   });
 });
+
+describe('model conversation update authority', () => {
+  const model = { model: 'exact-model', modelName: 'Model', modelSeries: 'test' };
+  const curated = { ...model, conversationUpdates: { 'openai:responses': { systemPrompt: 'in-history' as const, tools: 'additional-tools' as const } } };
+  const alternative = { 'openai:responses': { systemPrompt: 'in-history' as const, tools: 'tool-search' as const } };
+
+  it('preserves curated declarations against discovered replacements and fills absent declarations', () => {
+    expect(mergePresetModelWithCustomEntry(curated, { ...model, source: 'discovered', conversationUpdates: alternative }).conversationUpdates)
+      .toEqual(curated.conversationUpdates);
+    expect(mergePresetModelWithCustomEntry(model, { ...model, source: 'discovered', conversationUpdates: alternative }).conversationUpdates)
+      .toEqual(alternative);
+  });
+
+  it('honors explicit manual declaration changes and explicit removal without restoring the preset', () => {
+    expect(mergePresetModelWithCustomEntry(curated, { ...model, source: 'manual', conversationUpdates: alternative }).conversationUpdates)
+      .toEqual(alternative);
+    expect(mergePresetModelWithCustomEntry(curated, { ...model, source: 'manual', conversationUpdates: {} }).conversationUpdates)
+      .toEqual({});
+  });
+});

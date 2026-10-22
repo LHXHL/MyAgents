@@ -280,13 +280,15 @@ function harness(
 }
 
 describe("DSH RuntimeProcessHost", () => {
-  it.each(['configApply', 'turnStart'])('retires a fenced generation rejected by %s without retrying the request', async method => {
+  it.each([
+    ['configApply', 'config/apply'], ['turnStart', 'turn/start'],
+    ['turnGet', 'turn/get'], ['runtimeStatus', 'runtime/status'],
+  ] as const)('retires a fenced generation rejected by %s without retrying the request', async (method, request) => {
     const test = harness();
     await test.host.start();
     const error = new TestProtocolError('session_recovery_required', 'product-operation durability became uncertain');
     const call = vi.fn().mockRejectedValue(error);
     test.clientRecord[method] = call;
-    const request = method === 'configApply' ? 'config/apply' : 'turn/start';
     await expect(test.host.request(request, {} as never)).rejects.toBe(error);
     expect(test.host.state).toBe('failed');
     expect(test.failures).toEqual([error]);
