@@ -824,16 +824,22 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
         { id: 'fixture-create-call', name: 'TaskCreate', input: { subject: 'Verify approval progress', description: 'Synthetic native regression' } },
         { id: 'fixture-update-call', name: 'TaskUpdate', input: { taskId: 'task-1', status: 'completed' } },
         { id: 'fixture-skill-call', name: 'Skill', input: { skill: 'permission-review' } },
-        { id: 'fixture-agent-call', name: 'Agent', input: { subagent_type: 'permission-helper', description: 'Verify child approval', prompt: 'Return the synthetic fixture completion.', run_in_background: false } },
+        { id: 'fixture-agent-call', name: 'subagent', input: { description: 'Verify child approval', prompt: 'Return the synthetic fixture completion.' } },
         { id: 'fixture-child-inherited-call', name: 'bash', input: { command: 'printf inherited-child', workdir: 'child', description: 'Verify the shared directory grant' } },
         { id: 'fixture-child-review-call', name: 'bash', input: { command: `printf approved-child; ${curl} http://dsh-shell-fixture.invalid/child`, description: 'Verify child approval at another directory' } },
-        undefined, // The foreground child completes before the root continues.
         { id: 'fixture-question-call', name: 'AskUserQuestion', input: { questions: [0, 1, 2].map(index => ({ header: `Step ${index}`, question: `Choose synthetic step ${index}`, options: [{ label: 'Continue', description: 'Complete the fixture' }, { label: 'Stop', description: 'Stop the fixture' }, { label: 'Review, then continue', description: 'Review first' }, { label: 'Later', description: 'Defer' }], multiSelect: index === 1 })) } },
         { id: 'fixture-enter-plan-call', name: 'EnterPlanMode', input: {} },
         { id: 'fixture-plan-write-call', name: 'write', input: { file_path: '', content: '# Synthetic plan\n\nVerify permission continuity.\n' } },
         { id: 'fixture-plan-shell-call', name: 'bash', input: { command: 'printf plan-shell-research', workdir: 'child', description: 'Inspect while Plan mode is active' } },
         { id: 'fixture-exit-plan-call', name: 'ExitPlanMode', input: {} },
       ];
+      const childCalls = calls.filter(call => call.id.startsWith('fixture-child-'));
+      const rootCalls = calls.filter(call => !childCalls.includes(call));
+      type ModelCredential = Extract<MethodParams<'host/credential/resolve'>, { subject: 'provider'; purpose: 'model_request' }>;
+      const modelCredentials = new Map<string, ModelCredential>();
+      const wireCredentials: ModelCredential[] = [];
+      const modelFixtureErrors: unknown[] = [];
+      let rootAwaitedChild = false;
       let requests = 0;
       let childSystemPrompt = '';
       let planSystemPrompt = '';
@@ -867,41 +873,69 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
           response.end('shell-loopback-ok');
           return;
         }
-        const chunks: Buffer[] = [];
-        for await (const chunk of request) chunks.push(Buffer.from(chunk));
-        const modelRequest = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { messages: { content: unknown }[]; system?: unknown };
-        for (const block of modelRequest.messages.flatMap(message => Array.isArray(message.content) ? message.content as { type: string; tool_use_id?: string; content?: unknown; is_error?: boolean }[] : [])) {
-          if (block.type === 'tool_result' && block.tool_use_id) modelToolResults.set(block.tool_use_id, block);
-          if (block.type === 'tool_result' && (block.tool_use_id === 'fixture-child-inherited-call' || block.tool_use_id === 'fixture-child-review-call')) childResults.set(block.tool_use_id, block);
+        try {
+          const chunks: Buffer[] = [];
+          for await (const chunk of request) chunks.push(Buffer.from(chunk));
+          const authorization = request.headers['x-api-key'];
+          const credential = typeof authorization === 'string' ? modelCredentials.get(authorization) : undefined;
+          if (!credential) throw new Error('Model request has no exact credential authority');
+          expect(wireCredentials.some(value => value.modelRequestId === credential.modelRequestId)).toBe(false);
+          wireCredentials.push(credential);
+          const isChild = credential.authority.rootCallId?.startsWith('child-model-') === true;
+          const modelRequest = JSON.parse(Buffer.concat(chunks).toString('utf8')) as {
+            model: string; messages: { role: string; content: string | { type: string; text?: string; tool_use_id?: string; content?: unknown; is_error?: boolean }[] }[];
+            system?: unknown; tools?: { name: string }[];
+          };
+          const userBlocks = modelRequest.messages.filter(message => message.role === 'user')
+            .flatMap(message => typeof message.content === 'string' ? [{ type: 'text', text: message.content }] : message.content);
+          const completed = new Set(userBlocks.filter(block => block.type === 'tool_result').map(block => block.tool_use_id));
+          const childDelivered = userBlocks.some(block => block.type === 'text' && block.text?.includes('Fixture child complete.'));
+          expect(modelRequest.model).toBe('claude-sonnet-4-6');
+          expect(credential.authority.clientOperationId).toBe('native-shell-review-turn');
+          expect(credential.authority.dshTurn).toBe(childDelivered && !isChild ? 2 : 1);
+          expect(modelRequest.tools?.some(tool => tool.name === 'bash')).toBe(true);
+          for (const block of userBlocks) {
+            if (block.type === 'tool_result' && block.tool_use_id) modelToolResults.set(block.tool_use_id, block);
+            if (block.type === 'tool_result' && (block.tool_use_id === 'fixture-child-inherited-call' || block.tool_use_id === 'fixture-child-review-call')) childResults.set(block.tool_use_id, block);
+          }
+          // Native children execute independently. Only this request's owner and
+          // completed history choose its next response; network ordering cannot.
+          const waitingForChild = !isChild && completed.has('fixture-agent-call') && !childDelivered;
+          const tool = waitingForChild ? undefined : (isChild ? childCalls : rootCalls).find(call => !completed.has(call.id));
+          if (waitingForChild) rootAwaitedChild = true;
+          requests++;
+          if (tool?.id === 'fixture-child-inherited-call') childSystemPrompt = JSON.stringify({ system: modelRequest.system, messages: modelRequest.messages });
+          if (tool?.id === 'fixture-plan-shell-call') planSystemPrompt = JSON.stringify({ system: modelRequest.system, messages: modelRequest.messages });
+          if (tool?.id === 'fixture-question-call') resumedRootInput = JSON.stringify(modelRequest.messages);
+          let input: Record<string, unknown> | undefined = tool?.input;
+          if (tool?.id === 'fixture-spill-read') {
+            const content = modelToolResults.get('fixture-spill-64001')?.content;
+            const text = typeof content === 'string' ? content : (content as { text: string }[]).map(block => block.text).join('');
+            const path = /\[output truncated; full output: (.+)\]/.exec(text)?.[1];
+            input = { ...tool.input, file_path: path ?? 'missing-spill-path' };
+          }
+          if (tool?.id === 'fixture-plan-write-call') {
+            const planResult = modelRequest.messages.flatMap(message => Array.isArray(message.content) ? message.content as { type: string; tool_use_id?: string; content?: unknown }[] : [])
+              .find(block => block.type === 'tool_result' && block.tool_use_id === 'fixture-enter-plan-call');
+            const content = planResult?.content;
+            const text = typeof content === 'string' ? content : (content as { text: string }[]).map(block => block.text).join('');
+            const plan = JSON.parse(text) as { planPath: string };
+            input = { ...tool.input, file_path: plan.planPath };
+          }
+          const emit = (event: string, data: unknown) => response.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+          response.writeHead(200, { 'content-type': 'text/event-stream' });
+          emit('message_start', { type: 'message_start', message: { id: `fixture-message-${requests}`, type: 'message', role: 'assistant', model: 'claude-sonnet-4-6', content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 0 } } });
+          emit('content_block_start', { type: 'content_block_start', index: 0, content_block: tool ? { type: 'tool_use', id: tool.id, name: tool.name, input: {} } : { type: 'text', text: '' } });
+          emit('content_block_delta', { type: 'content_block_delta', index: 0, delta: tool ? { type: 'input_json_delta', partial_json: JSON.stringify(input) } : { type: 'text_delta', text: isChild ? 'Fixture child complete.' : waitingForChild ? 'Waiting for child completion.' : 'Fixture complete.' } });
+          emit('content_block_stop', { type: 'content_block_stop', index: 0 });
+          emit('message_delta', { type: 'message_delta', delta: { stop_reason: tool ? 'tool_use' : 'end_turn', stop_sequence: null }, usage: { output_tokens: 10 } });
+          emit('message_stop', { type: 'message_stop' });
+          response.end();
+        } catch (error) {
+          modelFixtureErrors.push(error);
+          response.writeHead(500, { 'content-type': 'application/json' });
+          response.end(JSON.stringify({ error: { type: 'api_error', message: 'Synthetic model fixture assertion failed' } }));
         }
-        const tool = calls[requests++];
-        if (tool?.id === 'fixture-child-inherited-call') childSystemPrompt = JSON.stringify({ system: modelRequest.system, messages: modelRequest.messages });
-        if (tool?.id === 'fixture-plan-shell-call') planSystemPrompt = JSON.stringify({ system: modelRequest.system, messages: modelRequest.messages });
-        if (tool?.id === 'fixture-question-call') resumedRootInput = JSON.stringify(modelRequest.messages);
-        let input: Record<string, unknown> | undefined = tool?.input;
-        if (tool?.id === 'fixture-spill-read') {
-          const content = modelToolResults.get('fixture-spill-64001')?.content;
-          const text = typeof content === 'string' ? content : (content as { text: string }[]).map(block => block.text).join('');
-          const path = /\[output truncated; full output: (.+)\]/.exec(text)?.[1];
-          input = { ...tool.input, file_path: path ?? 'missing-spill-path' };
-        }
-        if (tool?.id === 'fixture-plan-write-call') {
-          const planResult = modelRequest.messages.flatMap(message => Array.isArray(message.content) ? message.content as { type: string; tool_use_id?: string; content?: unknown }[] : [])
-            .find(block => block.type === 'tool_result' && block.tool_use_id === 'fixture-enter-plan-call');
-          const content = planResult?.content;
-          const text = typeof content === 'string' ? content : (content as { text: string }[]).map(block => block.text).join('');
-          const plan = JSON.parse(text) as { planPath: string };
-          input = { ...tool.input, file_path: plan.planPath };
-        }
-        const emit = (event: string, data: unknown) => response.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-        response.writeHead(200, { 'content-type': 'text/event-stream' });
-        emit('message_start', { type: 'message_start', message: { id: `fixture-message-${requests}`, type: 'message', role: 'assistant', model: 'claude-sonnet-4-6', content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 10, output_tokens: 0 } } });
-        emit('content_block_start', { type: 'content_block_start', index: 0, content_block: tool ? { type: 'tool_use', id: tool.id, name: tool.name, input: {} } : { type: 'text', text: '' } });
-        emit('content_block_delta', { type: 'content_block_delta', index: 0, delta: tool ? { type: 'input_json_delta', partial_json: JSON.stringify(input) } : { type: 'text_delta', text: 'Fixture complete.' } });
-        emit('content_block_stop', { type: 'content_block_stop', index: 0 });
-        emit('message_delta', { type: 'message_delta', delta: { stop_reason: tool ? 'tool_use' : 'end_turn', stop_sequence: null }, usage: { output_tokens: 10 } });
-        emit('message_stop', { type: 'message_stop' });
-        response.end();
       });
       await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
       const address = server.address();
@@ -924,9 +958,15 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
       const events: Record<string, unknown>[] = [];
       const host = fixture.createHost({
         ...fixture.hostHandlers,
-        'host/credential/resolve': params => params.purpose === 'availability'
-          ? { kind: 'availability', available: true, authoritativeCredentialRevision: params.profileRevision }
-          : { kind: 'material', authoritativeCredentialRevision: params.profileRevision, material: { apiKey: 'synthetic-native-model-key' } },
+        'host/credential/resolve': raw => {
+          const params = raw as MethodParams<'host/credential/resolve'>;
+          if (params.subject !== 'provider') throw new Error('Unexpected fixture credential subject');
+          if (params.purpose === 'availability') return { kind: 'availability', available: true, authoritativeCredentialRevision: params.profileRevision };
+          const apiKey = `synthetic-native-model-key:${params.modelRequestId}`;
+          expect(modelCredentials.has(apiKey)).toBe(false);
+          modelCredentials.set(apiKey, params);
+          return { kind: 'material', authoritativeCredentialRevision: params.profileRevision, material: { apiKey } };
+        },
         'host/hook/execute': () => ({ state: 'continue' }),
         'host/attachment/put': params => attachments.put(params),
         'host/attachment/acquire': params => attachments.acquire(params),
@@ -973,16 +1013,28 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
         expect(receipt.state).toBe('applied');
         let approvalIndex = 1;
         let expectedRevision = receipt.state === 'applied' ? receipt.effectivePolicyRevision : '';
-        const approveCall = async (callId: string, origin: 'root' | 'foreground_child') => {
+        let nativeChildId: string | undefined;
+        const approveCall = async (callId: string, origin: 'root' | 'background_child') => {
           await expect.poll(() => approvals.length, { timeout: 20_000 }).toBe(approvalIndex + 1);
           const next = approvals[approvalIndex++]!;
           const call = calls.find(candidate => candidate?.id === callId)!;
           expect(next.kind).toBe('permission');
-          expect((next.schema as Record<string, unknown>).tool).toBe(call.name);
+          // Native delegation retains the Product Agent permission category.
+          expect((next.schema as Record<string, unknown>).tool).toBe(call.name === 'subagent' ? 'Agent' : call.name);
           expect(next.review?.actor.origin).toBe(origin);
           expect(next.authority).toMatchObject({ callId: call.id, rootCallId: call.id });
           expect(next.desiredPolicyRevision).toBe(expectedRevision);
           expect(childResults.has(call.id)).toBe(false);
+          if (origin === 'background_child') {
+            await expect.poll(() => rootAwaitedChild, { timeout: 20_000 }).toBe(true);
+            expect((await host.request('turn/get', { clientOperationId: 'native-shell-review-turn' })).terminal).toBeUndefined();
+            const children = await host.request('subagent/list', {});
+            expect(children.items).toHaveLength(1);
+            expect(children.items[0]).toMatchObject({ parentId: binding.runtimeSessionId, depth: 1, mode: 'continuable', label: 'Verify child approval', activity: 'running' });
+            nativeChildId = children.items[0]!.id;
+            expect(next.review?.actor.agentId).toBe(nativeChildId);
+            expect(next.review?.operation).toMatchObject({ kind: 'command', cwd: fixture.workspace });
+          }
           const result = await host.request('interaction/respond', { interactionId: next.interactionId, expectedRevision: next.desiredPolicyRevision, decision: 'allow_once' });
           expect(result.state).toBe('applied');
           if (result.state === 'applied') expectedRevision = result.effectivePolicyRevision;
@@ -1006,7 +1058,7 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
         await approveCall('fixture-update-call', 'root');
         await approveCall('fixture-skill-call', 'root');
         await approveCall('fixture-agent-call', 'root');
-        await approveCall('fixture-child-review-call', 'foreground_child');
+        await approveCall('fixture-child-review-call', 'background_child');
         await answerQuestions();
         await expect.poll(() => approvals.length, { timeout: 20_000 }).toBe(approvalIndex + 1);
         const planApproval = approvals[approvalIndex++]!;
@@ -1025,6 +1077,9 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
         expect(JSON.stringify(childResults.get('fixture-child-review-call')?.content)).toContain('approved-child');
         expect(JSON.stringify(childResults.get('fixture-child-review-call')?.content)).toContain('shell-proxy-ok');
         await expect.poll(async () => (await host.request('turn/get', { clientOperationId: 'native-shell-review-turn' })).terminal !== undefined, { timeout: 20_000 }).toBe(true);
+        expect((await host.request('turn/get', { clientOperationId: 'native-shell-review-turn' })).terminal?.kind).toBe('succeeded');
+        expect((await host.request('subagent/list', {})).items).toEqual([expect.objectContaining({ id: nativeChildId, parentId: binding.runtimeSessionId, activity: 'inactive' })]);
+        expect(modelFixtureErrors).toEqual([]);
         const toolResult = events.find(value => (value.event as Record<string, unknown>)?.kind === 'tool' && (value.event as Record<string, unknown>).phase === 'end');
         expect(toolResult).toBeDefined();
         expect(JSON.stringify(toolResult)).toContain(`${address.port}|${productSessionId}`);
@@ -1035,13 +1090,20 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
         expect(proxyRequests).toEqual(['http://dsh-shell-fixture.invalid/root', 'http://dsh-shell-fixture.invalid/child']);
         expect(JSON.stringify(toolResult)).not.toContain('not sealed');
         const toolResults = events.filter(value => (value.event as Record<string, unknown>)?.kind === 'tool' && (value.event as Record<string, unknown>).phase === 'end');
-        expect(toolResults).toHaveLength(calls.filter(Boolean).length - childResults.size);
+        expect(toolResults.map(result => result.toolCallId)).toEqual(rootCalls.map(call => call.id));
         for (const result of toolResults) expect((result.event as Record<string, unknown>).result).toMatchObject({ isError: false });
         expect(JSON.stringify(toolResults.find(result => result.toolCallId === 'fixture-update-call'))).toContain('completed');
         expect(JSON.stringify(toolResults.at(-1))).toContain('normal');
         expect(JSON.stringify(modelToolResults.get('fixture-question-call'))).toContain('Write locally, then continue');
         expect(JSON.stringify(modelToolResults.get('fixture-question-call'))).toContain('Review, then continue');
-        expect(requests).toBe(calls.length + 1);
+        expect(requests).toBe(calls.length + 3);
+        expect(wireCredentials).toHaveLength(requests);
+        expect(modelCredentials.size).toBe(requests);
+        expect(wireCredentials.filter(value => value.authority.rootCallId?.startsWith('child-model-'))).toHaveLength(childCalls.length + 1);
+        for (const credential of wireCredentials) {
+          expect(credential).toMatchObject({ providerRouteId: profile.providerRouteId, profileRevision: profile.revision, credentialRef: profile.credentialRef });
+          expect(credential.authority).toMatchObject({ productSessionId, runtimeSessionId: binding.runtimeSessionId, clientOperationId: 'native-shell-review-turn', expectedConfigRevision: 'native-shell-review-auto' });
+        }
         expect(planSystemPrompt).toContain('Bash or PowerShell tool only for read-only inspection');
         expect(modelToolResults.get('fixture-plan-shell-call')).toBeDefined();
         expect(modelToolResults.get('fixture-plan-shell-call')?.is_error).not.toBe(true);
@@ -1080,14 +1142,13 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
           : Array.isArray(childInput.system) ? childInput.system.map(block => block.text ?? '').join('\n') : '';
         const childText = [systemText, ...childInput.messages.flatMap(message => typeof message.content === 'string'
           ? [message.content] : message.content.map(block => block.text ?? ''))].join('\n');
-        const identityText = /Your execution identity \(Runtime authority\): (\{[^\n]*\})/.exec(childText)?.[1];
-        expect(identityText).toBeDefined();
-        expect(JSON.parse(identityText!)).toMatchObject({ model: profile.modelId, provider: profile.providerRouteId, role: 'permission-helper', depth: 1, remainingDepth: 0, canDelegate: false });
+        expect(childText).toContain(fixture.workspace);
+        expect(childText).toContain('Approval policy: ask.');
         expect(resumedRootInput).toContain('fixture-agent-call');
+        expect(resumedRootInput).toContain('Fixture child complete.');
         expect(resumedRootInput).not.toContain('activation_completion');
         expect(resumedRootInput).not.toContain('Your execution identity (Runtime authority)');
-        expect(childSystemPrompt).toContain('Product permissions and shared exact grants apply');
-        expect(childSystemPrompt).not.toContain('operations that require approval are rejected automatically');
+        expect(childSystemPrompt).not.toContain('Your execution identity (Runtime authority)');
         // This Provider omits cache buckets, so the native terminal intentionally
         // has no complete usage summary. Reopening must still recover the reply.
         const mutationController = new DshMutationController(host, String(binding.runtimeSessionId));
@@ -1098,8 +1159,9 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
         expect(recovered.assistantTurns).toHaveLength(1);
         expect(recovered.assistantTurns[0]!.assistantMessage.content).toContain('Fixture complete.');
         expect(recovered.assistantTurns[0]!.assistantMessage.usage).toBeUndefined();
+        expect(childSystemPrompt).not.toContain('operations that require approval are rejected automatically');
       } catch (error) {
-        const progress = { requests, results: [...modelToolResults].map(([id, result]) => ({ id, isError: result.is_error, content: JSON.stringify(result.content).slice(0, 1500) })), terminal: await host.request('turn/get', { clientOperationId: 'native-shell-review-turn' }).catch(() => undefined), stderr: fixture.stderr.slice(-5) };
+        const progress = { requests, fixtureErrors: modelFixtureErrors.map(error => error instanceof Error ? error.message : String(error)), results: [...modelToolResults].map(([id, result]) => ({ id, isError: result.is_error, content: JSON.stringify(result.content).slice(0, 1500) })), terminal: await host.request('turn/get', { clientOperationId: 'native-shell-review-turn' }).catch(() => undefined), stderr: fixture.stderr.slice(-5) };
         throw new Error(`Native tool sequence failed: ${JSON.stringify(progress)}`, { cause: error });
       } finally {
         await host.stop();

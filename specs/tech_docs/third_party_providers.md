@@ -20,6 +20,8 @@ MyAgents 把“用户选择哪个 Provider / model”与“执行时如何取得
 
 它只供 Sidecar 当前执行、probe、title/vision one-shot 或 Bridge 使用。新 Session 不能把 materialized API key 写回 session metadata；legacy `providerEnvJson` 只在兼容读取边界使用并在外部 projection 中 redacted / 移除。Agent / IM Channel 配置仍可能维护供后台自启动的兼容 projection，但 `config.json` 的 Provider/API-key 配置仍是 credential authority，projection 不能成为第二份可编辑真相。
 
+逐模型 `conversationUpdates` 保存明确的传输能力声明，随既有 ModelEntity 配置持久化；发现结果只能补充预设缺失项，不能覆盖已维护的能力。手工声明可覆盖，空对象可显式撤销。各 Runtime 在自己的 profile 编译入口只消费支持的已选协议，不按 Provider 品牌自动开启。
+
 ### Runtime-backed Provider
 
 `codex-sub` 是 Provider-shaped 的产品选择，但 execution 实际为 Managed Codex Runtime。它不能 materialize 为 builtin `ProviderEnv`：
