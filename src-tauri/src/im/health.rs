@@ -144,11 +144,13 @@ impl HealthManager {
     pub(crate) async fn persist_active_sessions_snapshot(
         &self,
         sessions: Vec<ImActiveSession>,
+        history: Vec<super::types::PeerSessionHistory>,
     ) -> Result<(), String> {
         let _write_guard = self.persist_write.lock().await;
         let mut state = self.state.lock().await;
         let mut next = state.clone();
         next.active_sessions = sessions;
+        next.peer_session_history = history;
         next.last_persisted = chrono::Utc::now().to_rfc3339();
         // Commit the durable projection before publishing the matching
         // in-memory snapshot. A failed write therefore leaves both authorities
@@ -232,13 +234,16 @@ pub(crate) async fn persist_router_active_sessions(
     context: &str,
 ) -> Result<(), String> {
     let _projection_guard = health.lock_active_sessions_projection().await;
-    let sessions = {
+    let (sessions, history) = {
         let router_guard = router.lock().await;
-        router_guard.active_sessions()
+        (router_guard.active_sessions(), router_guard.peer_history())
     };
     let count = sessions.len();
     let summary = summarize_active_sessions(&sessions);
-    match health.persist_active_sessions_snapshot(sessions).await {
+    match health
+        .persist_active_sessions_snapshot(sessions, history)
+        .await
+    {
         Ok(()) => Ok(()),
         Err(e) => {
             ulog_warn!(
@@ -776,7 +781,7 @@ mod tests {
         staged[0].session_id = "session-b".to_string();
 
         assert!(health
-            .persist_active_sessions_snapshot(staged)
+            .persist_active_sessions_snapshot(staged, Vec::new())
             .await
             .is_err());
         assert_eq!(
@@ -796,7 +801,7 @@ mod tests {
 
         let transition = router.stage_new_session_binding(session_key);
         health
-            .persist_active_sessions_snapshot(router.active_sessions())
+            .persist_active_sessions_snapshot(router.active_sessions(), router.peer_history())
             .await
             .expect("persist pending binding");
 
@@ -833,5 +838,55 @@ mod tests {
             persisted_active_session_ids(&path),
             vec!["persisted-session".to_string()]
         );
+    }
+    #[tokio::test]
+    async fn history_and_current_binding_round_trip_in_one_channel_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let manager = HealthManager::new(path.clone());
+        let mut router = SessionRouter::new_for_agent(PathBuf::from("/tmp/workspace"), "a".into());
+        router.upsert_peer_session(peer("agent:a:feishu:private:user", "first"));
+        router.upsert_peer_session(peer("agent:a:feishu:private:user", "second"));
+        manager
+            .persist_active_sessions_snapshot(router.active_sessions(), router.peer_history())
+            .await
+            .unwrap();
+        let restored = HealthManager::new(path).get_state().await;
+        assert_eq!(restored.active_sessions[0].session_id, "second");
+        assert_eq!(
+            restored.peer_session_history[0].session_ids,
+            vec!["first", "second"]
+        );
+        let mut old = serde_json::to_value(restored).unwrap();
+        old.as_object_mut().unwrap().remove("peerSessionHistory");
+        let legacy: crate::im::types::ImHealthState = serde_json::from_value(old).unwrap();
+        assert!(legacy.peer_session_history.is_empty());
+        assert_eq!(legacy.active_sessions[0].session_id, "second");
+    }
+    #[tokio::test]
+    async fn identical_peer_keys_in_different_bots_persist_independent_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = "agent:a:feishu:group:same-room";
+        for (channel, first, second) in [
+            ("bot-a", "a-first", "a-second"),
+            ("bot-b", "b-first", "b-second"),
+        ] {
+            let path = dir.path().join(channel).join("state.json");
+            let health = HealthManager::new(path.clone());
+            let mut router =
+                SessionRouter::new_for_agent(PathBuf::from("/tmp/workspace"), "a".into());
+            router.upsert_peer_session(peer(key, first));
+            router.upsert_peer_session(peer(key, second));
+            health
+                .persist_active_sessions_snapshot(router.active_sessions(), router.peer_history())
+                .await
+                .unwrap();
+            let state = HealthManager::new(path).get_state().await;
+            assert_eq!(state.active_sessions[0].session_id, second);
+            assert_eq!(
+                state.peer_session_history[0].session_ids,
+                vec![first, second]
+            );
+        }
     }
 }

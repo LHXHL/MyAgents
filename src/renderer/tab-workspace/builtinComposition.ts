@@ -1,3 +1,4 @@
+import { teamAiTabModule } from '@/features/team-ai/tabModule';
 import { agentNetworkTabModule } from '@/features/agent-network/tabModule';
 import { createNewTab, type Tab } from '@/types/tab';
 import type { ModuleBinding, ModuleTab } from '@/tab-workspace/contracts';
@@ -21,6 +22,7 @@ export const builtinTabModules = defineTabModules<Tab>()({
   taskcenter: taskCenterTabModule,
   space: spaceTabModule,
   agentnetwork: agentNetworkTabModule,
+  teamai: teamAiTabModule,
   record: recordTabModule,
 });
 

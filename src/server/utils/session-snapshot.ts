@@ -216,6 +216,29 @@ export function snapshotForImSession(
   };
 }
 
+/** An explicit management switch starts from this Session's saved choices.
+ * CLI model/source/effort remain runtime-owned and are scrubbed by the same
+ * compiler used by ordinary Runtime changes; integrated Provider choices carry.
+ */
+export function snapshotForImRuntimeSwitch(source: SessionMetadata, runtime: RuntimeType): OwnedSessionSnapshot {
+  const integrated = source.runtime === 'builtin' || source.runtime === 'dsh';
+  const agent: AgentConfig = {
+    id: source.id, name: source.title, enabled: true, channels: [],
+    runtime: source.runtime as RuntimeType | undefined,
+    permissionMode: source.permissionMode ?? 'auto',
+    providerId: integrated ? source.providerId : undefined,
+    model: integrated ? source.model : undefined,
+    reasoningEffort: integrated ? source.reasoningEffort : undefined,
+    providerEnvJson: integrated ? source.providerEnvJson : undefined,
+    runtimeConfig: integrated || source.runtimeSource === 'managed-provider' ? undefined : { source: source.runtimeSource, model: source.model, reasoningEffort: source.reasoningEffort },
+    mcpEnabledServers: source.mcpEnabledServers ?? [],
+    enabledPluginIds: source.enabledPluginIds ?? [],
+    enabledOfficialToolIds: source.enabledOfficialToolIds ?? [],
+  };
+  return snapshotForImSession(agent, { runtimeOverride: runtime,
+    runtimeSourceOverride: runtime === 'codex' || runtime === 'claude-code' ? 'system-cli' : undefined });
+}
+
 /**
  * Desktop Tab / Cron owner — full-snapshot policy (D2, D3, D9).
  *

@@ -167,7 +167,10 @@ where
     let old_session_id = transition.old_session_id().map(str::to_string);
 
     if let Err(error) = health
-        .persist_active_sessions_snapshot(router_guard.active_sessions())
+        .persist_active_sessions_snapshot(
+            router_guard.active_sessions(),
+            router_guard.peer_history(),
+        )
         .await
     {
         let rolled_back = router_guard.rollback_peer_binding_transition(&transition);
@@ -902,7 +905,9 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
             None => SessionRouter::new(default_workspace),
         };
         // Restore peer→session mapping from previous run's im_state.json
-        let prev_sessions = health.get_state().await.active_sessions;
+        let previous = health.get_state().await;
+        r.restore_peer_history(previous.peer_session_history);
+        let prev_sessions = previous.active_sessions;
         r.restore_sessions(&prev_sessions).await;
         Arc::new(Mutex::new(r))
     };
@@ -1068,7 +1073,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
         let changed = router.reconcile_protocol_bindings(&config.platform, &platform)?;
         if changed > 0 {
             health
-                .persist_active_sessions_snapshot(router.active_sessions())
+                .persist_active_sessions_snapshot(router.active_sessions(), router.peer_history())
                 .await?;
             ulog_info!(
                 "[im] Reconciled {} Channel protocol binding(s) for {}",

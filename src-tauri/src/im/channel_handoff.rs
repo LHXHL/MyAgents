@@ -256,7 +256,10 @@ impl ChannelOwner {
                 peer.source_display_name = Some(name.clone());
                 router.upsert_peer_session(peer);
                 self.health
-                    .persist_active_sessions_snapshot(router.active_sessions())
+                    .persist_active_sessions_snapshot(
+                        router.active_sessions(),
+                        router.peer_history(),
+                    )
                     .await?;
             }
         }

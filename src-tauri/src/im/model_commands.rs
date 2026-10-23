@@ -501,7 +501,7 @@ pub(super) async fn ensure_peer_snapshot(
     }
     let transition = router.stage_materialized_session_binding(session_key, &target);
     if let Err(error) = health
-        .persist_active_sessions_snapshot(router.active_sessions())
+        .persist_active_sessions_snapshot(router.active_sessions(), router.peer_history())
         .await
     {
         router.rollback_peer_binding_transition(&transition);
@@ -543,7 +543,7 @@ async fn mark_owned_peer(
     owned.metadata_birth_pending = false;
     router.upsert_peer_session(owned);
     if let Err(error) = health
-        .persist_active_sessions_snapshot(router.active_sessions())
+        .persist_active_sessions_snapshot(router.active_sessions(), router.peer_history())
         .await
     {
         router.upsert_peer_session(prior);

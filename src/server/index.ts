@@ -647,7 +647,7 @@ import {
 import { createGlobalSkillInventorySnapshot } from './global-skill-inventory';
 import { isManagedSymlink } from './utils/project-user-config-sync';
 import { managementApi } from './utils/management-api-client';
-import { snapshotForOwnedSession, snapshotForImSession } from './utils/session-snapshot';
+import { snapshotForOwnedSession, snapshotForImSession, snapshotForImRuntimeSwitch } from './utils/session-snapshot';
 import {
   isManagedCodexProviderReady,
   managedCodexNotReadyMessage,
@@ -719,7 +719,8 @@ import { handleSessionEngineRuntimeRoute } from './routes/session-engine-runtime
 import { handleSessionReadRoute } from './routes/session-read';
 import { handleChatStreamRoute } from './routes/chat-stream';
 import { handleSessionConfigRoute } from './routes/session-config';
-import { handleImModelRoute } from './routes/im-model-selection';
+import { handleImModelRoute, imSnapshotObservation } from './routes/im-model-selection';
+import { handleTeamSessionConfigRoute } from './routes/team-session-config';
 import { handleSessionOperationRoute } from './routes/session-operations';
 import {
   handleGoalExecuteSyncRoute,
@@ -3843,6 +3844,8 @@ async function main() {
           origin?: unknown;
           prepareForFirstUserMessage?: boolean;
           materializationSourceSessionId?: string;
+          runtimeSwitchSourceSessionId?: string;
+          runtimeSwitchObservation?: string;
         };
         let payload: CreateSessionPayload;
         try {
@@ -3961,7 +3964,15 @@ async function main() {
         const agent = findProjectAgentByWorkspacePath(agentDirValue) as
           | AgentConfig
           | undefined;
-        const baseSnapshot: Partial<SessionMetadata> = agent
+        const switchSource = payload.runtimeSwitchSourceSessionId ? getSessionMetadata(payload.runtimeSwitchSourceSessionId) : undefined;
+        if (payload.runtimeSwitchSourceSessionId && (!switchSource?.configSnapshotAt || !runtimeValue
+          || !workspacePathsEqual(switchSource.agentDir, agentDirValue)
+          || imSnapshotObservation(switchSource) !== payload.runtimeSwitchObservation)) {
+          return jsonResponse({ success: false, error: 'Runtime switch source changed; refresh before continuing.' }, 409);
+        }
+        const baseSnapshot: Partial<SessionMetadata> = switchSource && runtimeValue
+          ? snapshotForImRuntimeSwitch(switchSource, runtimeValue)
+          : agent
           ? (payloadOrigin?.kind === 'agent-channel' ? snapshotForImSession : snapshotForOwnedSession)(agent, {
               runtimeOverride: runtimeValue,
               runtimeSourceOverride: runtimeSourceValue,
@@ -5356,6 +5367,8 @@ async function main() {
 
       // ============= END PROVIDER VERIFICATION API =============
 
+      const teamConfigResponse = await handleTeamSessionConfigRoute(pathname, request);
+      if (teamConfigResponse) return teamConfigResponse;
       const imModelRouteResponse = await handleImModelRoute(pathname, request);
       if (imModelRouteResponse) return imModelRouteResponse;
 

@@ -176,7 +176,7 @@ describe('persisted Project catalog invalidation', () => {
     expect(projectCatalogChanged([existing], [])).toBe(true);
     for (const patch of [{ agentId: 'agent-1' }, { hidden: true }, { internal: true },
       { archivedAt: '2026-10-02T00:00:00Z' }, { agentNetworkExposureRevision: 1 },
-      { icon: 'lightning' }, { name: 'Renamed' }, { path: '/tmp/relocated' }]) {
+      { purpose: 'team-ai' as const }, { icon: 'lightning' }, { name: 'Renamed' }, { path: '/tmp/relocated' }]) {
       expect(projectCatalogChanged([existing], [{ ...existing, ...patch }])).toBe(true);
     }
   });

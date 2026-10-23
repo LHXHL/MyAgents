@@ -539,6 +539,8 @@ export type WorkspaceType = 'user' | 'system-preset';
 export type SystemPresetWorkspaceId = 'mino';
 
 export interface Project {
+  /** Product usage; independent from user/system lifecycle and template provenance. */
+  purpose?: 'team-ai';
   id: string;
   name: string;
   path: string;

@@ -28,6 +28,7 @@ pub mod router;
 pub mod runtime_change;
 pub(crate) mod session_delivery;
 pub(crate) mod state;
+pub(crate) mod team_ai;
 pub mod telegram;
 pub mod types;
 mod util;

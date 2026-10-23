@@ -782,6 +782,18 @@ impl Default for MessageBufferData {
     }
 }
 
+/// Durable peer membership, separate from the mutable current binding.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerSessionHistory {
+    pub session_key: String,
+    pub source_type: ImSourceType,
+    pub source_id: String,
+    pub source_display_name: Option<String>,
+    pub workspace_path: String,
+    pub session_ids: Vec<String>,
+}
+
 /// Health state for persistence (written to im_state.json)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -791,6 +803,8 @@ pub struct ImHealthState {
     pub uptime_seconds: u64,
     pub last_message_at: Option<String>,
     pub active_sessions: Vec<ImActiveSession>,
+    #[serde(default)]
+    pub peer_session_history: Vec<PeerSessionHistory>,
     pub error_message: Option<String>,
     pub restart_count: u32,
     pub buffered_messages: usize,
@@ -805,6 +819,7 @@ impl Default for ImHealthState {
             uptime_seconds: 0,
             last_message_at: None,
             active_sessions: Vec::new(),
+            peer_session_history: Vec::new(),
             error_message: None,
             restart_count: 0,
             buffered_messages: 0,

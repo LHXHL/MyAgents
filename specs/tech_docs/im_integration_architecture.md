@@ -81,6 +81,20 @@ GUI 只修复“多个其它方面有效的 Project 声明同一 Agent”这一�
 
 Rust adapter与Plugin Bridge都属于general request proxy consumer。effective proxy变化时，在Channel model-work gate到达idle边界后复用标准stop/start，以磁盘配置重建transport。连续变化按generation合并到最终intent；不能另建proxy专用进程管理器或复制SessionRouter。
 
+## Team AI 管理投影
+
+Team AI 复用 Project/Agent/Channel/Session，不拥有执行器或独立存储。用途字段为 Project `purpose=team-ai`，由既有 Project service 在 projects.json 锁内合并。创建复用 NewAgentPanel/mino；加入只 patch 用途。
+
+`im/team_ai.rs` 通过配置枚举所有连接，合并 live Router/Health 或持久 health，因此停用连接也可浏览。管理定位使用 `(agentId, channelId, sessionKey)`；sessionKey 本身不含 channelId，不能据此合并同平台 Bot。
+
+Router 的 `peer_history` 记录可证明的 peer→Session ID 集合，与 current bindings 一起写入同一 health 快照 `peerSessionHistory`。它不保存 peer 模型/工具默认值，不向 Session origin 双写绑定。轮换/移除前记住原关联，未提交的候选绑定不进入历史；缺字段的旧数据只从已有当前绑定恢复，不猜测旧会话。Session 删除不重建该 Session，页面标记失效引用。
+
+读取详情和有界状态观察通过 exact-generation dispatch lease；浏览不 ensure，也不注册 Tab owner。取得 dispatch lease 后释放 lifecycle 锁再请求 HTTP，以允许 Goal-aware stop 回调重入 Rust lifecycle owner。无活跃进程时详情读持久历史，实时状态为空。列表状态每批最多 64 个，详情只读最近 30 条；管理页关闭不释放渠道执行 owner。
+
+操作沿用 Channel model-work gate、per-peer fence 和 expectedSessionId。兼容模型、推理强度和工具写入 Node Session-only 入口，经 snapshot observation CAS 与 SessionEngine facade 应用，不调用 Agent defaults writer。配置目录读 GET `/api/im/session-model-options`、GET `/api/im/session-tools` 可由 Global 提供；POST `/api/im/session-runtime` 只规划 birth，属于 Global。Session 配置 POST 仍属于目标 Session。显式 Runtime 切换从保存的 Session 编译，复用 Runtime 字段可移植性规则；普通 new 从 Agent 最新模板完整出生。完整 birth 后通过既有 handover 接管明确 peer，历史菜单仅允许已有归属的 Session。
+
+改绑不停止原执行；已接纳的 IM 请求仍经旧 ReplySlot 完成原目标回复，客户端普通结果继续依当前 binding 投递。管理页不改变 ReplyRouter、BackgroundCompletion 和通知协议。handover 的 `state_persisted`、通知结果及已创建但未绑定的 Session 必须分别呈现，不能声明整体回滚。
+
 ## 4. 入站消息与 SessionRouter
 
 ### 4.1 并发与 backpressure

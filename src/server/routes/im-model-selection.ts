@@ -7,7 +7,7 @@ import { createConcreteProviderRoute } from '../../shared/providerRoute';
 import { projectProvidersForRuntime, isProviderModelCompatibleWithRuntime, resolveProviderSwitchIntegratedRuntime, platformHiddenProviderIds } from '../../shared/runtimeProviderProjection';
 import { workspacePathsEqual } from '../../shared/workspacePath';
 import { createHash } from 'node:crypto';
-import { coerceReasoningEffortSettingForRuntime, reasoningEffortAfterModelChange, type ModelReasoningCapabilities } from '../../shared/reasoningEffort';
+import { coerceReasoningEffortSettingForRuntime, reasoningEffortAfterModelChange, reasoningEffortChoices, type ModelReasoningCapabilities } from '../../shared/reasoningEffort';
 import { getSessionEngine, queryRuntimeModels } from '../session-engine';
 import { getSessionMetadata, updateSessionMetadata } from '../SessionStore';
 import { findProjectAgentByWorkspacePath, getAllEffectiveProviders, getProviderSelectionError, loadConfig, loadProjects, resolveProviderEnv } from '../utils/admin-config';
@@ -27,7 +27,7 @@ function sameSelection(a: ImModelSelection, b: ImModelSelection) {
 }
 
 /** Reads persisted authority without binding the Global Host to a Product Session. */
-async function modelContext(agentId: string, sessionId?: string) {
+export async function modelContext(agentId: string, sessionId?: string) {
   const config = loadConfig();
   const projects = loadProjects().filter(p => p.agentId === agentId);
   if (projects.length !== 1 || !projects[0].path) throw new Error('Agent workspace is unavailable or ambiguous');
@@ -80,6 +80,13 @@ export function imSnapshotObservation(metadata: SessionMetadata): string {
   return createHash('sha256').update(JSON.stringify(stable(projection))).digest('hex');
 }
 
+export function sessionEffortChoices(context: Awaited<ReturnType<typeof modelContext>>): readonly string[] | null {
+  const current = context.current;
+  const capabilities = context.options.find(option => option.isCurrent)?.capabilities;
+  if (current.runtimeSource === 'managed-provider') return capabilities?.supportedReasoningEfforts?.map(option => option.reasoningEffort) ?? [];
+  return reasoningEffortChoices(current.runtime ?? 'builtin', context.currentEnv?.apiProtocol, current.providerId, current.model, context.currentEnv?.baseUrl);
+}
+
 function birthForSelection(context: Awaited<ReturnType<typeof modelContext>>, selection: ImModelSelection) {
   const mutation = mutationForAgentModelSelection(context.agent, selection);
   const targetAgent = { ...context.agent, ...resolveAgentConfigMutation(context.agent, mutation) };
@@ -100,12 +107,14 @@ function birthForSelection(context: Awaited<ReturnType<typeof modelContext>>, se
 }
 
 export async function handleImModelRoute(path: string, request: Request): Promise<Response | null> {
+  const sessionOnly = path === '/api/im/session-model-options' || path === '/api/im/session-model-selection';
+  if (sessionOnly) path = path.replace('/session-model-', '/model-');
   if (path !== '/api/im/model-options' && path !== '/api/im/model-selection') return null;
   try {
     if (path === '/api/im/model-options' && request.method === 'GET') {
       const url = new URL(request.url);
       const context = await modelContext(url.searchParams.get('agentId') ?? '', url.searchParams.get('sessionId') ?? undefined);
-      return json({ success: true, sessionId: context.metadata?.id ?? null, configSnapshotAt: context.metadata?.configSnapshotAt ?? null, snapshotObservation: context.metadata ? imSnapshotObservation(context.metadata) : null, currentModel: context.current.model ?? '(默认)', options: context.options });
+      return json({ success: true, sessionId: context.metadata?.id ?? null, configSnapshotAt: context.metadata?.configSnapshotAt ?? null, snapshotObservation: context.metadata ? imSnapshotObservation(context.metadata) : null, currentModel: context.current.model ?? '(默认)', runtime: context.current.runtime, runtimeSource: context.current.runtimeSource, model: context.current.model, reasoningEffort: context.current.reasoningEffort, reasoningEffortChoices: sessionEffortChoices(context), mcpEnabledServers: context.current.mcpEnabledServers ?? [], enabledPluginIds: context.current.enabledPluginIds ?? [], enabledOfficialToolIds: context.current.enabledOfficialToolIds ?? [], options: context.options });
     }
     if (path === '/api/im/model-options' && request.method === 'POST') {
       const body = await request.json() as { agentId: string; selection: ImModelSelection };
@@ -126,7 +135,10 @@ export async function handleImModelRoute(path: string, request: Request): Promis
       const selection = option.selection;
       if (option.requiresNewSession) {
         if (body.allowNewSession !== true) return json({ success: false, error: '模型兼容性已变化，请重新发送 /model 查看列表' }, 409);
-        return json({ success: false, requiresNewSession: true, birth: birthForSelection(context, selection) }, 409);
+        return json({ success: false, requiresNewSession: true, birth: { ...birthForSelection(context, selection), ...(sessionOnly ? {
+          reasoningEffort: coerceReasoningEffortSettingForRuntime(reasoningEffortAfterModelChange(metadata.reasoningEffort, option.capabilities), selection.kind === 'external-cli' ? selection.runtime : selection.providerId === CODEX_SUBSCRIPTION_PROVIDER_ID ? 'codex' : metadata.runtime ?? 'builtin'),
+          mcpEnabledServers: metadata.mcpEnabledServers ?? [], enabledPluginIds: metadata.enabledPluginIds ?? [], enabledOfficialToolIds: metadata.enabledOfficialToolIds ?? [],
+        } : {}) } }, 409);
       }
       const runtime = metadata.runtime ?? 'builtin';
       const effort = coerceReasoningEffortSettingForRuntime(reasoningEffortAfterModelChange(metadata.reasoningEffort, option.capabilities), runtime);
@@ -143,6 +155,7 @@ export async function handleImModelRoute(path: string, request: Request): Promis
       try { applied = await engine.applyModelSelection({ model: selection.model, providerEnv: selection.kind === 'product-provider' && selection.providerId !== CODEX_SUBSCRIPTION_PROVIDER_ID ? (metadata.providerId === selection.providerId ? context.currentEnv : resolveProviderEnv(selection.providerId, context.config)) : undefined, reasoningEffort: effort });
       } catch { return json({ success: false, sessionConfig: 'saved', runtimeApply: 'failed', error: '会话模型已保存，运行时应用失败；请查看 /status 后重试' }, 500); }
       if (!applied.success) return json({ success: false, sessionConfig: 'saved', runtimeApply: 'failed', error: applied.error }, 500);
+      if (sessionOnly) return json({ success: true, sessionConfig: 'saved', runtimeApply: applied.status ?? 'applied' });
       let defaults;
       try { defaults = await commitAgentModelSelection(body.agentId, selection, effort); }
       catch { defaults = { success: false, error: '当前会话已修改，Agent 默认模型保存失败' }; }

@@ -1,0 +1,629 @@
+//! Team AI is a management surface over the existing Channel and Session owners.
+use super::{
+    adapter::ImAdapter,
+    config_store::read_agent_configs_from_disk,
+    health, model_commands,
+    router::SessionRouter,
+    state::{ChannelModelWorkGate, PeerLocks},
+    types::{AgentConfigRust, ImHealthState, ImStatus},
+    HealthManager, ManagedAgents,
+};
+use crate::sidecar::ManagedSidecarManager;
+use serde::Deserialize;
+use serde_json::{json, Value};
+use std::{sync::Arc, time::Duration};
+use tauri::{AppHandle, Emitter};
+use tokio::sync::Mutex;
+
+fn agent_config(id: &str) -> Result<AgentConfigRust, String> {
+    read_agent_configs_from_disk()
+        .into_iter()
+        .find(|a| a.id == id)
+        .ok_or_else(|| "Agent workspace unavailable".to_string())
+}
+
+fn read_health(agent: &str, channel: &str) -> Result<ImHealthState, String> {
+    match std::fs::read_to_string(health::agent_channel_health_path(agent, channel)) {
+        Ok(text) => serde_json::from_str(crate::utils::bom::strip_bom(&text))
+            .map_err(|e| format!("Channel state is unreadable: {e}")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(ImHealthState::default()),
+        Err(e) => Err(format!("Cannot read Channel state: {e}")),
+    }
+}
+
+struct LiveChannel {
+    router: Arc<Mutex<SessionRouter>>,
+    health: Arc<HealthManager>,
+    locks: PeerLocks,
+    gate: Arc<ChannelModelWorkGate>,
+}
+async fn live_channel(agents: &ManagedAgents, agent: &str, channel: &str) -> Option<LiveChannel> {
+    let guard = agents.lock().await;
+    let bot = &guard.get(agent)?.channels.get(channel)?.bot_instance;
+    Some(LiveChannel {
+        router: bot.router.clone(),
+        health: bot.health.clone(),
+        locks: bot.peer_locks.clone(),
+        gate: bot.model_work_gate.clone(),
+    })
+}
+
+/// Enumerate configured Channels, including disabled connections; read errors are not empty peers.
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn cmd_team_ai_channels(
+    agentState: tauri::State<'_, ManagedAgents>,
+    agentId: String,
+) -> Result<Value, String> {
+    let cfg = agent_config(&agentId)?;
+    let mut channels = Vec::new();
+    for channel in &cfg.channels {
+        let live = live_channel(agentState.inner(), &agentId, &channel.id).await;
+        let state = if let Some(live) = &live {
+            Ok(live.health.get_state().await)
+        } else {
+            read_health(&agentId, &channel.id)
+        };
+        let mut row = json!({ "channelId": channel.id, "platform": channel.channel_type.to_string(), "name": channel.name,
+            "enabled": channel.enabled, "online": false, "status": "stopped", "peers": [] });
+        match state {
+            Err(error) => row["error"] = json!(error),
+            Ok(state) => {
+                let running = live.is_some();
+                row["online"] =
+                    json!(running && channel.enabled && matches!(state.status, ImStatus::Online));
+                let (current, history) = if let Some(live) = live {
+                    let router = live.router.lock().await;
+                    (router.active_sessions(), router.peer_history())
+                } else {
+                    (state.active_sessions, state.peer_session_history)
+                };
+                let mut router = SessionRouter::new_for_agent(
+                    cfg.resolved_workspace_path.clone().into(),
+                    agentId.clone(),
+                );
+                router.restore_peer_history(history);
+                // Projection only: do not restore/rotate/ensure any execution identity while browsing.
+                let mut peers = router.peer_history();
+                for peer in &current {
+                    let entry = peers.iter_mut().find(|h| h.session_key == peer.session_key);
+                    if let Some(entry) = entry {
+                        if peer.metadata_indexed && !entry.session_ids.contains(&peer.session_id) {
+                            entry.session_ids.push(peer.session_id.clone());
+                        }
+                    } else {
+                        peers.push(super::types::PeerSessionHistory {
+                            session_key: peer.session_key.clone(),
+                            source_type: peer.source_type.clone(),
+                            source_id: peer.source_id.clone().unwrap_or_else(|| {
+                                super::router::parse_session_key(&peer.session_key).1
+                            }),
+                            source_display_name: peer.source_display_name.clone(),
+                            workspace_path: peer.workspace_path.clone(),
+                            session_ids: if peer.metadata_indexed {
+                                vec![peer.session_id.clone()]
+                            } else {
+                                Vec::new()
+                            },
+                        });
+                    }
+                }
+                row["status"] = if running {
+                    json!(state.status)
+                } else {
+                    json!("stopped")
+                };
+                row["error"] = json!(state.error_message);
+                row["peers"] = json!(peers.into_iter().map(|peer| {
+                    let active = current.iter().find(|p| p.session_key == peer.session_key);
+                    json!({"sessionKey":peer.session_key,"sourceType":peer.source_type,"sourceId":peer.source_id,
+                        "name":active.and_then(|p| p.source_display_name.clone()).or(peer.source_display_name),
+                        "sessionId":active.map(|p| p.session_id.clone()),"sessionIds":peer.session_ids,
+                        "lastActive":active.map(|p| p.last_active.clone())})
+                }).collect::<Vec<_>>());
+            }
+        }
+        channels.push(row);
+    }
+    Ok(json!({"channels": channels}))
+}
+
+async fn metadata(workspace: &str, session: &str) -> Result<Value, String> {
+    crate::session_metadata::cmd_list_session_metadata(Some(workspace.to_string()))
+        .await?
+        .into_iter()
+        .find(|m| m["id"].as_str() == Some(session))
+        .ok_or_else(|| "Session unavailable in this workspace".into())
+}
+
+async fn request_json(port: u16, path: &str, body: Option<&Value>) -> Result<Value, String> {
+    let client = crate::local_http::json_client(Duration::from_secs(60));
+    let url = format!("http://127.0.0.1:{port}{path}");
+    let response = match body {
+        Some(body) => client.post(&url).json(body).send().await,
+        None => client.get(&url).send().await,
+    }
+    .map_err(|e| format!("Operation result unconfirmed; refresh: {e}"))?;
+    let status = response.status();
+    let value: Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Operation response unconfirmed: {e}"))?;
+    if !status.is_success()
+        && value["requiresNewSession"] != true
+        && value["sessionConfig"] != "saved"
+    {
+        return Err(value["error"]
+            .as_str()
+            .unwrap_or("Session request failed")
+            .to_string());
+    }
+    Ok(value)
+}
+
+async fn session_request(
+    manager: &ManagedSidecarManager,
+    session: &str,
+    path: &str,
+    body: Option<&Value>,
+) -> Result<Option<Value>, String> {
+    // Pin the exact generation under lifecycle arbitration, then release the
+    // lifecycle lock before HTTP: Goal stop calls back into that same owner.
+    let dispatch = {
+        let _lifecycle = crate::sidecar::acquire_session_lifecycle(&[session]).await;
+        manager
+            .lock()
+            .map_err(|e| e.to_string())?
+            .acquire_session_dispatch(session)?
+    };
+    let Some(dispatch) = dispatch else {
+        return Ok(None);
+    };
+    let client = crate::local_http::json_client(Duration::from_secs(60));
+    let url = dispatch.url_for_path(path)?;
+    let response = match body {
+        Some(body) => client.post(url).json(body).send().await,
+        None => client.get(url).send().await,
+    }
+    .map_err(|e| format!("Operation result unconfirmed; refresh: {e}"))?;
+    let status = response.status();
+    let value: Value = response.json().await.map_err(|e| e.to_string())?;
+    if !status.is_success()
+        && value["requiresNewSession"] != true
+        && value["sessionConfig"] != "saved"
+    {
+        return Err(value["error"]
+            .as_str()
+            .unwrap_or("Session request failed")
+            .to_string());
+    }
+    Ok(Some(value))
+}
+
+async fn known_session(
+    agents: &ManagedAgents,
+    agent: &str,
+    channel: &str,
+    key: &str,
+    session: &str,
+) -> Result<String, String> {
+    let cfg = agent_config(agent)?;
+    if !cfg.channels.iter().any(|c| c.id == channel) {
+        return Err("Channel unavailable".into());
+    }
+    let (active, history) = if let Some(live) = live_channel(agents, agent, channel).await {
+        let router = live.router.lock().await;
+        (router.active_sessions(), router.peer_history())
+    } else {
+        let state = read_health(agent, channel)?;
+        (state.active_sessions, state.peer_session_history)
+    };
+    let known = active
+        .iter()
+        .any(|p| p.session_key == key && p.session_id == session)
+        || history
+            .iter()
+            .any(|p| p.session_key == key && p.session_ids.iter().any(|id| id == session));
+    if !known {
+        return Err("Session is not associated with this conversation".into());
+    }
+    metadata(&cfg.resolved_workspace_path, session).await?;
+    Ok(cfg.resolved_workspace_path)
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn cmd_team_ai_session(
+    agentState: tauri::State<'_, ManagedAgents>,
+    manager: tauri::State<'_, ManagedSidecarManager>,
+    agentId: String,
+    channelId: String,
+    sessionKey: String,
+    sessionId: String,
+) -> Result<Value, String> {
+    let workspace = known_session(
+        agentState.inner(),
+        &agentId,
+        &channelId,
+        &sessionKey,
+        &sessionId,
+    )
+    .await?;
+    let path = format!("/sessions/{sessionId}?limit=30");
+    if let Some(value) = session_request(manager.inner(), &sessionId, &path, None).await? {
+        return Ok(value);
+    }
+    let port = model_commands::global_port(manager.inner())?;
+    let mut value = request_json(port, &path, None).await?;
+    value["session"]["liveSessionState"] = Value::Null;
+    value["session"]["agentDir"] = json!(workspace);
+    Ok(value)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeamSessionTarget {
+    channel_id: String,
+    session_key: String,
+    session_id: String,
+}
+
+/// Bounded, lightweight observations. Reading never creates a Session process.
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn cmd_team_ai_states(
+    agentState: tauri::State<'_, ManagedAgents>,
+    manager: tauri::State<'_, ManagedSidecarManager>,
+    agentId: String,
+    targets: Vec<TeamSessionTarget>,
+) -> Result<Value, String> {
+    if targets.len() > 64 {
+        return Err("Too many Session observations".into());
+    }
+    use futures_util::{stream, StreamExt};
+    let agents = agentState.inner();
+    let manager = manager.inner();
+    let agent = agentId.as_str();
+    let states: Vec<Value> = stream::iter(targets).map(|target| async move {
+        let result = async {
+            known_session(
+                agents,
+                agent,
+                &target.channel_id,
+                &target.session_key,
+                &target.session_id,
+            )
+            .await?;
+            session_request(
+                manager,
+                &target.session_id,
+                "/api/session-state",
+                None,
+            )
+            .await
+        }
+        .await;
+        let mut row = json!({"channelId":target.channel_id,"sessionKey":target.session_key,"sessionId":target.session_id,"state":null});
+        match result {
+            Ok(Some(value)) if value["sessionId"] == target.session_id => {
+                row["state"] = value["sessionState"].clone()
+            }
+            Ok(Some(_)) => row["error"] = json!("Session identity changed"),
+            Ok(None) => {}
+            Err(error) => row["error"] = json!(error),
+        }
+        row
+    }).buffer_unordered(8).collect().await;
+    Ok(json!({"states":states}))
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum TeamAiAction {
+    Options,
+    Tools,
+    SaveTools {
+        #[serde(flatten)]
+        patch: Value,
+    },
+    SelectModel {
+        selection: Value,
+        #[serde(rename = "snapshotObservation")]
+        observation: String,
+        confirmed: bool,
+    },
+    SwitchRuntime {
+        runtime: String,
+        #[serde(rename = "snapshotObservation")]
+        observation: String,
+    },
+    SetEffort {
+        effort: String,
+        #[serde(rename = "snapshotObservation")]
+        observation: String,
+    },
+    New,
+    SetPrimary {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+    },
+    Stop,
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn cmd_team_ai_action(
+    app: AppHandle,
+    agentState: tauri::State<'_, ManagedAgents>,
+    manager: tauri::State<'_, ManagedSidecarManager>,
+    agentId: String,
+    channelId: String,
+    sessionKey: String,
+    expectedSessionId: Option<String>,
+    action: TeamAiAction,
+) -> Result<Value, String> {
+    let cfg = agent_config(&agentId)?;
+    let live = live_channel(agentState.inner(), &agentId, &channelId)
+        .await
+        .ok_or("Channel is offline; start it before making changes")?;
+    let _work = live.gate.try_enter().ok_or("Channel is stopping")?;
+    let lock = live
+        .locks
+        .lock()
+        .await
+        .entry(sessionKey.clone())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone();
+    let fence = lock.lock_owned().await;
+    let prior = live
+        .router
+        .lock()
+        .await
+        .peer_session_snapshot(&sessionKey)
+        .map(|p| p.session_id);
+    if prior != expectedSessionId {
+        return Err("Conversation changed; refresh before continuing".into());
+    }
+    if !live.router.lock().await.knows_peer(&sessionKey) {
+        return Err("Conversation unavailable".into());
+    }
+    let global = || model_commands::global_port(manager.inner());
+    let mut target = None;
+    let mut notice = false;
+    let mut created = false;
+    let result = match action {
+        TeamAiAction::SetPrimary { session_id } => {
+            known_session(
+                agentState.inner(),
+                &agentId,
+                &channelId,
+                &sessionKey,
+                &session_id,
+            )
+            .await?;
+            if prior.as_deref() == Some(&session_id) {
+                return Ok(json!({"success":true}));
+            }
+            target = Some(session_id);
+            notice = true;
+            json!({})
+        }
+        TeamAiAction::New => {
+            target = Some(model_commands::create_birth(&crate::local_http::json_client(Duration::from_secs(60)), manager.inner(),
+                &json!({"agentDir":cfg.resolved_workspace_path,"seedMaxPermission":true,"origin":{"kind":"agent-channel","surface":"channel_message"}})).await?);
+            created = true;
+            notice = true;
+            json!({})
+        }
+        TeamAiAction::Options | TeamAiAction::Tools => {
+            let suffix = if matches!(action, TeamAiAction::Options) {
+                "session-model-options"
+            } else {
+                "session-tools"
+            };
+            let mut url = reqwest::Url::parse(&format!("http://localhost/api/im/{suffix}"))
+                .map_err(|e| e.to_string())?;
+            url.query_pairs_mut()
+                .append_pair("agentId", &agentId)
+                .append_pair("sessionId", prior.as_deref().ok_or("No main Session")?);
+            request_json(
+                global()?,
+                &format!("{}?{}", url.path(), url.query().unwrap_or_default()),
+                None,
+            )
+            .await?
+        }
+        TeamAiAction::Stop => {
+            let sid = prior.as_deref().ok_or("No main Session")?;
+            session_request(manager.inner(), sid, "/chat/stop", Some(&json!({})))
+                .await?
+                .unwrap_or(json!({"success":true,"alreadyStopped":true}))
+        }
+        TeamAiAction::SwitchRuntime {
+            runtime,
+            observation,
+        } => {
+            let plan = request_json(global()?, "/api/im/session-runtime", Some(&json!({"agentId":agentId,"sessionId":prior,"runtime":runtime,"snapshotObservation":observation}))).await?;
+            target = Some(
+                model_commands::create_birth(
+                    &crate::local_http::json_client(Duration::from_secs(60)),
+                    manager.inner(),
+                    &plan["birth"],
+                )
+                .await?,
+            );
+            created = true;
+            notice = true;
+            json!({})
+        }
+        TeamAiAction::SelectModel {
+            selection,
+            observation,
+            confirmed,
+        } => {
+            let sid = prior.as_deref().ok_or("No main Session")?;
+            super::state::ensure_sidecar_port_for_command(
+                &live.router,
+                &sessionKey,
+                "builtin",
+                None,
+                &app,
+                manager.inner(),
+                &live.health,
+            )
+            .await?;
+            let result = session_request(manager.inner(), sid, "/api/im/session-model-selection", Some(&json!({"agentId":agentId,"sessionId":sid,"snapshotObservation":observation,"selection":selection,"allowNewSession":true}))).await?.ok_or("Session stopped")?;
+            if result["requiresNewSession"] == true && confirmed {
+                target = Some(
+                    model_commands::create_birth(
+                        &crate::local_http::json_client(Duration::from_secs(60)),
+                        manager.inner(),
+                        &result["birth"],
+                    )
+                    .await?,
+                );
+                created = true;
+                notice = true;
+            }
+            result
+        }
+        action @ (TeamAiAction::SaveTools { .. } | TeamAiAction::SetEffort { .. }) => {
+            let sid = prior.as_deref().ok_or("No main Session")?;
+            super::state::ensure_sidecar_port_for_command(
+                &live.router,
+                &sessionKey,
+                "builtin",
+                None,
+                &app,
+                manager.inner(),
+                &live.health,
+            )
+            .await?;
+            let (path, mut body) = match action {
+                TeamAiAction::SaveTools { patch } => ("/api/im/session-tools", patch),
+                TeamAiAction::SetEffort {
+                    effort,
+                    observation,
+                } => (
+                    "/api/im/session-effort",
+                    json!({"effort":effort,"snapshotObservation":observation}),
+                ),
+                _ => unreachable!(),
+            };
+            body["agentId"] = json!(agentId);
+            body["sessionId"] = json!(sid);
+            session_request(manager.inner(), sid, path, Some(&body))
+                .await?
+                .ok_or("Session stopped")?
+        }
+    };
+    if let Some(target) = target {
+        let handover = super::handover::handover_session_to_channel(
+            app.clone(),
+            target.clone(),
+            agentId.clone(),
+            channelId.clone(),
+            cfg.resolved_workspace_path,
+            Some(sessionKey.clone()),
+            Some((sessionKey, fence)),
+            Some(prior.unwrap_or_default()),
+        )
+        .await;
+        return match handover {
+            Ok((result, fence, adapter, chat_id)) => {
+                drop(fence);
+                let notified = !notice
+                    || adapter
+                        .send_message(
+                            &chat_id,
+                            &format!(
+                                "当前会话切换至「{}」",
+                                target.chars().take(8).collect::<String>()
+                            ),
+                        )
+                        .await
+                        .is_ok();
+                let _ = app.emit(
+                    "agent:status-changed",
+                    json!({"agentId":agentId,"channelId":channelId}),
+                );
+                Ok(
+                    json!({"success":true,"sessionId":target,"statePersisted":result.state_persisted,"notified":notified,"warning":result.warning}),
+                )
+            }
+            Err(error) => Ok(
+                json!({"success":false,"createdSessionId":if created { Some(target) } else { None },"error":error}),
+            ),
+        };
+    }
+    Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sidecar::{SidecarManager, SidecarOwner};
+
+    #[tokio::test]
+    async fn stop_callback_can_reenter_goal_lifecycle_while_dispatch_generation_is_pinned() {
+        use axum::{routing::post, Json, Router};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let service = Router::new().route(
+            "/chat/stop",
+            post(|| async {
+                // The real Node facade awaits Rust Goal pause, which takes this lock.
+                let _goal =
+                    crate::sidecar::acquire_session_lifecycle(&["team-stop-goal-test"]).await;
+                Json(json!({"success":true}))
+            }),
+        );
+        let server =
+            tauri::async_runtime::spawn(
+                async move { axum::serve(listener, service).await.unwrap() },
+            );
+        let manager = Arc::new(std::sync::Mutex::new(SidecarManager::new()));
+        manager.lock().unwrap().insert_test_ready_frontend_sidecar(
+            "team-stop-goal-test",
+            port,
+            SidecarOwner::Tab("test-only".into()),
+        );
+        let response = tokio::time::timeout(
+            Duration::from_secs(2),
+            session_request(
+                &manager,
+                "team-stop-goal-test",
+                "/chat/stop",
+                Some(&json!({})),
+            ),
+        )
+        .await
+        .expect("Goal callback must not wait on the caller lifecycle lock")
+        .unwrap()
+        .unwrap();
+        assert_eq!(response["success"], true);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn management_reads_and_stop_do_not_start_a_dormant_session() {
+        let manager = Arc::new(std::sync::Mutex::new(SidecarManager::new()));
+        assert!(
+            session_request(&manager, "dormant", "/api/session-state", None)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            session_request(&manager, "dormant", "/chat/stop", Some(&json!({})))
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(manager
+            .lock()
+            .unwrap()
+            .get_session_port("dormant")
+            .is_none());
+    }
+}

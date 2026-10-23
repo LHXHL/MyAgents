@@ -2,6 +2,7 @@ import { selectUsableAgentWorkspaceRecords } from '../../../shared/agentWorkspac
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import {
   AlertIcon,
+  AtIcon,
   RadioIcon,
   CheckIcon,
   ChevronDownIcon,
@@ -183,6 +184,9 @@ interface GlobalSidebarProps {
   onCreateTask: () => void;
   onOpenSpace: () => void;
   onOpenAgentNetwork?: () => void;
+  onOpenTeamAi?: () => void;
+  newAgentPurpose?: Project['purpose'];
+  onTeamAiCreated?: (project: Project) => void;
   onOpenAppRoute?: (route: AppRoute) => Promise<boolean> | boolean;
   onOpenCapabilities: (section?: CapabilitySection) => void;
   onOpenSettings: (section?: 'agent') => void;
@@ -324,8 +328,8 @@ function SidebarNavButton({
   );
 }
 
-function SidebarMore({ expanded, activeView, teamSpaceAvailable, onTeam, onBot }: {
-  expanded: boolean; activeView: string | undefined; teamSpaceAvailable: boolean; onTeam: () => void; onBot: () => void;
+function SidebarMore({ expanded, activeView, teamSpaceAvailable, onTeam, onBot, onTeamAi }: {
+  expanded: boolean; activeView: string | undefined; teamSpaceAvailable: boolean; onTeam: () => void; onBot: () => void; onTeamAi?: () => void;
 }) {
   const { t } = useTranslation(['app', 'settings']);
   const [open, setOpen] = useState(false);
@@ -370,6 +374,10 @@ function SidebarMore({ expanded, activeView, teamSpaceAvailable, onTeam, onBot }
         <button type="button" role="menuitem" onClick={() => { close(); onBot(); }}
           className="flex h-9 w-full items-center gap-2 rounded-md px-3 text-sm text-[var(--ink)] hover:bg-[var(--hover-bg)] focus:bg-[var(--hover-bg)]">
           <MessageIcon className="h-4 w-4 text-[var(--ink-muted)]" /><span className="global-sidebar-label">{t('sidebar.nav.bots', { ns: 'settings' })}</span>
+        </button>
+        <button type="button" role="menuitem" onClick={() => { close(); onTeamAi?.(); }}
+          className="flex h-9 w-full items-center gap-2 rounded-md px-3 text-sm text-[var(--ink)] hover:bg-[var(--hover-bg)] focus:bg-[var(--hover-bg)]">
+          <AtIcon className="h-4 w-4 text-[var(--ink-muted)]" /><span className="global-sidebar-label">{t('tabs.teamAi')}</span>
         </button>
       </div>
     </Popover>
@@ -472,6 +480,9 @@ export default memo(function GlobalSidebar({
   onCreateTask,
   onOpenSpace,
   onOpenAgentNetwork,
+  onOpenTeamAi,
+  newAgentPurpose,
+  onTeamAiCreated,
   onOpenAppRoute,
   onOpenCapabilities,
   onOpenSettings,
@@ -848,7 +859,8 @@ export default memo(function GlobalSidebar({
 
   const handleNewAgentCreated = useCallback((project: Project) => {
     setRecentlyCreatedWorkspaceKey(normalizeWorkspacePathIdentity(project.path));
-  }, []);
+    if (project.purpose === 'team-ai') onTeamAiCreated?.(project);
+  }, [onTeamAiCreated]);
 
   // The created-row flash is a one-shot cue; clear it after the CSS animation.
   useEffect(() => {
@@ -1267,7 +1279,7 @@ export default memo(function GlobalSidebar({
             label={t('globalSidebar.agentNetwork')}
             onClick={() => onOpenAgentNetwork?.()}
           />
-          <SidebarMore key={activeView ?? 'launcher'} expanded={expanded} activeView={activeView}
+          <SidebarMore onTeamAi={onOpenTeamAi} key={activeView ?? 'launcher'} expanded={expanded} activeView={activeView}
             teamSpaceAvailable={teamSpaceAvailable} onTeam={onOpenSpace} onBot={() => onOpenSettings('agent')} />
         </nav>
 
@@ -1465,6 +1477,7 @@ export default memo(function GlobalSidebar({
 
       {newAgentPanelOpen && (
         <NewAgentPanel
+          purpose={newAgentPurpose}
           onClose={() => {
             onNewAgentPanelOpenChange(false);
             // Launcher-opened panels never registered an origin; only restore ours.
