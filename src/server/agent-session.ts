@@ -11674,7 +11674,6 @@ async function startStreamingSession(preWarm = false): Promise<void> {
             return {
               behavior: 'deny' as const,
               message: channelInteractionDenyReason(currentScenario),
-              interrupt: true,
             };
           }
           console.log('[canUseTool] AskUserQuestion detected, prompting user');

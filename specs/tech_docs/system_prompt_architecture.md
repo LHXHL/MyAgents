@@ -350,7 +350,7 @@ badge、visible tail、标题、预览、搜索和测试 Checklist。
 
 ## Channel 固定提示与逐轮事实
 
-`channelPrompt.ts` 保存固定 S1 渠道身份原则、S2 统一发送能力和 S3 Managed Codex 提问规则；`system-prompt.ts` 按场景/实际能力选入，禁止在稳定 system 段插入本轮 mode、sender、chat 或时间。原 `myagents-cli-im-media` 被统一发送能力取代；两种模式均有工具，区别由每轮 reminder 明示。Managed Codex 没有可用原生卡片时按本轮发送方式提出问题，不能无条件假定文本会回推。
+`channelPrompt.ts` 保存固定 S1 渠道身份原则、S2 统一发送能力、渠道澄清方式和 S3 Managed Codex 提问规则；`system-prompt.ts` 按场景/实际能力选入，禁止在稳定 system 段插入本轮 mode、sender、chat 或时间。原 `myagents-cli-im-media` 被统一发送能力取代；两种模式均有工具，区别由每轮 reminder 明示。Managed Codex 没有可用原生卡片时按本轮发送方式提出问题，不能无条件假定文本会回推。
 
 每次实际 admission 经 `session-core/channel-context.ts` 捕获有效配置和调用入口，再用 shared renderer 合成；builtin 与 external/DSH 共用同一 schema/模板。DSH 沿既有 root/product-session 注入固定段，逐轮事实仍属于 User reminder。完整协议与快照见 [System Reminder](system_reminder_protocol.md#channel-context)。
 
@@ -362,4 +362,4 @@ badge、visible tail、标题、预览、搜索和测试 Checklist。
 
 ### Channel 交接的稳定前缀与动态指令
 
-`CHANNEL_PROMPT` 只声明两种发送模式与当前/其他会话的行为，不放实际模式、ID、名字或时间。跨会话内容通过 `send.request.channelHandoff` 进入原 Inbox，渲染器先生成唯一 `instruction`（来源性质、结合 context 转达 payload、尚未外发）；实际 turn owner 再用冻结的模式追加发送说明，并在其后插入仅含事实的 `CHANNEL_CONTEXT`。Runtime 都复用 `decorateChannelQuery`，不在发送端固化目标模式；不新增原生发送工具。
+`CHANNEL_PROMPT` 声明两种发送模式、当前/其他会话的行为与普通文本/原生卡片澄清原则，不放实际模式、ID、名字或时间。跨会话内容通过 `send.request.channelHandoff` 进入原 Inbox，渲染器先生成唯一 `instruction`（来源性质、结合 context 转达 payload、尚未外发）；实际 turn owner 再用冻结的模式追加发送说明，并在其后插入仅含事实的 `CHANNEL_CONTEXT`。Runtime 都复用 `decorateChannelQuery`，不在发送端固化目标模式；不新增原生发送工具。

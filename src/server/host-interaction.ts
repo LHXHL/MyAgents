@@ -48,7 +48,7 @@ export function shouldDisallowAskUserQuestion(scenario: InteractionScenario): bo
 }
 
 export function channelInteractionDenyReason(scenario: InteractionScenario): string {
-  return `当前 ${scenario.type} 渠道不支持结构化提问交互，请改用普通文本询问用户或在支持原生卡片的渠道中重试。`;
+  return `当前 ${scenario.type} 渠道不支持结构化提问交互，非敏感问题请按本轮发送方式用普通文本提问，等待用户后续消息；密码、密钥等敏感信息应通过安全配置入口提供，不在聊天中收集。`;
 }
 
 export function shouldHardDenyChannelInteractionTool(

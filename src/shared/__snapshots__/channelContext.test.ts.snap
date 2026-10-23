@@ -59,6 +59,9 @@ exports[`channel prompt contract > keeps the fixed system and instruction contra
 
 两种模式均可主动使用 myagents im send-message：当前会话直接发送，其他会话交由目标 Session 结合背景转达并承接后续对话。背景用于理解，不作为外发正文。用法见 myagents im send-message --help。
 
+## 澄清问题
+需要澄清时，按本轮发送方式用普通文本提问，结束本轮并等待用户后续消息；渠道提供可用的原生问答卡片时，也可使用结构化提问工具。密码、密钥等敏感信息通过安全配置入口提供，不在聊天中收集。
+
 需要追溯时，按来源会话信息查已有记忆，或用 myagents session get 查看来源对话；用法见 myagents session get --help。
 </myagents-channel>",
   "CHANNEL_SEND_DESCRIPTION": "向当前会话直接发送文本、图片或文件；向其他会话发送时，由目标 Session 接收背景并转达。用法见 myagents im send-message --help。",

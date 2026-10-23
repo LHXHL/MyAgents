@@ -6118,6 +6118,75 @@ describe('external SessionEngine with fake runtime', () => {
   });
 
 
+  it.each(['dsh', 'claude-code', 'codex'] as const)('keeps the %s IM reply open when structured questions are unavailable (#675)', async runtimeType => {
+    const harness = await createHarness([{ kind: 'silent' }, { kind: 'success', text: 'continued after clarification' }], { runtimeType });
+    const sessionId = 'im-question-unavailable';
+    const workspacePath = join(harness.home, 'workspace');
+    const { imEventBus } = await import('../utils/im-event-bus');
+    const events: Array<{ type: string; data?: unknown }> = [];
+    const unsubscribe = imEventBus.subscribe(imEventBus.currentSeq(), event => {
+      if (event.requestId === 'question-request') events.push(event);
+    });
+    const response = vi.spyOn(harness.runtime, 'respondPermission').mockResolvedValue(undefined);
+    const request = (requestId: string, message: string) => ({
+      message, requestId, sessionId, workspacePath,
+      // Missing hostInteraction is the persisted legacy/default none capability.
+      scenario: { type: 'agent-channel' as const, platform: 'feishu', sourceType: 'private' as const },
+      permissionMode: 'full-auto', metadataBirthPending: true,
+    });
+    const admission = await harness.engine.enqueueImMessage(request('question-request', 'help me choose'));
+    await admission.dispatchAcceptance;
+    await waitFor(() => harness.runtime.sentMessages.length === 1, 'question turn');
+    harness.runtime.emitForTest({ kind: 'permission_request', requestId: 'question-tool', toolUseId: 'question-tool-use', toolName: 'AskUserQuestion',
+      input: { questions: [{ question: 'Which format?', header: 'Format', options: [{ label: 'A', description: 'A' }, { label: 'B', description: 'B' }], multiSelect: false }] } });
+    await waitFor(() => response.mock.calls.length === 1, 'question rejection');
+    expect(response.mock.calls[0][2]).toBe('deny');
+    expect((response.mock.calls[0] as unknown[])[6]).not.toBe(true);
+    expect(events.filter(event => ['complete', 'error', 'cancelled'].includes(event.type))).toEqual([]);
+    expect(harness.engine.isBusy()).toBe(true);
+    expect(broadcastEvents.some(event => event.event === 'ask-user-question:request')).toBe(false);
+    harness.runtime.emitForTest({ kind: 'text_delta', text: 'Which format would you prefer, A or B?' });
+    harness.runtime.emitForTest({ kind: 'text_stop' });
+    harness.runtime.emitForTest({ kind: 'turn_complete', status: 'success', result: 'Which format would you prefer, A or B?' });
+    await harness.engine.waitIdle(2_000, 10);
+    expect(events.filter(event => ['complete', 'error', 'cancelled'].includes(event.type)).map(event => event.type)).toEqual(['complete']);
+    const followup = await harness.engine.enqueueImMessage(request('answer-request', 'B'));
+    await followup.dispatchAcceptance;
+    await harness.engine.waitIdle(2_000, 10);
+    expect((await harness.engine.getLatestAssistantResult()).latestResult).toBe('continued after clarification');
+    unsubscribe();
+  });
+
+  it.each(['answer', 'cancel'] as const)('retains native-card question %s semantics (#675)', async action => {
+    const harness = await createHarness([{ kind: 'silent' }], { runtimeType: 'claude-code' });
+    const { imEventBus } = await import('../utils/im-event-bus');
+    const events: string[] = [];
+    const unsubscribe = imEventBus.subscribe(imEventBus.currentSeq(), event => {
+      if (event.requestId === 'card-request') events.push(event.type);
+    });
+    const response = vi.spyOn(harness.runtime, 'respondPermission').mockResolvedValue(undefined);
+    const admitted = await harness.engine.enqueueImMessage({
+      message: 'clarify', requestId: 'card-request', sessionId: 'card-session', workspacePath: join(harness.home, 'workspace'),
+      scenario: { type: 'agent-channel', platform: 'feishu', sourceType: 'private', hostInteraction: { askUserQuestion: 'native-card' } },
+      permissionMode: 'full-auto', metadataBirthPending: true,
+    });
+    await admitted.dispatchAcceptance;
+    await waitFor(() => harness.runtime.sentMessages.length === 1, 'native-card turn');
+    harness.runtime.emitForTest({ kind: 'permission_request', requestId: 'card-tool', toolUseId: 'card-tool-use', toolName: 'AskUserQuestion',
+      input: { questions: [{ question: 'Which format?', header: 'Format', options: [{ label: 'A', description: 'A' }, { label: 'B', description: 'B' }], multiSelect: false }] } });
+    expect(events).toContain('ask-user-question-request');
+    expect(response).not.toHaveBeenCalled();
+    await expect(harness.externalSession.respondExternalAskUserQuestion('card-tool', action === 'answer' ? { '0': 'B' } : null)).resolves.toBe(true);
+    expect(response.mock.calls[0][2]).toBe(action === 'answer' ? 'allow_once' : 'deny');
+    if (action === 'cancel') expect((response.mock.calls[0] as unknown[])[6]).toBe(true);
+    expect(events.filter(type => ['complete', 'error', 'cancelled'].includes(type))).toEqual([]);
+    harness.runtime.emitForTest({ kind: 'turn_complete', status: action === 'answer' ? 'success' : 'interrupted', result: action === 'answer' ? 'Proceeding with B' : 'User cancelled' });
+    await harness.engine.waitIdle(2_000, 10);
+    expect(events.filter(type => ['complete', 'error', 'cancelled'].includes(type))).toHaveLength(1);
+    expect(harness.externalSession.hasPendingExternalAskUserQuestion('card-tool')).toBe(false);
+    unsubscribe();
+  });
+
   it('resumes the same DSH IM session after a config recovery fence without replaying rejected input', async () => {
     const harness = await createHarness([
       { kind: 'success', text: 'first reply' },

@@ -207,6 +207,8 @@ Node 消息、Heartbeat 与 Memory route 只能用 `engine.kind === 'builtin'` �
 | `none` | 禁用/取消同步AskUserQuestion，避免Runtime无限等待 |
 | `native-card` | 通过event bus与平台交互卡片完成同一个pending request |
 
+不支持同步提问时，能力拒绝只结算该工具，不发布 IM error 或中断整轮；普通文本澄清由模型按本轮发送方式发出，用户下一条消息沿用同一 Session。固定渠道提示说明这一区别，真正 IM terminal 仍由 Runtime turn owner 发布。用户主动取消问题与能力不支持是不同意图。
+
 默认是`none`。原生飞书adapter可以声明`native-card`；Telegram、Dingtalk和OpenClaw Bridge不能因为插件有“异步卡片工具”就冒充同步host能力。
 
 敏感问题在IM中fail closed：不能要求用户把secret作为普通聊天文本或fallback答案发送。问题响应只有Sidecar返回成功后才清理pending；同chat多题/多pending的fallback路由必须确定且记录歧义诊断。

@@ -39,6 +39,7 @@ import {
 } from '../system-prompt';
 import type { InteractionScenario } from '../system-prompt';
 import {
+  channelInteractionDenyReason,
   getChannelInteractionDisallowedTools,
   shouldDisallowAskUserQuestion,
   shouldUseNonBypassForNativeAskUserQuestion,
@@ -10282,9 +10283,10 @@ function autoDenyNonInteractiveRequest(
     return false;
   const reason = managedCodexDisabled
     ? `External runtime AskUserQuestion request was denied because Managed Codex structured user input is disabled.`
-    : `External runtime AskUserQuestion request was denied because this ${scenario.type} host does not support native-card interaction.`;
+    : channelInteractionDenyReason(scenario);
   console.warn(`[external-session] ${reason} requestId=${event.requestId}`);
-  fireExternalImCallback('error', buildImErrorPayload(reason));
+  // Capability rejection settles this tool only. The Runtime turn owns the
+  // eventual IM terminal, including any ordinary-text clarification.
   const active = getExternalActivePair();
   if (active) {
     void active.runtime
@@ -10293,9 +10295,6 @@ function autoDenyNonInteractiveRequest(
         event.requestId,
         'deny',
         reason,
-        undefined,
-        undefined,
-        true,
       )
       .catch((err) =>
         console.error(
