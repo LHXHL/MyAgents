@@ -14,6 +14,8 @@
  *   BRIDGE_PLUGIN_CONFIG  Plugin configuration JSON (env var to avoid leaking secrets in `ps`)
  */
 
+import { cancellableFetch } from '../utils/cancellation';
+import { forwardLarkQuestion, larkQuestionDeliveryResponse, type LarkQuestionContext } from './lark-questions';
 import { createCompatApi, type CapturedPlugin, type CapturedTool } from './compat-api';
 import { createCompatRuntime } from './compat-runtime';
 import { getBotIdentity, abortResolver } from './bot-identity';
@@ -297,6 +299,11 @@ let streamIdCounter = 0;
 // MCP handler — initialized after plugin loads and captures tools
 let mcpHandler: ReturnType<typeof createMcpHandler> | null = null;
 let getCapturedToolsFn: (() => CapturedTool[]) | null = null;
+let questionCards: {
+  send: (chatId: string, card: Record<string, unknown>) => Promise<{ messageId: string }>;
+  update: (messageId: string, text: string) => Promise<void>;
+} | null = null;
+
 let getCapturedCommandsFn: (() => import('./compat-api').CapturedCommand[]) | null = null;
 /** Compat runtime — created in loadPlugin(), shared with gateway ctx for startAccount/restart */
 let loadedRuntime: ReturnType<typeof createCompatRuntime> | null = null;
@@ -537,6 +544,35 @@ async function loadPlugin() {
   }
 
   currentAccount = account; // Share with /restart-gateway and sendText/sendMedia closures
+
+  // Reuse the installed official plugin's transport, account and WebSocket dispatcher.
+  // Unknown plugins keep the shared text question path.
+  if (entryModule === '@larksuite/openclaw-lark') {
+    try {
+      const send = await import(pathToFileURL(`${pluginDir}/node_modules/${entryModule}/src/messaging/outbound/send.js`).href);
+      const interactive = await import(pathToFileURL(`${pluginDir}/node_modules/openclaw/plugin-sdk/plugin-runtime.js`).href);
+      if (typeof send.sendCardFeishu === 'function' && typeof send.updateCardFeishu === 'function') {
+        const registration = interactive.registerPluginInteractiveHandler('myagents', {
+          channel: 'feishu', namespace: 'myagents_question',
+          handler: (context: LarkQuestionContext) => forwardLarkQuestion(context, async response => {
+            const result = await cancellableFetch(`http://127.0.0.1:${rustPort}/api/im-bridge/question-response`, {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ botId, ...response }),
+            });
+            if (!result.ok) throw new Error(`Question response HTTP ${result.status}`);
+          }),
+        });
+        if (!registration.ok) throw new Error(registration.error);
+        questionCards = {
+          send: (chatId, card) => send.sendCardFeishu({ cfg: openclawCfg, accountId: currentAccount.accountId, to: chatId, card }),
+          update: (messageId, text) => send.updateCardFeishu({ cfg: openclawCfg, accountId: currentAccount.accountId,
+            messageId, card: { config: { wide_screen_mode: true, update_multi: true }, elements: [{ tag: 'div', text: { tag: 'plain_text', content: text } }] } }),
+        };
+      }
+    } catch {
+      console.warn('[plugin-bridge] Native question transport unavailable; using text questions');
+    }
+  }
 
   // Log account with secrets redacted, including nested plugin config.
   const redactedAccount = redactPluginBridgeSecrets(account);
@@ -804,6 +840,22 @@ const server = honoServe({
           supportsQrLogin,
         },
       });
+    }
+
+    if ((path === '/send-question-card' || path === '/update-question-card') && req.method === 'POST') {
+      if (!questionCards) return Response.json({ ok: false }, { status: 501 });
+      try {
+        if (path === '/send-question-card') {
+          const body = await req.json() as { chatId: string; card: Record<string, unknown> };
+          const result = await questionCards.send(body.chatId, body.card);
+          return larkQuestionDeliveryResponse(result);
+        }
+        const body = await req.json() as { messageId: string; text: string };
+        await questionCards.update(body.messageId, body.text);
+        return Response.json({ ok: true });
+      } catch {
+        return Response.json({ ok: false }, { status: 502 });
+      }
     }
 
     if (path === '/send-text' && req.method === 'POST') {

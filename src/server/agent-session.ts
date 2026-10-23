@@ -733,7 +733,7 @@ function mapToEffectiveSdkPermissionMode(
   mode: PermissionMode,
   scenario: InteractionScenario,
 ): 'acceptEdits' | 'plan' | 'bypassPermissions' | 'default' {
-  if (shouldUseNonBypassForNativeAskUserQuestion(mode, scenario)) {
+  if (shouldUseNonBypassForHostAskUserQuestion(mode, scenario)) {
     return 'acceptEdits';
   }
   return mapToSdkPermissionMode(mode);
@@ -2302,8 +2302,8 @@ import {
   getChannelInteractionDisallowedTools,
   shouldDisallowAskUserQuestion,
   shouldHardDenyChannelInteractionTool,
-  shouldUseNonBypassForNativeAskUserQuestion,
-  supportsAskUserQuestionNativeCard,
+  shouldUseNonBypassForHostAskUserQuestion,
+  supportsHostAskUserQuestion,
 } from './host-interaction';
 
 let currentScenario: InteractionScenario = { type: 'desktop' };
@@ -2314,7 +2314,7 @@ let currentScenario: InteractionScenario = { type: 'desktop' };
  */
 export async function setInteractionScenario(scenario: InteractionScenario): Promise<void> {
   currentScenario = scenario;
-  if (shouldUseNonBypassForNativeAskUserQuestion(configState.currentPermissionMode, scenario)) {
+  if (shouldUseNonBypassForHostAskUserQuestion(configState.currentPermissionMode, scenario)) {
     await lifecycleState.query?.setPermissionMode('acceptEdits').catch(err => {
       console.warn('[agent] failed to switch native-card channel session out of bypassPermissions:', err);
     });
@@ -4788,7 +4788,7 @@ async function handleAskUserQuestion(
       cleanup();
       if (wasPending) {
         broadcast('ask-user-question:expired', { ...interactiveEventScope(), requestId, reason: 'aborted' });
-        if (supportsAskUserQuestionNativeCard(currentScenario)) {
+        if (supportsHostAskUserQuestion(currentScenario)) {
           emitImEvent('ask-user-question-expired', JSON.stringify({ requestId, reason: 'aborted' }));
         }
       }
@@ -4804,7 +4804,7 @@ async function handleAskUserQuestion(
     pendingAskUserQuestions.set(requestId, { resolve, input: questionInput, blocksRoot });
   });
   broadcast('ask-user-question:request', requestPayload);
-  if (supportsAskUserQuestionNativeCard(currentScenario)) {
+  if (supportsHostAskUserQuestion(currentScenario)) {
     emitImEvent('ask-user-question-request', JSON.stringify(requestPayload));
   }
   return response;
@@ -5218,7 +5218,7 @@ function drainPendingInteractiveRequests(reason: 'reset' | 'session-end'): void 
     pendingAskUserQuestions.delete(requestId);
     try { broadcast('ask-user-question:expired', { ...interactiveEventScope(), requestId, reason }); } catch { /* swallow */ }
     try {
-      if (supportsAskUserQuestionNativeCard(currentScenario)) {
+      if (supportsHostAskUserQuestion(currentScenario)) {
         emitImEvent('ask-user-question-expired', JSON.stringify({ requestId, reason }));
       }
     } catch { /* swallow */ }
@@ -14310,7 +14310,7 @@ async function* messageGenerator(
         const activeSnapshot = item.deliveryMode === 'realtime' ? peekPendingOutputOwner()?.sourceItem?.channelSnapshot : undefined;
         item.channelSnapshot = activeSnapshot !== undefined ? activeSnapshot : await captureChannelTurn(
           currentScenario.type === 'im' || currentScenario.type === 'agent-channel'
-            ? currentScenario.hostInteraction?.askUserQuestion === 'native-card' ? 'native-card' : 'none' : 'none',
+            ? currentScenario.hostInteraction?.askUserQuestion ?? 'none' : 'none',
         );
         item.channelDelivery = effectiveChannelDelivery(item.channelSnapshot, item.channelDelivery);
         if (item.channelSnapshot) {

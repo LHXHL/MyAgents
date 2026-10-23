@@ -258,6 +258,7 @@ pub struct TelegramAdapter {
     bot_user_id: Arc<Mutex<Option<i64>>>,
     /// Channel for forwarding approval callbacks from inline keyboard button clicks
     approval_tx: mpsc::Sender<ApprovalCallback>,
+    question_tx: mpsc::Sender<super::QuestionCallback>,
     /// Short ID → (full request_id, created_at) mapping (callback_data has 64 byte limit)
     short_id_map: Arc<Mutex<HashMap<String, (String, Instant)>>>,
     /// Channel for group lifecycle events (bot added/removed from groups)
@@ -274,6 +275,7 @@ impl TelegramAdapter {
         config: &ImConfig,
         message_tx: mpsc::Sender<ImMessage>,
         approval_tx: mpsc::Sender<ApprovalCallback>,
+        question_tx: mpsc::Sender<super::QuestionCallback>,
         group_event_tx: mpsc::Sender<GroupEvent>,
     ) -> Self {
         // External host (api.telegram.org) — system proxy wanted, not the
@@ -300,6 +302,7 @@ impl TelegramAdapter {
             bot_username: Arc::new(Mutex::new(None)),
             bot_user_id: Arc::new(Mutex::new(None)),
             approval_tx,
+            question_tx,
             short_id_map: Arc::new(Mutex::new(HashMap::new())),
             group_event_tx,
             use_message_draft: config.telegram_use_draft.unwrap_or(true),
@@ -319,8 +322,14 @@ impl TelegramAdapter {
     }
 
     /// Read-only target resolution; never send a probe to discover identity.
-    pub(crate) async fn resolve_channel_chat(&self, id: &str) -> Result<(String, super::types::ImSourceType, Option<String>), String> {
-        let chat = self.api_call("getChat", &serde_json::json!({"chat_id":id})).await.map_err(|e| e.to_string())?;
+    pub(crate) async fn resolve_channel_chat(
+        &self,
+        id: &str,
+    ) -> Result<(String, super::types::ImSourceType, Option<String>), String> {
+        let chat = self
+            .api_call("getChat", &serde_json::json!({"chat_id":id}))
+            .await
+            .map_err(|e| e.to_string())?;
         resolve_handoff_chat(&chat)
     }
 
@@ -793,7 +802,7 @@ impl TelegramAdapter {
     /// Generate a short ID for callback_data (Telegram 64-byte limit).
     /// Stores the mapping for later resolution. Cleans up entries older than 15 minutes.
     async fn make_short_id(&self, full_id: &str) -> String {
-        let short = &full_id[full_id.len().saturating_sub(8)..];
+        let short = uuid::Uuid::new_v4().simple().to_string();
         let mut map = self.short_id_map.lock().await;
         // Periodic cleanup: remove entries older than 15 minutes (Sidecar times out at 10 min)
         let now = Instant::now();
@@ -807,8 +816,9 @@ impl TelegramAdapter {
         self.short_id_map
             .lock()
             .await
-            .remove(short)
-            .map(|(id, _)| id)
+            .get(short)
+            .filter(|(_, created)| created.elapsed() < Duration::from_secs(15 * 60))
+            .map(|(id, _)| id.clone())
     }
 
     /// Send an approval message with inline keyboard buttons.
@@ -912,6 +922,33 @@ impl TelegramAdapter {
         let cq = update.get("callback_query")?;
         let cq_id = cq["id"].as_str()?;
         let data = cq["data"].as_str()?;
+
+        if let Some((short, action)) = data
+            .strip_prefix("aq:")
+            .and_then(|value| value.split_once(':'))
+        {
+            let request_id = self.resolve_short_id(short).await;
+            let _ = self
+                .api_call("answerCallbackQuery", &json!({"callback_query_id": cq_id}))
+                .await;
+            if let Some(request_id) = request_id {
+                let option_index = if action == "cancel" {
+                    None
+                } else {
+                    Some(action.parse::<usize>().ok()?)
+                };
+                let _ = self
+                    .question_tx
+                    .send(super::QuestionCallback {
+                        request_id,
+                        option_index,
+                        answers: None,
+                        user_id: cq["from"]["id"].as_i64()?.to_string(),
+                    })
+                    .await;
+            }
+            return None;
+        }
 
         // Parse "pa:<short_id>:<action>"
         let parts: Vec<&str> = data.splitn(3, ':').collect();
@@ -1754,6 +1791,45 @@ impl super::adapter::ImStreamAdapter for TelegramAdapter {
             .map_err(|e| e.to_string())
     }
 
+    async fn send_question_card(
+        &self,
+        chat_id: &str,
+        payload: &super::types::AskUserQuestionPayload,
+        source_type: &ImSourceType,
+    ) -> super::adapter::AdapterResult<Option<String>> {
+        let text = super::questions::format_question_content(payload, source_type);
+        let short = self.make_short_id(&payload.request_id).await;
+        let buttons = question_buttons(payload, &short);
+        match self
+            .api_call(
+                "sendMessage",
+                &json!({"chat_id":chat_id, "text":text,
+            "reply_markup":{"inline_keyboard":buttons}}),
+            )
+            .await
+        {
+            Ok(result) => Ok(result["message_id"].as_i64().map(|id| id.to_string())),
+            Err(_) => self.send_message_returning_id(chat_id, &text).await,
+        }
+    }
+
+    async fn update_question_status(
+        &self,
+        chat_id: &str,
+        message_id: &str,
+        status: &str,
+    ) -> super::adapter::AdapterResult<()> {
+        self.api_call(
+            "editMessageText",
+            &json!({"chat_id":chat_id,
+            "message_id":message_id.parse::<i64>().map_err(|e| e.to_string())?,
+            "text":super::questions::status_text(status), "reply_markup":{"inline_keyboard":[]}}),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     async fn send_photo(
         &self,
         chat_id: &str,
@@ -1807,27 +1883,46 @@ impl super::adapter::ImStreamAdapter for TelegramAdapter {
     }
 }
 
-fn resolve_handoff_chat(chat: &Value) -> Result<(String, super::types::ImSourceType, Option<String>), String> {
-        let kind = match chat["type"].as_str() {
+fn resolve_handoff_chat(
+    chat: &Value,
+) -> Result<(String, super::types::ImSourceType, Option<String>), String> {
+    let kind = match chat["type"].as_str() {
             Some("private") => super::types::ImSourceType::Private,
             Some("group" | "supergroup") => super::types::ImSourceType::Group,
             Some("channel") => return Err("Native Telegram channel_post is not supported by this inbound router; no handoff or message was sent".into()),
             _ => return Err("Cannot resolve Telegram conversation kind".into()),
         };
-        let id = chat["id"].as_i64().ok_or("Telegram returned no chat ID")?.to_string();
-        let name = chat["title"].as_str().or(chat["first_name"].as_str()).map(str::to_string);
-        Ok((id, kind, name))
+    let id = chat["id"]
+        .as_i64()
+        .ok_or("Telegram returned no chat ID")?
+        .to_string();
+    let name = chat["title"]
+        .as_str()
+        .or(chat["first_name"].as_str())
+        .map(str::to_string);
+    Ok((id, kind, name))
 }
 
 #[cfg(test)]
 mod tests {
     #[test]
     fn handoff_resolves_supported_inbound_kinds_and_rejects_channel_posts() {
-        for (kind, expected) in [("private", super::super::types::ImSourceType::Private), ("group", super::super::types::ImSourceType::Group), ("supergroup", super::super::types::ImSourceType::Group)] {
-            let result = super::resolve_handoff_chat(&serde_json::json!({"id":123,"type":kind,"title":"name"})).unwrap();
+        for (kind, expected) in [
+            ("private", super::super::types::ImSourceType::Private),
+            ("group", super::super::types::ImSourceType::Group),
+            ("supergroup", super::super::types::ImSourceType::Group),
+        ] {
+            let result = super::resolve_handoff_chat(
+                &serde_json::json!({"id":123,"type":kind,"title":"name"}),
+            )
+            .unwrap();
             assert_eq!(result, ("123".into(), expected, Some("name".into())));
         }
-        assert!(super::resolve_handoff_chat(&serde_json::json!({"id":123,"type":"channel"})).unwrap_err().contains("channel_post"));
+        assert!(
+            super::resolve_handoff_chat(&serde_json::json!({"id":123,"type":"channel"}))
+                .unwrap_err()
+                .contains("channel_post")
+        );
     }
 
     use super::*;
@@ -1836,7 +1931,13 @@ mod tests {
         let (tx, _) = mpsc::channel(2);
         let (approval, _) = mpsc::channel(2);
         let (groups, _) = mpsc::channel(2);
-        let adapter = TelegramAdapter::new(&ImConfig::default(), tx, approval, groups);
+        let adapter = TelegramAdapter::new(
+            &ImConfig::default(),
+            tx,
+            approval,
+            mpsc::channel(1).0,
+            groups,
+        );
         let update = |id, username: &str, name: &str, chat_type: &str| {
             serde_json::json!({"message": {
                 "message_id":1,"chat":{"id":id,"type":chat_type,"title":"Team"},
@@ -1852,10 +1953,16 @@ mod tests {
             accepted.source_metadata.sender_username.as_deref(),
             Some("trusted_handle")
         );
-        let untrusted = adapter.process_update(&update(44, "attacker", "trusted_handle", "private")).await.unwrap();
+        let untrusted = adapter
+            .process_update(&update(44, "attacker", "trusted_handle", "private"))
+            .await
+            .unwrap();
         // The adapter only parses identity; Channel admission owns authorization.
         assert_eq!(untrusted.sender_id, "44");
-        assert_eq!(untrusted.source_metadata.sender_username.as_deref(), Some("attacker"));
+        assert_eq!(
+            untrusted.source_metadata.sender_username.as_deref(),
+            Some("attacker")
+        );
         assert!(adapter
             .process_update(&update(43, "other", "Bob", "private"))
             .await
@@ -1982,5 +2089,60 @@ mod tests {
         assert!(result[0].text.contains("bbb"));
         assert_eq!(result[0].sender_id, "42"); // sender metadata preserved
         assert_eq!(result[1].text, "new message");
+    }
+}
+
+fn question_buttons(payload: &super::types::AskUserQuestionPayload, short: &str) -> Vec<Value> {
+    let mut buttons = Vec::new();
+    if let [question] = payload.questions.as_slice() {
+        if !question.multi_select {
+            for (index, option) in question.options.iter().enumerate() {
+                buttons.push(json!([{"text": option.label, "callback_data": format!("aq:{}:{}", short, index)}]));
+            }
+        }
+    }
+    buttons.push(json!([{"text": "取消", "callback_data": format!("aq:{}:cancel", short)}]));
+
+    buttons
+}
+
+#[cfg(test)]
+mod question_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn question_buttons_keep_unicode_out_of_callback_data_and_preserve_retry_identity() {
+        let adapter = TelegramAdapter::new(
+            &ImConfig::default(),
+            mpsc::channel(1).0,
+            mpsc::channel(1).0,
+            mpsc::channel(1).0,
+            mpsc::channel(1).0,
+        );
+        let request_id = "请求🦀".repeat(100);
+        let short = adapter.make_short_id(&request_id).await;
+        let other = adapter.make_short_id(&request_id).await;
+        assert_ne!(short, other);
+        let payload = serde_json::from_value(json!({"requestId":request_id,"questions":[{
+            "header":"选择", "question":"哪一个？", "options":[{"label":"中文🦀".repeat(30)}]
+        }]}))
+        .unwrap();
+        let buttons = question_buttons(&payload, &short);
+        assert_eq!(buttons[0][0]["text"], "中文🦀".repeat(30));
+        for row in &buttons {
+            assert!(row[0]["callback_data"].as_str().unwrap().len() <= 64);
+        }
+        assert_eq!(buttons[0][0]["callback_data"], format!("aq:{}:0", short));
+        assert_eq!(
+            adapter.resolve_short_id(&short).await.as_deref(),
+            Some(request_id.as_str())
+        );
+        assert_eq!(
+            adapter.resolve_short_id(&short).await.as_deref(),
+            Some(request_id.as_str())
+        );
+        adapter.short_id_map.lock().await.get_mut(&short).unwrap().1 =
+            Instant::now() - Duration::from_secs(901);
+        assert!(adapter.resolve_short_id(&short).await.is_none());
     }
 }

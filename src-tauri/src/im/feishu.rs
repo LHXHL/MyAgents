@@ -19,8 +19,8 @@ use prost::Message as ProstMessage;
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 
 use super::types::{
-    AskUserQuestionItem, AskUserQuestionPayload, GroupEvent, ImAttachment, ImAttachmentType,
-    ImConfig, ImMessage, ImPlatform, ImSourceType,
+    AskUserQuestionPayload, GroupEvent, ImAttachment, ImAttachmentType, ImConfig, ImMessage,
+    ImPlatform, ImSourceType,
 };
 use super::util::{mime_to_ext, sanitize_filename};
 use super::{ApprovalCallback, QuestionCallback};
@@ -2002,66 +2002,6 @@ impl FeishuAdapter {
         Ok(())
     }
 
-    fn question_answer_key(question: &AskUserQuestionItem, idx: usize) -> String {
-        question.id.clone().unwrap_or_else(|| idx.to_string())
-    }
-
-    fn format_question_content(
-        payload: &AskUserQuestionPayload,
-        source_type: &ImSourceType,
-    ) -> String {
-        let mut lines = vec!["请回答下面的问题。".to_string()];
-        if payload.questions.iter().any(|q| q.is_secret) {
-            let scope = if matches!(source_type, ImSourceType::Group) {
-                "群聊"
-            } else {
-                "IM"
-            };
-            lines.push(format!(
-                "其中包含敏感输入，{} 不支持安全收集。请取消后在桌面端继续。",
-                scope
-            ));
-            return lines.join("\n");
-        }
-        for (idx, q) in payload.questions.iter().enumerate() {
-            lines.push(format!(
-                "\n**{}. {}**\n{}{}",
-                idx + 1,
-                q.header,
-                q.question,
-                if q.required { "" } else { "\n（可跳过）" },
-            ));
-            if q.options.is_empty() {
-                lines.push("请直接回复文本。".to_string());
-            } else {
-                let option_lines = q
-                    .options
-                    .iter()
-                    .enumerate()
-                    .map(|(opt_idx, opt)| {
-                        if opt.description.is_empty() {
-                            format!("{}. {}", opt_idx + 1, opt.label)
-                        } else {
-                            format!("{}. {} — {}", opt_idx + 1, opt.label, opt.description)
-                        }
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                lines.push(option_lines);
-                if q.multi_select {
-                    lines.push("多选请回复编号或选项名，用逗号分隔。".to_string());
-                } else {
-                    lines.push("请回复编号或选项名。".to_string());
-                }
-            }
-        }
-        if payload.questions.len() > 1 {
-            lines.push("\n多题请按顺序逐行回复；可选题留空表示跳过。".to_string());
-        }
-        lines.push("回复「取消」可取消本次提问。".to_string());
-        lines.join("\n")
-    }
-
     /// Send a native AskUserQuestion card for Feishu.
     pub async fn send_question_card(
         &self,
@@ -2070,62 +2010,7 @@ impl FeishuAdapter {
         source_type: &ImSourceType,
     ) -> Result<Option<String>, String> {
         let url = format!("{}/im/v1/messages?receive_id_type=chat_id", FEISHU_API_BASE);
-        let mut elements = vec![json!({
-            "tag": "div",
-            "text": {
-                "tag": "lark_md",
-                "content": Self::format_question_content(payload, source_type),
-            }
-        })];
-
-        if payload.questions.len() == 1
-            && !payload.questions[0].multi_select
-            && !payload.questions[0].options.is_empty()
-            && !(matches!(source_type, ImSourceType::Group) && payload.questions[0].is_secret)
-        {
-            let q = &payload.questions[0];
-            let key = Self::question_answer_key(q, 0);
-            let mut actions = q
-                .options
-                .iter()
-                .take(8)
-                .map(|opt| {
-                    let mut answers = serde_json::Map::new();
-                    answers.insert(key.clone(), Value::String(opt.label.clone()));
-                    json!({
-                        "tag": "button",
-                        "text": { "tag": "plain_text", "content": opt.label },
-                        "type": "primary",
-                        "value": {
-                            "kind": "ask_user_question",
-                            "rid": payload.request_id,
-                            "action": "answer",
-                            "answers": Value::Object(answers),
-                        }
-                    })
-                })
-                .collect::<Vec<_>>();
-            actions.push(json!({
-                "tag": "button",
-                "text": { "tag": "plain_text", "content": "取消" },
-                "type": "default",
-                "value": {
-                    "kind": "ask_user_question",
-                    "rid": payload.request_id,
-                    "action": "cancel",
-                }
-            }));
-            elements.push(json!({ "tag": "action", "actions": actions }));
-        }
-
-        let card = json!({
-            "config": { "wide_screen_mode": true },
-            "header": {
-                "title": { "tag": "plain_text", "content": "请选择或填写" },
-                "template": "blue"
-            },
-            "elements": elements,
-        });
+        let card = super::questions::feishu_card(payload, source_type, "");
         let body = json!({
             "receive_id": chat_id,
             "msg_type": "interactive",
@@ -2147,7 +2032,7 @@ impl FeishuAdapter {
                     chat_id,
                     &format!(
                         "请选择或填写\n\n{}",
-                        Self::format_question_content(payload, source_type)
+                        super::questions::format_question_content(payload, source_type)
                     ),
                 )
                 .await
@@ -2235,23 +2120,43 @@ impl FeishuAdapter {
     /// Get chat/group name by chat_id.
     /// open_id and p2p chat_id are different identifiers. Resolve using a read,
     /// and fail closed if the platform cannot expose the mapping to this bot.
-    pub(crate) async fn resolve_channel_chat(&self, target: &super::channel_messaging::ChannelTarget) -> Result<(String, super::types::ImSourceType, Option<String>), String> {
+    pub(crate) async fn resolve_channel_chat(
+        &self,
+        target: &super::channel_messaging::ChannelTarget,
+    ) -> Result<(String, super::types::ImSourceType, Option<String>), String> {
         let chat_id = if target.target_type == "user" {
-            let mut url = reqwest::Url::parse("https://open.feishu.cn/open-apis/chat/v3/p2p/id").map_err(|e| e.to_string())?;
+            let mut url = reqwest::Url::parse("https://open.feishu.cn/open-apis/chat/v3/p2p/id")
+                .map_err(|e| e.to_string())?;
             url.query_pairs_mut().append_pair("open_id", &target.id);
             let result = self.api_call("GET", url.as_str(), None).await?;
-            result["open_chat_id"].as_str().or(result["data"]["open_chat_id"].as_str())
-                .filter(|id| !id.is_empty()).ok_or("Cannot resolve Feishu open_id to the inbound p2p chat_id; no message was sent")?.to_string()
-        } else { target.id.clone() };
-        let mut url = reqwest::Url::parse("https://open.feishu.cn/open-apis/im/v1/chats/").map_err(|e| e.to_string())?;
-        url.path_segments_mut().map_err(|_| "Invalid Feishu URL")?.pop_if_empty().push(&chat_id);
+            result["open_chat_id"]
+                .as_str()
+                .or(result["data"]["open_chat_id"].as_str())
+                .filter(|id| !id.is_empty())
+                .ok_or(
+                    "Cannot resolve Feishu open_id to the inbound p2p chat_id; no message was sent",
+                )?
+                .to_string()
+        } else {
+            target.id.clone()
+        };
+        let mut url = reqwest::Url::parse("https://open.feishu.cn/open-apis/im/v1/chats/")
+            .map_err(|e| e.to_string())?;
+        url.path_segments_mut()
+            .map_err(|_| "Invalid Feishu URL")?
+            .pop_if_empty()
+            .push(&chat_id);
         let result = self.api_call("GET", url.as_str(), None).await?;
         let kind = match result["data"]["chat_mode"].as_str() {
             Some("p2p") => super::types::ImSourceType::Private,
             Some("group") => super::types::ImSourceType::Group,
             _ => return Err("Cannot resolve Feishu conversation kind; no message was sent".into()),
         };
-        Ok((chat_id, kind, result["data"]["name"].as_str().map(str::to_string)))
+        Ok((
+            chat_id,
+            kind,
+            result["data"]["name"].as_str().map(str::to_string),
+        ))
     }
 
     async fn get_chat_info(&self, chat_id: &str) -> Result<String, String> {
@@ -2362,6 +2267,7 @@ impl FeishuAdapter {
         };
 
         Some(QuestionCallback {
+            option_index: None,
             request_id,
             answers,
             user_id,

@@ -229,6 +229,10 @@ pub async fn start_management_api() -> Result<u16, String> {
         .route("/api/im/channel-context", post(channel_context_handler))
         .route("/api/im/mirror", post(mirror_to_channel_handler))
         .route("/api/im-bridge/message", post(handle_bridge_message))
+        .route(
+            "/api/im-bridge/question-response",
+            post(handle_bridge_question_response),
+        )
         .route("/api/cron/stop", post(stop_cron_handler))
         .route("/api/plugin/list", get(list_plugins_handler))
         .route("/api/plugin/install", post(install_plugin_handler))
@@ -3675,6 +3679,43 @@ struct BridgeMessagePayload {
     attachments: Vec<BridgeAttachment>,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BridgeQuestionResponse {
+    bot_id: String,
+    request_id: String,
+    user_id: String,
+    answers: Option<std::collections::HashMap<String, String>>,
+}
+
+async fn handle_bridge_question_response(
+    Json(payload): Json<BridgeQuestionResponse>,
+) -> (axum::http::StatusCode, Json<serde_json::Value>) {
+    let Some(tx) = im::bridge::get_bridge_question_sender(&payload.bot_id).await else {
+        return (
+            axum::http::StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"ok":false})),
+        );
+    };
+    let ok = tx
+        .send(im::QuestionCallback {
+            request_id: payload.request_id,
+            user_id: payload.user_id,
+            answers: payload.answers,
+            option_index: None,
+        })
+        .await
+        .is_ok();
+    (
+        if ok {
+            axum::http::StatusCode::OK
+        } else {
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        },
+        Json(serde_json::json!({"ok":ok})),
+    )
+}
+
 async fn handle_bridge_message(
     Json(payload): Json<BridgeMessagePayload>,
 ) -> (axum::http::StatusCode, Json<serde_json::Value>) {
@@ -5406,8 +5447,15 @@ struct InboxDeliverRequest {
 async fn inbox_deliver_handler(Json(req): Json<InboxDeliverRequest>) -> Json<serde_json::Value> {
     // Channel identities are minted only by the Channel owner. The generic
     // Session messaging API cannot assert a Channel handoff on a caller's behalf.
-    if req.message.session_event.as_ref().is_some_and(|event| event.get("channelHandoff").is_some()) {
-        return Json(serde_json::json!({"ok":false,"error":"Channel handoffs must use myagents im send-message"}));
+    if req
+        .message
+        .session_event
+        .as_ref()
+        .is_some_and(|event| event.get("channelHandoff").is_some())
+    {
+        return Json(
+            serde_json::json!({"ok":false,"error":"Channel handoffs must use myagents im send-message"}),
+        );
     }
     let Some(manager) = get_sidecar_state() else {
         return Json(serde_json::json!({

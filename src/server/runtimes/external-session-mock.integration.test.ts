@@ -6157,8 +6157,10 @@ describe('external SessionEngine with fake runtime', () => {
     unsubscribe();
   });
 
-  it.each(['answer', 'cancel'] as const)('retains native-card question %s semantics (#675)', async action => {
-    const harness = await createHarness([{ kind: 'silent' }], { runtimeType: 'claude-code' });
+  it.each((['claude-code', 'dsh', 'codex'] as const).flatMap(runtimeType =>
+    (['native-card', 'text'] as const).flatMap(capability => (['answer', 'cancel'] as const).map(action => ({ runtimeType, capability, action }))),
+  ))('retains $runtimeType $capability question $action semantics', async ({ runtimeType, capability, action }) => {
+    const harness = await createHarness([{ kind: 'silent' }], { runtimeType });
     const { imEventBus } = await import('../utils/im-event-bus');
     const events: string[] = [];
     const unsubscribe = imEventBus.subscribe(imEventBus.currentSeq(), event => {
@@ -6167,14 +6169,14 @@ describe('external SessionEngine with fake runtime', () => {
     const response = vi.spyOn(harness.runtime, 'respondPermission').mockResolvedValue(undefined);
     const admitted = await harness.engine.enqueueImMessage({
       message: 'clarify', requestId: 'card-request', sessionId: 'card-session', workspacePath: join(harness.home, 'workspace'),
-      scenario: { type: 'agent-channel', platform: 'feishu', sourceType: 'private', hostInteraction: { askUserQuestion: 'native-card' } },
+      scenario: { type: 'agent-channel', platform: 'feishu', sourceType: 'private', hostInteraction: { askUserQuestion: capability } },
       permissionMode: 'full-auto', metadataBirthPending: true,
     });
     await admitted.dispatchAcceptance;
     await waitFor(() => harness.runtime.sentMessages.length === 1, 'native-card turn');
     harness.runtime.emitForTest({ kind: 'permission_request', requestId: 'card-tool', toolUseId: 'card-tool-use', toolName: 'AskUserQuestion',
       input: { questions: [{ question: 'Which format?', header: 'Format', options: [{ label: 'A', description: 'A' }, { label: 'B', description: 'B' }], multiSelect: false }] } });
-    expect(events).toContain('ask-user-question-request');
+    await waitFor(() => events.includes('ask-user-question-request'), 'question delivery');
     expect(response).not.toHaveBeenCalled();
     await expect(harness.externalSession.respondExternalAskUserQuestion('card-tool', action === 'answer' ? { '0': 'B' } : null)).resolves.toBe(true);
     expect(response.mock.calls[0][2]).toBe(action === 'answer' ? 'allow_once' : 'deny');

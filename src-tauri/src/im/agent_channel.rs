@@ -508,6 +508,51 @@ async fn abort_immediate_reply<A: adapter::ImStreamAdapter>(
     adapter.send_message(&msg.chat_id, text).await
 }
 
+async fn accept_approval_callback(
+    pending_approvals: &PendingApprovals,
+    client: &reqwest::Client,
+    cb: &ApprovalCallback,
+) -> Option<PendingApproval> {
+    let pending = pending_approvals.lock().await.get(&cb.request_id).cloned();
+    if let Some(p) = pending {
+        if p.created_at.elapsed() >= Duration::from_secs(15 * 60)
+            || p.requester_user_id
+                .as_deref()
+                .is_some_and(|id| id != cb.user_id)
+        {
+            return None;
+        }
+        // POST decision to Sidecar
+        let url = format!(
+            "http://127.0.0.1:{}/api/im/permission-response",
+            p.sidecar_port
+        );
+        let result = client
+            .post(&url)
+            .json(&json!({
+                "requestId": cb.request_id,
+                "decision": cb.decision,
+            }))
+            .send()
+            .await;
+        let accepted = match result {
+            Ok(resp) if resp.status().is_success() => resp
+                .json::<serde_json::Value>()
+                .await
+                .is_ok_and(|body| body["success"] == true),
+            _ => false,
+        };
+        if !accepted {
+            ulog_warn!("[im] Permission response was not accepted; keeping pending request");
+            return None;
+        }
+        pending_approvals.lock().await.remove(&cb.request_id);
+        Some(p)
+    } else {
+        None
+    }
+}
+
 fn question_answer_key(question: &AskUserQuestionItem, idx: usize) -> String {
     question.id.clone().unwrap_or_else(|| idx.to_string())
 }
@@ -550,7 +595,7 @@ fn normalize_question_answer(
         for part in trimmed.split([',', '，']) {
             match parse_one(part) {
                 Some(label) => labels.push(label),
-                None => return Err("多选答案请使用选项编号或完整选项名，并用逗号分隔".to_string()),
+                None => return Ok(Some(trimmed.to_string())),
             }
         }
         if labels.is_empty() && question.required {
@@ -559,9 +604,9 @@ fn normalize_question_answer(
         return Ok(Some(labels.join(",")));
     }
 
-    parse_one(trimmed)
-        .map(Some)
-        .ok_or_else(|| "答案请使用选项编号或完整选项名".to_string())
+    Ok(Some(
+        parse_one(trimmed).unwrap_or_else(|| trimmed.to_string()),
+    ))
 }
 
 fn parse_question_text_answers(
@@ -905,6 +950,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
             &config,
             msg_tx.clone(),
             approval_tx.clone(),
+            question_tx.clone(),
             group_event_tx.clone(),
         )))),
         ImPlatform::Feishu => {
@@ -966,7 +1012,13 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
             .await?;
 
             // Register bridge sender for inbound message routing
-            bridge::register_bridge_sender(&bot_id, &channel_id, msg_tx.clone()).await;
+            bridge::register_bridge_sender(
+                &bot_id,
+                &channel_id,
+                msg_tx.clone(),
+                question_tx.clone(),
+            )
+            .await;
 
             let mut bridge_adapter = BridgeAdapter::new(channel_id.clone(), bp.port);
             bridge_adapter.sync_capabilities().await;
@@ -1207,42 +1259,10 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                 }
             };
 
-            let pending = pending_approvals_for_handler
-                .lock()
-                .await
-                .remove(&cb.request_id);
-            if let Some(p) = pending {
-                if p.created_at.elapsed() >= Duration::from_secs(15 * 60) {
-                    continue;
-                }
-                // POST decision to Sidecar
-                let url = format!(
-                    "http://127.0.0.1:{}/api/im/permission-response",
-                    p.sidecar_port
-                );
-                let result = approval_client
-                    .post(&url)
-                    .json(&json!({
-                        "requestId": cb.request_id,
-                        "decision": cb.decision,
-                    }))
-                    .send()
-                    .await;
-                match result {
-                    Ok(resp) if resp.status().is_success() => {
-                        ulog_info!(
-                            "[im] Approval forwarded: rid={}, decision={}",
-                            &cb.request_id[..cb.request_id.len().min(16)],
-                            cb.decision
-                        );
-                    }
-                    Ok(resp) => {
-                        ulog_error!("[im] Approval forward failed: HTTP {}", resp.status());
-                    }
-                    Err(e) => {
-                        ulog_error!("[im] Approval forward error: {}", e);
-                    }
-                }
+            if let Some(p) =
+                accept_approval_callback(&pending_approvals_for_handler, &approval_client, &cb)
+                    .await
+            {
                 // Update card to show result (skip if card send had failed)
                 if !p.card_message_id.is_empty() {
                     let status_text = if cb.decision == "deny" {
@@ -1254,11 +1274,6 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                         .update_approval_status(&p.chat_id, &p.card_message_id, status_text)
                         .await;
                 }
-            } else {
-                ulog_warn!(
-                    "[im] Approval callback for unknown request_id: {}",
-                    &cb.request_id[..cb.request_id.len().min(16)]
-                );
             }
         }
         ulog_info!("[im] Approval handler exited");
@@ -1270,7 +1285,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
     let mut question_shutdown_rx = shutdown_rx.clone();
     let question_handle = tauri::async_runtime::spawn(async move {
         loop {
-            let cb = tokio::select! {
+            let mut cb = tokio::select! {
                 msg = question_rx.recv() => match msg {
                     Some(cb) => cb,
                     None => break,
@@ -1290,10 +1305,9 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                     );
                     continue;
                 };
-                if matches!(p.source_type, ImSourceType::Group)
-                    && p.requester_user_id
-                        .as_deref()
-                        .is_some_and(|id| id != cb.user_id)
+                if p.requester_user_id
+                    .as_deref()
+                    .is_some_and(|id| id != cb.user_id)
                 {
                     ulog_warn!(
                         "[im] Ignoring AskUserQuestion callback from non-requester rid={}",
@@ -1308,6 +1322,22 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
             };
 
             let p = pending;
+            if let Some(index) = cb.option_index {
+                let Some(question) = p
+                    .questions
+                    .first()
+                    .filter(|q| p.questions.len() == 1 && !q.multi_select)
+                else {
+                    continue;
+                };
+                let Some(option) = question.options.get(index) else {
+                    continue;
+                };
+                cb.answers = Some(HashMap::from([(
+                    question_answer_key(question, 0),
+                    option.label.clone(),
+                )]));
+            }
             let url = format!(
                 "http://127.0.0.1:{}/api/ask-user-question/respond",
                 p.sidecar_port
@@ -2018,6 +2048,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                 }
                                 let _ = question_tx_for_loop
                                     .send(QuestionCallback {
+                                        option_index: None,
                                         request_id,
                                         answers,
                                         user_id: msg.sender_id.clone(),
@@ -3727,6 +3758,63 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn permission_text_requires_requester_and_runtime_acceptance() {
+        use axum::{routing::post, Json, Router};
+        for accepted in [false, true] {
+            let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let captured = Arc::clone(&requests);
+            let app = Router::new().route(
+                "/api/im/permission-response",
+                post(move |Json(body): Json<serde_json::Value>| {
+                    let captured = Arc::clone(&captured);
+                    async move {
+                        captured.lock().unwrap().push(body);
+                        Json(json!({"success":accepted}))
+                    }
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let server = tauri::async_runtime::spawn(async move {
+                axum::serve(listener, app).await.unwrap();
+            });
+            let pending = Arc::new(Mutex::new(HashMap::from([(
+                "permission".to_string(),
+                PendingApproval {
+                    sidecar_port: port,
+                    requester_user_id: Some("owner".into()),
+                    chat_id: "chat".into(),
+                    card_message_id: "message".into(),
+                    created_at: Instant::now(),
+                },
+            )])));
+            let client = crate::local_http::json_client(Duration::from_secs(2));
+            let mut cb = ApprovalCallback {
+                request_id: "permission".into(),
+                user_id: "other".into(),
+                decision: "allow_once".into(),
+            };
+            assert!(accept_approval_callback(&pending, &client, &cb)
+                .await
+                .is_none());
+            assert!(requests.lock().unwrap().is_empty());
+            cb.user_id = "owner".into();
+            assert_eq!(
+                accept_approval_callback(&pending, &client, &cb)
+                    .await
+                    .is_some(),
+                accepted
+            );
+            assert_eq!(pending.lock().await.contains_key("permission"), !accepted);
+            assert_eq!(
+                requests.lock().unwrap().as_slice(),
+                &[json!({"requestId":"permission", "decision":"allow_once"})]
+            );
+            server.abort();
+        }
+    }
+
     #[test]
     fn question_text_keeps_free_text_commas() {
         let questions = vec![question("notes", vec![], false, true, false)];
@@ -3761,6 +3849,27 @@ mod tests {
             answers.get("choices").map(String::as_str),
             Some("Alpha,Gamma")
         );
+    }
+
+    #[test]
+    fn question_options_allow_users_own_words() {
+        for multi_select in [false, true] {
+            let questions = vec![question(
+                "choice",
+                vec!["A", "B"],
+                multi_select,
+                true,
+                false,
+            )];
+            let result = parse_question_text_answers(
+                &questions,
+                &ImSourceType::Private,
+                "Both, but start with B",
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(result["choice"], "Both, but start with B");
+        }
     }
 
     #[test]

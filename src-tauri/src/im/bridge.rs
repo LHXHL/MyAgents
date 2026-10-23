@@ -12,7 +12,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use reqwest::Client;
-use serde_json::json;
+use serde_json::{json, Value};
 use tokio::sync::{mpsc, Mutex};
 
 use crate::im::adapter::{AdapterResult, ImAdapter, ImStreamAdapter};
@@ -58,6 +58,7 @@ fn plugin_install_lock(plugin_dir: &std::path::Path) -> std::sync::Arc<Mutex<()>
 /// Registry entry: sender channel + plugin ID (for uninstall safety check).
 struct BridgeSenderEntry {
     tx: mpsc::Sender<ImMessage>,
+    question_tx: mpsc::Sender<super::QuestionCallback>,
     plugin_id: String,
 }
 
@@ -124,11 +125,17 @@ fn get_registry() -> &'static Mutex<HashMap<String, BridgeSenderEntry>> {
     BRIDGE_SENDERS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-pub async fn register_bridge_sender(bot_id: &str, plugin_id: &str, tx: mpsc::Sender<ImMessage>) {
+pub async fn register_bridge_sender(
+    bot_id: &str,
+    plugin_id: &str,
+    tx: mpsc::Sender<ImMessage>,
+    question_tx: mpsc::Sender<super::QuestionCallback>,
+) {
     get_registry().lock().await.insert(
         bot_id.to_string(),
         BridgeSenderEntry {
             tx,
+            question_tx,
             plugin_id: plugin_id.to_string(),
         },
     );
@@ -144,6 +151,16 @@ pub async fn get_bridge_sender(bot_id: &str) -> Option<mpsc::Sender<ImMessage>> 
         .await
         .get(bot_id)
         .map(|e| e.tx.clone())
+}
+
+pub async fn get_bridge_question_sender(
+    bot_id: &str,
+) -> Option<mpsc::Sender<super::QuestionCallback>> {
+    get_registry()
+        .lock()
+        .await
+        .get(bot_id)
+        .map(|entry| entry.question_tx.clone())
 }
 
 /// Check if any running bot uses the given plugin_id.
@@ -877,13 +894,20 @@ impl ImStreamAdapter for BridgeAdapter {
 
     async fn send_approval_card(
         &self,
-        _chat_id: &str,
+        chat_id: &str,
         _request_id: &str,
-        _tool_name: &str,
-        _tool_input: &str,
+        tool_name: &str,
+        tool_input: &str,
     ) -> AdapterResult<Option<String>> {
-        // No approval card support for bridge plugins
-        Ok(None)
+        self.send_message_returning_id(
+            chat_id,
+            &format!(
+                "工具授权请求\n工具：{}\n参数：{}\n\n请明确回复「允许」「始终允许」或「拒绝」。",
+                tool_name,
+                tool_input.chars().take(500).collect::<String>()
+            ),
+        )
+        .await
     }
 
     async fn update_approval_status(
@@ -893,6 +917,57 @@ impl ImStreamAdapter for BridgeAdapter {
         _status: &str,
     ) -> AdapterResult<()> {
         // No-op
+        Ok(())
+    }
+
+    async fn send_question_card(
+        &self,
+        chat_id: &str,
+        payload: &super::types::AskUserQuestionPayload,
+        source_type: &super::types::ImSourceType,
+    ) -> AdapterResult<Option<String>> {
+        let card = super::questions::feishu_card(payload, source_type, "myagents_question:");
+        let response = self
+            .client
+            .post(self.url("/send-question-card"))
+            .json(&json!({"chatId":chat_id, "card":card}))
+            .send()
+            .await;
+        if let Ok(response) = response {
+            if response.status().is_success() {
+                let body: Value = response.json().await.map_err(|e| e.to_string())?;
+                return Ok(body["messageId"]
+                    .as_str()
+                    .map(|id| format!("question-card:{}", id)));
+            }
+        }
+        self.send_message_returning_id(
+            chat_id,
+            &super::questions::format_question_content(payload, source_type),
+        )
+        .await
+    }
+
+    async fn update_question_status(
+        &self,
+        _chat_id: &str,
+        message_id: &str,
+        status: &str,
+    ) -> AdapterResult<()> {
+        if let Some(message_id) = message_id.strip_prefix("question-card:") {
+            let response = self
+                .client
+                .post(self.url("/update-question-card"))
+                .json(
+                    &json!({"messageId":message_id, "text":super::questions::status_text(status)}),
+                )
+                .send()
+                .await
+                .map_err(|e| e.to_string())?;
+            if !response.status().is_success() {
+                return Err(format!("Question card update: HTTP {}", response.status()));
+            }
+        }
         Ok(())
     }
 
@@ -2237,7 +2312,7 @@ pub async fn install_openclaw_plugin<R: tauri::Runtime>(
 }
 
 /// Our shim's OpenClaw compat version. Must match sdk-shim/package.json and compat-runtime.ts.
-const SHIM_COMPAT_VERSION: &str = "2026.10.13";
+const SHIM_COMPAT_VERSION: &str = "2026.10.24";
 
 /// Check if installed plugin's peerDependencies.openclaw is compatible with our shim.
 /// Returns a warning message if incompatible, None if OK.

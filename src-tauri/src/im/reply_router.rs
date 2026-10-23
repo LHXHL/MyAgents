@@ -361,80 +361,47 @@ impl ReplyRouter {
                     "本次提问包含敏感输入，IM 渠道暂不支持安全收集，已自动取消。请在桌面端继续，或改用非敏感文本。",
                 )
                 .await;
-            let url = format!(
-                "http://127.0.0.1:{}/api/ask-user-question/respond",
-                sidecar_port
-            );
-            match crate::local_http::json_client(Duration::from_secs(30))
-                .post(&url)
-                .json(&json!({
-                    "requestId": question_request_id,
-                    "answers": Value::Null,
-                }))
-                .send()
-                .await
-            {
-                Ok(resp) => {
-                    let status = resp.status();
-                    match resp.json::<Value>().await {
-                        Ok(body)
-                            if status.is_success()
-                                && body.get("success").and_then(Value::as_bool) == Some(true) =>
-                        {
-                            ulog_info!(
-                                "[reply-router] AskUserQuestion secret request cancelled: rid={}",
-                                &payload.request_id[..payload.request_id.len().min(16)]
-                            );
-                        }
-                        Ok(body) => {
-                            ulog_error!(
-                                "[reply-router] AskUserQuestion secret cancel failed: HTTP {} body={}",
-                                status,
-                                body
-                            );
-                        }
-                        Err(e) => {
-                            ulog_error!(
-                                "[reply-router] AskUserQuestion secret cancel returned invalid JSON: {}",
-                                e
-                            );
-                        }
-                    }
-                }
-                Err(e) => {
-                    ulog_error!("[reply-router] AskUserQuestion secret cancel error: {}", e);
-                }
-            }
+            super::questions::cancel_question(sidecar_port, &question_request_id).await;
             return;
         }
 
-        let card_msg_id = match adapter
+        // Register before platform I/O: a button can arrive before send returns.
+        self.pending_questions.lock().await.insert(
+            question_request_id.clone(),
+            PendingQuestion {
+                sidecar_port,
+                chat_id: chat_id.clone(),
+                card_message_id: String::new(),
+                requester_user_id,
+                source_type: source_type.clone(),
+                questions: payload.questions.clone(),
+                created_at: Instant::now(),
+            },
+        );
+        match adapter
             .send_question_card(&chat_id, &payload, &source_type)
             .await
         {
-            Ok(Some(mid)) => mid,
-            Ok(None) => String::new(),
-            Err(e) => {
-                ulog_error!("[reply-router] Failed to send AskUserQuestion card: {}", e);
-                return;
+            Ok(message_id) => {
+                let mut guard = self.pending_questions.lock().await;
+                if let Some(pending) = guard.get_mut(&question_request_id) {
+                    pending.card_message_id = message_id.unwrap_or_default();
+                } else if let Some(message_id) = message_id {
+                    drop(guard);
+                    let _ = adapter
+                        .update_question_status(&chat_id, &message_id, "resolved")
+                        .await;
+                }
             }
-        };
-        {
-            let mut guard = self.pending_questions.lock().await;
-            let now = Instant::now();
-            guard.retain(|_, p| now.duration_since(p.created_at) < Duration::from_secs(15 * 60));
-            guard.insert(
-                question_request_id,
-                PendingQuestion {
-                    sidecar_port,
-                    chat_id,
-                    card_message_id: card_msg_id,
-                    requester_user_id,
-                    source_type,
-                    questions: payload.questions,
-                    created_at: now,
-                },
-            );
+            Err(_) => {
+                ulog_error!("[reply-router] Question delivery failed; cancelling pending question");
+                if super::questions::cancel_question(sidecar_port, &question_request_id).await {
+                    self.pending_questions
+                        .lock()
+                        .await
+                        .remove(&question_request_id);
+                }
+            }
         }
     }
 
@@ -625,6 +592,23 @@ impl ReplyRouter {
                     tool_name,
                     &perm_request_id[..perm_request_id.len().min(16)],
                 );
+                {
+                    let mut guard = self.pending_approvals.lock().await;
+                    let now = Instant::now();
+                    guard.retain(|_, p| {
+                        now.duration_since(p.created_at) < Duration::from_secs(15 * 60)
+                    });
+                    guard.insert(
+                        perm_request_id.clone(),
+                        PendingApproval {
+                            requester_user_id: slot.requester_user_id.clone(),
+                            sidecar_port,
+                            chat_id: chat_id.clone(),
+                            card_message_id: String::new(),
+                            created_at: now,
+                        },
+                    );
+                }
                 let card_msg_id = match adapter
                     .send_approval_card(&chat_id, &perm_request_id, &tool_name, &tool_input_str)
                     .await
@@ -636,23 +620,15 @@ impl ReplyRouter {
                         String::new()
                     }
                 };
+                if let Some(pending) = self
+                    .pending_approvals
+                    .lock()
+                    .await
+                    .get_mut(&perm_request_id)
                 {
-                    let mut guard = self.pending_approvals.lock().await;
-                    let now = Instant::now();
-                    guard.retain(|_, p| {
-                        now.duration_since(p.created_at) < Duration::from_secs(15 * 60)
-                    });
-                    guard.insert(
-                        perm_request_id,
-                        PendingApproval {
-                            requester_user_id: slot.requester_user_id.clone(),
-                            sidecar_port,
-                            chat_id: chat_id.clone(),
-                            card_message_id: card_msg_id,
-                            created_at: now,
-                        },
-                    );
+                    pending.card_message_id = card_msg_id;
                 }
+
                 None
             }
 
@@ -1032,12 +1008,6 @@ impl ReplyRouter {
                     Value::Null => String::new(),
                     ref other => serde_json::to_string(other).unwrap_or_default(),
                 };
-                let card_msg_id = adapter
-                    .send_approval_card(&chat_id, &perm_request_id, &tool_name, &tool_input_str)
-                    .await
-                    .ok()
-                    .flatten()
-                    .unwrap_or_default();
                 {
                     let mut guard = self.pending_approvals.lock().await;
                     let now = Instant::now();
@@ -1045,16 +1015,31 @@ impl ReplyRouter {
                         now.duration_since(p.created_at) < Duration::from_secs(15 * 60)
                     });
                     guard.insert(
-                        perm_request_id,
+                        perm_request_id.clone(),
                         PendingApproval {
                             requester_user_id: slot.requester_user_id.clone(),
                             sidecar_port,
                             chat_id: chat_id.clone(),
-                            card_message_id: card_msg_id,
+                            card_message_id: String::new(),
                             created_at: now,
                         },
                     );
                 }
+                let card_msg_id = adapter
+                    .send_approval_card(&chat_id, &perm_request_id, &tool_name, &tool_input_str)
+                    .await
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default();
+                if let Some(pending) = self
+                    .pending_approvals
+                    .lock()
+                    .await
+                    .get_mut(&perm_request_id)
+                {
+                    pending.card_message_id = card_msg_id;
+                }
+
                 None
             }
 
@@ -1210,13 +1195,15 @@ mod tests {
 
     use super::ReplyRouter;
     use crate::im::adapter::{AdapterResult, ImAdapter, ImStreamAdapter};
-    use crate::im::types::{AskUserQuestionPayload, ImDeliveryProtocol, ImSourceType};
+    use crate::im::types::{ImDeliveryProtocol, ImSourceType};
 
     #[derive(Default)]
     struct RecordingAdapter {
         sent_messages: StdMutex<Vec<(String, String)>>,
         reply_operations: StdMutex<Vec<serde_json::Value>>,
         ordinary_effects: StdMutex<Vec<&'static str>>,
+        question_pending: Option<crate::im::PendingQuestions>,
+        fail_send: bool,
     }
 
     impl RecordingAdapter {
@@ -1241,6 +1228,15 @@ mod tests {
         async fn listen_loop(&self, _shutdown_rx: tokio::sync::watch::Receiver<bool>) {}
 
         async fn send_message(&self, chat_id: &str, text: &str) -> AdapterResult<()> {
+            if let Some(pending) = &self.question_pending {
+                assert!(
+                    pending.lock().await.contains_key("ask-1"),
+                    "pending must exist before platform send"
+                );
+            }
+            if self.fail_send {
+                return Err("delivery failed".to_string());
+            }
             self.sent_messages
                 .lock()
                 .unwrap()
@@ -1309,15 +1305,6 @@ mod tests {
             _status: &str,
         ) -> AdapterResult<()> {
             Ok(())
-        }
-
-        async fn send_question_card(
-            &self,
-            _chat_id: &str,
-            _payload: &AskUserQuestionPayload,
-            _source_type: &ImSourceType,
-        ) -> AdapterResult<Option<String>> {
-            Ok(Some("question-id".to_string()))
         }
 
         async fn update_question_status(
@@ -1507,7 +1494,10 @@ mod tests {
             None,
             None,
         );
-        let adapter = RecordingAdapter::default();
+        let adapter = RecordingAdapter {
+            question_pending: Some(Arc::clone(&pending_questions)),
+            ..Default::default()
+        };
 
         router
             .dispatch(
@@ -1541,6 +1531,153 @@ mod tests {
         assert_eq!(pending.chat_id, "chat-1");
         assert_eq!(pending.requester_user_id.as_deref(), Some("user-1"));
         assert!(!guard.contains_key("turn-1"));
+        assert!(pending.card_message_id.is_empty());
+        let messages = adapter.sent_messages();
+        assert!(messages[0].1.contains("Pick one"));
+        assert!(messages[0].1.contains("1. A"));
+    }
+
+    #[tokio::test]
+    async fn invisible_question_is_cancelled_and_only_removed_after_runtime_acceptance() {
+        use axum::{routing::post, Json, Router};
+        for accepted in [false, true] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let received = Arc::new(StdMutex::new(Vec::new()));
+            let captured = Arc::clone(&received);
+            let app = Router::new().route(
+                "/api/ask-user-question/respond",
+                post(move |Json(body): Json<serde_json::Value>| {
+                    let captured = Arc::clone(&captured);
+                    async move {
+                        captured.lock().unwrap().push(body);
+                        Json(json!({"success":accepted}))
+                    }
+                }),
+            );
+            let server = tauri::async_runtime::spawn(async move {
+                axum::serve(listener, app).await.unwrap();
+            });
+            let pending = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+            let mut router = ReplyRouter::new(Default::default(), Arc::clone(&pending));
+            router.register(
+                "turn".into(),
+                "chat".into(),
+                "msg".into(),
+                ImSourceType::Private,
+                Some("user".into()),
+                None,
+                None,
+            );
+            router
+                .dispatch(
+                    &json!({"requestId":"turn", "type":"ask-user-question-request", "data":json!({
+                "requestId":"ask-1", "questions":[{"question":"Pick", "header":"Choice"}]
+            }).to_string()}),
+                    &RecordingAdapter {
+                        fail_send: true,
+                        question_pending: Some(Arc::clone(&pending)),
+                        ..Default::default()
+                    },
+                    port,
+                )
+                .await;
+            assert_eq!(
+                received.lock().unwrap().as_slice(),
+                &[json!({"requestId":"ask-1", "answers":null})]
+            );
+            assert_eq!(pending.lock().await.contains_key("ask-1"), !accepted);
+            server.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn rejected_bridge_card_uses_text_or_cancels_only_after_runtime_acceptance() {
+        use axum::{http::StatusCode, routing::post, Json, Router};
+        for (text_delivered, cancellation_accepted) in
+            [(true, false), (false, false), (false, true)]
+        {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let texts = Arc::new(StdMutex::new(Vec::new()));
+            let cancellations = Arc::new(StdMutex::new(Vec::new()));
+            let captured_texts = Arc::clone(&texts);
+            let captured_cancellations = Arc::clone(&cancellations);
+            let app = Router::new()
+                .route(
+                    "/send-question-card",
+                    post(|| async {
+                        // The Bridge maps Lark's resolved empty message ID to this response.
+                        (StatusCode::BAD_GATEWAY, Json(json!({"ok":false})))
+                    }),
+                )
+                .route(
+                    "/send-text",
+                    post(move |Json(body): Json<serde_json::Value>| {
+                        let captured = Arc::clone(&captured_texts);
+                        async move {
+                            captured.lock().unwrap().push(body);
+                            if text_delivered {
+                                (
+                                    StatusCode::OK,
+                                    Json(json!({"ok":true,"messageId":"text-1"})),
+                                )
+                            } else {
+                                (StatusCode::BAD_GATEWAY, Json(json!({"ok":false})))
+                            }
+                        }
+                    }),
+                )
+                .route(
+                    "/api/ask-user-question/respond",
+                    post(move |Json(body): Json<serde_json::Value>| {
+                        let captured = Arc::clone(&captured_cancellations);
+                        async move {
+                            captured.lock().unwrap().push(body);
+                            Json(json!({"success":cancellation_accepted}))
+                        }
+                    }),
+                );
+            let server = tauri::async_runtime::spawn(async move {
+                axum::serve(listener, app).await.unwrap();
+            });
+            let pending = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+            let mut router = ReplyRouter::new(Default::default(), Arc::clone(&pending));
+            router.register(
+                "turn".into(),
+                "chat".into(),
+                "msg".into(),
+                ImSourceType::Private,
+                Some("user".into()),
+                None,
+                None,
+            );
+            router.dispatch(&json!({"requestId":"turn", "type":"ask-user-question-request", "data":json!({
+                "requestId":"ask-1", "questions":[{"id":"choice", "question":"Pick one", "header":"Choice",
+                    "options":[{"label":"Original option","description":"Original detail"}]}]
+            }).to_string()}), &super::super::bridge::BridgeAdapter::new("lark".into(), port), port).await;
+            let sent = texts.lock().unwrap().clone();
+            assert_eq!(sent.len(), 1);
+            assert_eq!(sent[0]["chatId"], "chat");
+            let text = sent[0]["text"].as_str().unwrap();
+            assert!(
+                text.contains("Pick one")
+                    && text.contains("Original option")
+                    && text.contains("Original detail")
+            );
+            let pending = pending.lock().await;
+            if text_delivered {
+                assert_eq!(pending["ask-1"].card_message_id, "text-1");
+                assert!(cancellations.lock().unwrap().is_empty());
+            } else {
+                assert_eq!(
+                    cancellations.lock().unwrap().as_slice(),
+                    &[json!({"requestId":"ask-1","answers":null})]
+                );
+                assert_eq!(pending.contains_key("ask-1"), !cancellation_accepted);
+            }
+            server.abort();
+        }
     }
 
     #[tokio::test]

@@ -1,4 +1,4 @@
-export type AskUserQuestionHostCapability = 'none' | 'native-card';
+export type AskUserQuestionHostCapability = 'none' | 'native-card' | 'text';
 
 export interface HostInteractionCapability {
   askUserQuestion: AskUserQuestionHostCapability;

@@ -21,7 +21,7 @@ export function normalizeHostInteractionCapability(value: unknown): HostInteract
   if (!value || typeof value !== 'object') return DEFAULT_HOST_INTERACTION;
   const askUserQuestion = (value as { askUserQuestion?: unknown }).askUserQuestion;
   return {
-    askUserQuestion: askUserQuestion === 'native-card' ? 'native-card' : 'none',
+    askUserQuestion: askUserQuestion === 'native-card' || askUserQuestion === 'text' ? askUserQuestion : 'none',
   };
 }
 
@@ -38,13 +38,13 @@ export function hostInteractionCapabilityForScenario(
   return normalizeHostInteractionCapability(scenario.hostInteraction);
 }
 
-export function supportsAskUserQuestionNativeCard(scenario: InteractionScenario): boolean {
+export function supportsHostAskUserQuestion(scenario: InteractionScenario): boolean {
   return isChannelInteractionScenario(scenario)
-    && hostInteractionCapabilityForScenario(scenario).askUserQuestion === 'native-card';
+    && hostInteractionCapabilityForScenario(scenario).askUserQuestion !== 'none';
 }
 
 export function shouldDisallowAskUserQuestion(scenario: InteractionScenario): boolean {
-  return isChannelInteractionScenario(scenario) && !supportsAskUserQuestionNativeCard(scenario);
+  return isChannelInteractionScenario(scenario) && !supportsHostAskUserQuestion(scenario);
 }
 
 export function channelInteractionDenyReason(scenario: InteractionScenario): string {
@@ -68,12 +68,12 @@ export function getChannelInteractionDisallowedTools(scenario: InteractionScenar
   ];
 }
 
-export function shouldUseNonBypassForNativeAskUserQuestion(
+export function shouldUseNonBypassForHostAskUserQuestion(
   permissionMode: string | undefined,
   scenario: InteractionScenario,
 ): boolean {
   return (permissionMode === 'fullAgency' || permissionMode === 'bypassPermissions')
-    && supportsAskUserQuestionNativeCard(scenario);
+    && supportsHostAskUserQuestion(scenario);
 }
 
 export function isBridgeAskUserQuestionTool(toolName: string): boolean {

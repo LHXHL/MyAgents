@@ -10,6 +10,8 @@ pub struct ApprovalCallback {
 
 /// AskUserQuestion callback from IM platform card button or text fallback.
 pub struct QuestionCallback {
+    /// Zero-based option in a single-choice question (compact platform callbacks).
+    pub option_index: Option<usize>,
     pub request_id: String,
     pub answers: Option<HashMap<String, String>>,
     #[allow(dead_code)]
@@ -17,6 +19,7 @@ pub struct QuestionCallback {
 }
 
 /// Pending approval waiting for user response
+#[derive(Clone)]
 pub(crate) struct PendingApproval {
     pub(crate) requester_user_id: Option<String>,
     pub(crate) sidecar_port: u16,

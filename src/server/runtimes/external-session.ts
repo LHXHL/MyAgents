@@ -42,8 +42,8 @@ import {
   channelInteractionDenyReason,
   getChannelInteractionDisallowedTools,
   shouldDisallowAskUserQuestion,
-  shouldUseNonBypassForNativeAskUserQuestion,
-  supportsAskUserQuestionNativeCard,
+  shouldUseNonBypassForHostAskUserQuestion,
+  supportsHostAskUserQuestion,
 } from '../host-interaction';
 import type {
   AgentRuntime,
@@ -1662,7 +1662,7 @@ function broadcastExternalInteractiveExpired(
         e,
       );
     }
-    if (supportsAskUserQuestionNativeCard(getExternalLifecycleScenario())) {
+    if (supportsHostAskUserQuestion(getExternalLifecycleScenario())) {
       fireExternalImCallback(
         'ask-user-question-expired',
         JSON.stringify({ requestId, reason }),
@@ -4697,7 +4697,7 @@ async function _doStartExternalSession(options: {
     options.resumeSessionId ? 'resume-start-options' : 'start-options',
     options.sessionId,
   );
-  const runtimePermissionMode = shouldUseNonBypassForNativeAskUserQuestion(
+  const runtimePermissionMode = shouldUseNonBypassForHostAskUserQuestion(
     startPermissionMode,
     options.scenario,
   )
@@ -10314,7 +10314,7 @@ function autoAllowFullAgencyNativeCardRequest(
   if (event.toolName === 'AskUserQuestion') return false;
   const scenario = getExternalLifecycleScenario();
   if (
-    !shouldUseNonBypassForNativeAskUserQuestion(
+    !shouldUseNonBypassForHostAskUserQuestion(
       getExternalRuntimeDesiredPermissionMode(),
       scenario,
     )
@@ -11063,7 +11063,7 @@ function applyUnifiedEvent(event: UnifiedEvent): void {
           data: requestPayload,
         });
         broadcast('ask-user-question:request', requestPayload);
-        if (supportsAskUserQuestionNativeCard(getExternalLifecycleScenario())) {
+        if (supportsHostAskUserQuestion(getExternalLifecycleScenario())) {
           fireExternalImCallback(
             'ask-user-question-request',
             JSON.stringify(requestPayload),

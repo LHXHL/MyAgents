@@ -194,9 +194,9 @@ Node 消息、Heartbeat 与 Memory route 只能用 `engine.kind === 'builtin'` �
 
 ### 6.1 Permission request
 
-非自动授权模式下，Runtime permission request经IM event bus交给ReplyRouter。pending按request id保存Sidecar、chat、platform message与过期时间；用户通过原生卡片/按钮或受限文本fallback响应，Rust再POST到Sidecar permission endpoint。
+新 IM Session 固定使用 Runtime 最高自动授权模式，已有 Session 保留权限 snapshot。问答不是权限批准。非自动授权模式下，Runtime permission request经IM event bus交给ReplyRouter。pending按request id保存Sidecar、chat、platform message与过期时间；用户通过原生卡片/按钮或受限文本fallback响应，Rust再POST到Sidecar permission endpoint。
 
-只有Runtime确认响应被接纳后才能删除pending和更新UI。stop、reset、terminal或expiry必须精确使对应request失效。多个pending不能用单槽位覆盖。
+Telegram / 原生飞书提供审批按钮；钉钉 / Bridge 用明确的「允许」「始终允许」「拒绝」文字命令，普通聊天不交给模型猜审批意图。只有 Runtime 返回 HTTP 成功且 `success: true` 后才能删除 pending 和更新 UI。stop、reset、terminal或expiry必须精确使对应request失效。多个pending不能用单槽位覆盖。
 
 ### 6.2 Host interaction capability
 
@@ -205,11 +205,16 @@ Node 消息、Heartbeat 与 Memory route 只能用 `engine.kind === 'builtin'` �
 | 值 | 语义 |
 |---|---|
 | `none` | 禁用/取消同步AskUserQuestion，避免Runtime无限等待 |
-| `native-card` | 通过event bus与平台交互卡片完成同一个pending request |
+| `native-card` | 原生飞书 / Telegram 优先用按钮卡片，必要时文字回答同一个 pending request |
+| `text` | 保证问题、选项的文字投递和原请求回传；adapter 有已接通的原生卡片时可优先呈现卡片 |
 
 不支持同步提问时，能力拒绝只结算该工具，不发布 IM error 或中断整轮；普通文本澄清由模型按本轮发送方式发出，用户下一条消息沿用同一 Session。固定渠道提示说明这一区别，真正 IM terminal 仍由 Runtime turn owner 发布。用户主动取消问题与能力不支持是不同意图。
 
-默认是`none`。原生飞书adapter可以声明`native-card`；Telegram、Dingtalk和OpenClaw Bridge不能因为插件有“异步卡片工具”就冒充同步host能力。
+未声明能力仍默认 `none`，旧调用方保持原语义。Rust 当前 Channel 都承接同步问答：原生飞书与 Telegram 声明 `native-card`，钉钉和 OpenClaw Bridge 声明 `text`。Bridge 对已安装官方 `@larksuite/openclaw-lark` 的原生发送与标准交互 dispatcher 接通后，优先发飞书卡片；其它插件或加载不支持时直接发原问题文字。插件自己的异步 AskUserQuestion 工具不替代 Runtime pending owner。
+
+同步文字问答会展示原题、所有选项和取消方式，用户回复编号、选项名或自己的文本，由既有 QuestionCallback 回到原待答调用；不是另开 AI 轮次。多选可用逗号分隔，多题按行回答。单题单选卡片提供按钮，其它问题使用文字回答。钉钉本次不创建自定义问答模板，走单次 send_message，不能误用只开启 draft 的 send_message_returning_id。
+
+PendingQuestions 在发送平台请求前登记，避免快速回调丢失；卡片不可用则文字呈现，所有发送都失败则请求 Sidecar 取消该问题。只有 Sidecar 确认成功才删除 pending；按钮与文字共用当前请求者校验、取消和失效链路。Telegram callback_data 只放短 ID 与选项序号，选项正文由 pending 问题解析，不受 64 字节回调限制。
 
 敏感问题在IM中fail closed：不能要求用户把secret作为普通聊天文本或fallback答案发送。问题响应只有Sidecar返回成功后才清理pending；同chat多题/多pending的fallback路由必须确定且记录歧义诊断。
 
