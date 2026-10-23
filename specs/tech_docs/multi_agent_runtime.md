@@ -128,7 +128,7 @@ MyAgents 把 native stream 归一化为 UnifiedEvent，并通过 SessionStart ho
 
 SessionStart 的应用自有 forwarder 通过 Sidecar `process.execPath` 启动，不从外部 CLI 的 PATH 寻找 Node。生成的 command 使用 Bash 安全参数引用并声明 `shell: bash`（Windows 使用产品已有 Git Bash）；保留 2.1.119/2.1.138 的旧 command-hook 支持，不依赖 2.1.139 新增的 `args`。外部 Runtime 与 AI Shell 的环境策略保持独立。
 
-IM/Agent Channel 需要 native-card `AskUserQuestion` 时，启动策略必须保留 stdio permission channel。full-agency 对普通工具可以 fast-path，但不能用 bypass mode 吞掉结构化提问。
+IM/Agent Channel 通过 `native-card` 或 `text` 承接同步 `AskUserQuestion` 时，启动策略必须保留 stdio permission channel。full-agency 对普通工具可以 fast-path，但不能用 bypass mode 吞掉结构化提问。
 
 ### 5.3 Codex
 
@@ -272,6 +272,8 @@ Renderer 对 MCP 只提交 ID intent；Sidecar 必须重新读取 command/env/ur
 单个 Skill/MCP/Agent/Plugin 无法解析或不受支持时，只排除该组件并产生结构化诊断；基础 Runtime generation 仍可用。只有顶层 Runtime 无法启动/应用时才阻断 Chat。依赖 `ProductSystemSkillRequirement` 的 turn 是明确例外：它必须核对 exact app-owned candidate、内容 digest、inventory revision 与 native read-back，已知不可用时拒绝该依赖 turn，但不使普通会话失效。
 
 动态工具目录绑定 native thread birth 和 process generation。未知、已删除、参数无效、重复或 stale tool call 只失败该调用；不得因 catalog 漂移清空 transcript、制造空 thread 或建立第二套 Agent loop。
+
+Managed Codex 的 Host 调用与审批也受原生 `dynamicToolCall` item terminal 约束。Codex 0.163 可取消单个 Code Mode cell 而保留 root turn；adapter 必须按当前 process 内的 `threadId + turnId + callId` 精确匹配，复用 `abortPendingHostCall` 取消 signal、释放审批并丢弃迟到结果。子线程、旧 turn 或其他 item 的完成不能释放当前调用；已经正常响应的调用不重复结算。原生 item wire 的失败结果以 `status` / `success` / `contentItems` 表达，不从底层 event 猜测额外字段。
 
 Project Skill resolver 默认依次合并 `.claude/skills` 与 `.agents/skills`；相同有效 folder 由前者获胜，invalid candidate 不遮蔽后根。Managed Codex 按 exact native path 禁用未进入 effective inventory 的 `.agents/skills` 候选，选中项仍由原生 parser 读取。全局兼容投影继续只维护 `.claude/skills`，不建立第二套用户级目录。
 

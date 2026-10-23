@@ -1,5 +1,5 @@
 {
-  "version": "0.162.1",
+  "version": "0.163.0",
   "platforms": {
     "darwin-arm64": [
       "vendor/aarch64-apple-darwin/bin/codex",
@@ -30,8 +30,7 @@
       "vendor/aarch64-apple-darwin/codex-resources/voice/plugins/libgstcoreelements.dylib",
       "vendor/aarch64-apple-darwin/codex-resources/voice/plugins/libgstopus.dylib",
       "vendor/aarch64-apple-darwin/codex-resources/voice/plugins/libgstrtp.dylib",
-      "vendor/aarch64-apple-darwin/codex-resources/voice/plugins/libgstrtpmanager.dylib",
-      "vendor/aarch64-apple-darwin/codex-resources/zsh/bin/zsh"
+      "vendor/aarch64-apple-darwin/codex-resources/voice/plugins/libgstrtpmanager.dylib"
     ],
     "darwin-x64": [
       "vendor/x86_64-apple-darwin/bin/codex",
@@ -62,8 +61,7 @@
       "vendor/x86_64-apple-darwin/codex-resources/voice/plugins/libgstcoreelements.dylib",
       "vendor/x86_64-apple-darwin/codex-resources/voice/plugins/libgstopus.dylib",
       "vendor/x86_64-apple-darwin/codex-resources/voice/plugins/libgstrtp.dylib",
-      "vendor/x86_64-apple-darwin/codex-resources/voice/plugins/libgstrtpmanager.dylib",
-      "vendor/x86_64-apple-darwin/codex-resources/zsh/bin/zsh"
+      "vendor/x86_64-apple-darwin/codex-resources/voice/plugins/libgstrtpmanager.dylib"
     ],
     "win32-x64": [
       "vendor/x86_64-pc-windows-msvc/bin/codex-code-mode-host.exe",

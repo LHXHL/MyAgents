@@ -346,12 +346,13 @@ mod tests {
     }
 
     #[test]
-    fn host_interaction_only_marks_native_feishu_as_native_card() {
+    fn host_interaction_supports_cards_and_text_answers() {
         assert_eq!(ask_cap(ImPlatform::Feishu), "native-card");
-        assert_eq!(ask_cap(ImPlatform::OpenClaw("feishu".to_string())), "none");
-        assert_eq!(ask_cap(ImPlatform::OpenClaw("lark".to_string())), "none");
-        assert_eq!(ask_cap(ImPlatform::OpenClaw("qqbot".to_string())), "none");
-        assert_eq!(ask_cap(ImPlatform::Telegram), "none");
+        assert_eq!(ask_cap(ImPlatform::OpenClaw("feishu".to_string())), "text");
+        assert_eq!(ask_cap(ImPlatform::OpenClaw("lark".to_string())), "text");
+        assert_eq!(ask_cap(ImPlatform::OpenClaw("qqbot".to_string())), "text");
+        assert_eq!(ask_cap(ImPlatform::Telegram), "native-card");
+        assert_eq!(ask_cap(ImPlatform::Dingtalk), "text");
     }
 
     fn test_group_message() -> ImMessage {

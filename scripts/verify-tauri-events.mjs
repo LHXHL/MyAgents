@@ -23,6 +23,8 @@ tauri = { path = ${JSON.stringify(tauriPath)}, features = ["test", "devtools", "
 serde_json = "1"
 [patch.crates-io]
 tauri = { path = ${JSON.stringify(tauriPath)} }
+tao = { path = ${JSON.stringify(resolve(repo, 'vendor/tao'))} }
+tauri-runtime-wry = { path = ${JSON.stringify(resolve(repo, 'vendor/tauri-runtime-wry'))} }
 [profile.dev]
 debug = "line-tables-only"
 `);

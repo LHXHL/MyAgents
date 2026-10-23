@@ -114,15 +114,22 @@ pub trait ImStreamAdapter: ImAdapter {
         status: &str,
     ) -> impl std::future::Future<Output = AdapterResult<()>> + Send;
 
-    /// Send a native AskUserQuestion card. Unsupported adapters use the
-    /// default error and should only be called when hostInteraction allows it.
+    /// Send AskUserQuestion using a native card, or the shared text presentation.
+    /// Both transports answer the same pending request.
     fn send_question_card(
         &self,
-        _chat_id: &str,
-        _payload: &AskUserQuestionPayload,
-        _source_type: &ImSourceType,
+        chat_id: &str,
+        payload: &AskUserQuestionPayload,
+        source_type: &ImSourceType,
     ) -> impl std::future::Future<Output = AdapterResult<Option<String>>> + Send {
-        async { Err("AskUserQuestion native card is not supported by this adapter".to_string()) }
+        async move {
+            self.send_message(
+                chat_id,
+                &super::questions::format_question_content(payload, source_type),
+            )
+            .await?;
+            Ok(None)
+        }
     }
 
     /// Update a question card/message to show submitted/cancelled/expired status.

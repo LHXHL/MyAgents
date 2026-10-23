@@ -199,17 +199,40 @@ function profileRevision(profile: Omit<DshModelExecutionProfile, "revision">): s
 function genericCompatibility(
   provider: DshProfileCompilerProvider,
   family: "anthropic-messages" | "openai-completions" | "openai-responses",
+  modelId: string,
 ): DshProviderCompatibilityProfile {
   const maxTokensField = family === "openai-completions"
     && (provider.maxOutputTokensParamName === "max_tokens"
       || provider.maxOutputTokensParamName === "max_completion_tokens")
     ? provider.maxOutputTokensParamName
     : undefined;
+  const declaration = provider.models.find(model => model.model === modelId)?.conversationUpdates;
+  const protocol = family === "anthropic-messages" ? "anthropic:messages"
+    : family === "openai-responses" ? "openai:responses" : "openai:chat-completions";
+  const updates = declaration?.[protocol];
+  const invalid = () => new DshProfileCompilerError("model-capabilities-invalid", provider.id, modelId,
+    `Model ${provider.id}/${modelId} has invalid conversation update capabilities for ${protocol}`);
+  if (declaration !== undefined && (!declaration || typeof declaration !== "object" || Array.isArray(declaration))) throw invalid();
+  if (updates !== undefined && (!updates || typeof updates !== "object" || Array.isArray(updates)
+    || Object.keys(updates).some(key => key !== "systemPrompt" && key !== "tools")
+    || (updates.systemPrompt !== undefined && updates.systemPrompt !== "in-history")
+    || (updates.tools !== undefined && (updates.systemPrompt !== "in-history"
+      || (family === "anthropic-messages" ? updates.tools !== "in-history"
+        : family === "openai-completions" ? updates.tools !== "addition-only"
+          : updates.tools !== "additional-tools" && updates.tools !== "tool-search"))))) throw invalid();
+  const wireCompat = {
+    ...(maxTokensField ? { maxTokensField } : {}),
+    ...(updates?.systemPrompt === "in-history" ? { supportsMidConvoSystemMessages: true } : {}),
+    ...(updates?.tools === "in-history" ? { supportsMidConvoToolChanges: true } : {}),
+    ...(updates?.tools === "addition-only" ? { supportsMidConvoToolAdditions: true } : {}),
+    ...(updates?.tools === "additional-tools" ? { supportsAdditionalTools: true } : {}),
+    ...(updates?.tools === "tool-search" ? { supportsToolSearch: true } : {}),
+  };
   return {
     version: 1,
     family,
     credentialMode: "pi-ai-api-key",
-    ...(maxTokensField ? { wireCompat: { maxTokensField } } : {}),
+    ...(Object.keys(wireCompat).length > 0 ? { wireCompat } : {}),
   };
 }
 
@@ -302,7 +325,7 @@ export function compileDshModelExecutionProfile(args: {
         contextWindow: capabilities.contextWindow,
         maxTokens: capabilities.maxTokens,
         inputModalities: capabilities.inputModalities,
-        compatibility: genericCompatibility(provider, constraint.apiFamily),
+        compatibility: genericCompatibility(provider, constraint.apiFamily, modelId),
       };
   const selected = applyReasoningSelection(
     base,

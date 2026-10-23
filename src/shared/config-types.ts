@@ -84,6 +84,13 @@ export const PERMISSION_MODES: {
   },
 ];
 
+/** Explicit model/transport declarations; omission never enables conversation updates. */
+export interface ModelConversationUpdates {
+  'anthropic:messages'?: { systemPrompt?: 'in-history'; tools?: 'in-history' };
+  'openai:chat-completions'?: { systemPrompt?: 'in-history'; tools?: 'addition-only' };
+  'openai:responses'?: { systemPrompt?: 'in-history'; tools?: 'additional-tools' | 'tool-search' };
+}
+
 /**
  * Model entity representing a single model configuration
  */
@@ -102,6 +109,8 @@ export interface ModelEntity extends Pick<RuntimeModelInfo, 'supportedReasoningE
   supportedProtocols?: ModelProtocol[];
   /** User-selected route when the supplier does not identify a unique one. */
   executionProtocol?: ModelProtocol;
+  /** Exact model capabilities for each transport; not inferred from its brand. */
+  conversationUpdates?: ModelConversationUpdates;
 
   // === 来源标记 ===
   source?: 'preset' | 'discovered' | 'manual';
@@ -134,6 +143,7 @@ export function mergePresetModelWithCustomEntry(
       outputModalities: preset.outputModalities ?? custom.outputModalities,
       supportedProtocols: custom.supportedProtocols ?? preset.supportedProtocols,
       executionProtocol: custom.executionProtocol ?? preset.executionProtocol,
+      conversationUpdates: preset.conversationUpdates ?? custom.conversationUpdates,
     };
   }
 
@@ -147,6 +157,7 @@ export function mergePresetModelWithCustomEntry(
     outputModalities: custom.outputModalities ?? preset.outputModalities,
     supportedProtocols: custom.supportedProtocols ?? preset.supportedProtocols,
     executionProtocol: custom.executionProtocol ?? preset.executionProtocol,
+    conversationUpdates: custom.conversationUpdates ?? preset.conversationUpdates,
   };
 }
 

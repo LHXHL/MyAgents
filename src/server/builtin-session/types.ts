@@ -128,8 +128,7 @@ export type BuiltinRestartReason =
   | 'model-aliases'
   | 'provider-history'
   | 'plugins'
-  | 'capabilities'
-  | 'reasoning-effort';
+  | 'capabilities';
 
 export type { TurnProviderAnalytics } from '../session-core/turn-analytics';
 

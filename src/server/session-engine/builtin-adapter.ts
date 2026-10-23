@@ -909,7 +909,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
     },
 
     async updateReasoningEffort(effort) {
-      setSessionReasoningEffort(effort);
+      await setSessionReasoningEffort(effort);
       return { success: true };
     },
 

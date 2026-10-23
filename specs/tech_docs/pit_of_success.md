@@ -126,6 +126,8 @@
 
 **Don't.** 不要直接使用 `std::process::Command::new()`；Sidecar / Plugin Bridge 也不能直接 `.spawn()`。正常 shutdown 不能通过进程名、安装路径或 argv 子串扫描整机来弥补 owner 缺失。`process_cleanup::kill_stale_processes()` 只用于确认前一实例已经退出后的启动恢复，以及更新器的残留进程检查（Windows 更新器另有受保护目录和文件锁验证）；它不是正常生命周期 API。
 
+macOS 原生 Cmd+Q、应用菜单 Quit 和 Dock Quit 必须先投影为可取消的 `RunEvent::ExitRequested`，再复用 App 的确认、录音落盘和精确资源清理。当前 Tao / tauri-runtime-wry 的成对源码补丁见 [`vendor/tao/MYAGENTS_PATCH.md`](../../vendor/tao/MYAGENTS_PATCH.md)；上游 `applicationWillTerminate` / `RunEvent::Exit` 已处于不可取消阶段，不能作为补救清理入口。不要只替换 Quit 菜单，因为 Dock 等同根原生入口仍会绕过。`npm run test:native:quit` 用隔离 AppKit 实例覆盖请求、取消后重发、回调内请求、最后窗口与显式退出/重启码；强杀与 OS 强制终止不在正常退出保证内。
+
 `myagents-document-worker` 同样走 `process_cmd::new()` + `spawn_tree()`，但它是一 job 一进程的 App-owned 隔离边界，不属于 Sidecar。Manager 必须同时保留 `ChildTree`、stdin 和 active `(jobId, generation)`；4-byte big-endian length + JSON frame 上限 1 MiB，clean EOF 与截断 prefix/payload 必须分开处理，terminal identity 不匹配一律按协议失败。密码不进入 argv/env：只在 start frame 中出现，序列化/接收 buffer 写完即 zeroize。取消先发 exact generation frame，给 Worker 15 秒 cooperative settlement；App shutdown 使用 10 秒 cooperative settlement；超时后 force-stop retained tree，并最多再等 10 秒确认 exact tree 已退出。完整协议见 `document_processing.md`。
 
 **例外（已内联处理或不适用）：**

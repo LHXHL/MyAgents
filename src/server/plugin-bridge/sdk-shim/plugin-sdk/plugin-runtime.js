@@ -1,4 +1,10 @@
-// AUTO-GENERATED STUB — do not edit manually.
+// === AUTO-AUGMENT: drift-stubs from upstream openclaw — do not edit this block ===
+// Stubs for upstream openclaw exports the handwritten file below does not
+// implement. Regenerate via: npm run generate:sdk-shims
+export * from "./plugin-runtime.auto.js";
+// === END AUTO-AUGMENT ===
+
+// Handwritten interactive dispatch; remaining unsupported OpenClaw APIs retain their stubs.
 // Regenerate: npm run generate:sdk-shims
 // Source: openclaw/src/plugin-sdk/plugin-runtime.ts
 
@@ -28,18 +34,31 @@ export function resetGlobalHookRunner() { _w('resetGlobalHookRunner'); return un
 export function normalizePluginHttpPath() { _w('normalizePluginHttpPath'); return ""; }
 export function registerPluginHttpRoute() { _w('registerPluginHttpRoute'); return undefined; }
 export function createInteractiveConversationBindingHelpers() { _w('createInteractiveConversationBindingHelpers'); return undefined; }
-export async function dispatchPluginInteractiveHandler() { _w('dispatchPluginInteractiveHandler'); return undefined; }
-export function clearPluginInteractiveHandlers() { _w('clearPluginInteractiveHandlers'); return undefined; }
-export function clearPluginInteractiveHandlersForPlugin() { _w('clearPluginInteractiveHandlersForPlugin'); return undefined; }
-export function registerPluginInteractiveHandler() { _w('registerPluginInteractiveHandler'); return undefined; }
+// Rust owns pending-request acceptance and deduplication. This registry only
+// routes the platform's standard namespace callback to the registered transport.
+const interactiveHandlers = new Map();
+export async function dispatchPluginInteractiveHandler(params) {
+  const data = params.data.trim();
+  const separator = data.indexOf(':');
+  const namespace = separator < 0 ? data : data.slice(0, separator);
+  const registration = interactiveHandlers.get(`${params.channel.trim().toLowerCase()}:${namespace}`);
+  if (!registration) return { matched: false, handled: false, duplicate: false };
+  await params.onMatched?.();
+  const result = await params.invoke({ registration, namespace, payload: separator < 0 ? '' : data.slice(separator + 1) });
+  return { matched: true, handled: result?.handled ?? true, duplicate: false };
+}
+export function clearPluginInteractiveHandlers() { interactiveHandlers.clear(); }
+export function clearPluginInteractiveHandlersForPlugin(pluginId) {
+  for (const [key, registration] of interactiveHandlers) if (registration.pluginId === pluginId) interactiveHandlers.delete(key);
+}
+export function registerPluginInteractiveHandler(pluginId, registration) {
+  const namespace = registration.namespace.trim();
+  if (!/^[A-Za-z0-9._-]+$/.test(namespace)) return { ok: false, error: 'Invalid interactive namespace' };
+  const key = `${registration.channel.trim().toLowerCase()}:${namespace}`;
+  if (interactiveHandlers.has(key)) return { ok: false, error: 'Interactive namespace already registered' };
+  interactiveHandlers.set(key, { ...registration, namespace, pluginId });
+  return { ok: true };
+}
 export async function defaultLoadOverrideModule() { _w('defaultLoadOverrideModule'); return undefined; }
 export async function startLazyPluginServiceModule() { _w('startLazyPluginServiceModule'); return undefined; }
-export const PLUGIN_HOOK_NAMES = undefined;
-export const isPluginHookName = undefined;
-export const PROMPT_INJECTION_HOOK_NAMES = undefined;
-export const isPromptInjectionHookName = undefined;
-export const CONVERSATION_HOOK_NAMES = undefined;
-export const isConversationHookName = undefined;
-export const PluginApprovalResolutions = undefined;
-export const PLUGIN_PROMPT_MUTATION_RESULT_FIELDS = undefined;
 export function stripPromptMutationFieldsFromLegacyHookResult() { _w('stripPromptMutationFieldsFromLegacyHookResult'); return ""; }

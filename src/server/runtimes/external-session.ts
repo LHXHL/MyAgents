@@ -39,10 +39,11 @@ import {
 } from '../system-prompt';
 import type { InteractionScenario } from '../system-prompt';
 import {
+  channelInteractionDenyReason,
   getChannelInteractionDisallowedTools,
   shouldDisallowAskUserQuestion,
-  shouldUseNonBypassForNativeAskUserQuestion,
-  supportsAskUserQuestionNativeCard,
+  shouldUseNonBypassForHostAskUserQuestion,
+  supportsHostAskUserQuestion,
 } from '../host-interaction';
 import type {
   AgentRuntime,
@@ -1661,7 +1662,7 @@ function broadcastExternalInteractiveExpired(
         e,
       );
     }
-    if (supportsAskUserQuestionNativeCard(getExternalLifecycleScenario())) {
+    if (supportsHostAskUserQuestion(getExternalLifecycleScenario())) {
       fireExternalImCallback(
         'ask-user-question-expired',
         JSON.stringify({ requestId, reason }),
@@ -4696,7 +4697,7 @@ async function _doStartExternalSession(options: {
     options.resumeSessionId ? 'resume-start-options' : 'start-options',
     options.sessionId,
   );
-  const runtimePermissionMode = shouldUseNonBypassForNativeAskUserQuestion(
+  const runtimePermissionMode = shouldUseNonBypassForHostAskUserQuestion(
     startPermissionMode,
     options.scenario,
   )
@@ -10282,9 +10283,10 @@ function autoDenyNonInteractiveRequest(
     return false;
   const reason = managedCodexDisabled
     ? `External runtime AskUserQuestion request was denied because Managed Codex structured user input is disabled.`
-    : `External runtime AskUserQuestion request was denied because this ${scenario.type} host does not support native-card interaction.`;
+    : channelInteractionDenyReason(scenario);
   console.warn(`[external-session] ${reason} requestId=${event.requestId}`);
-  fireExternalImCallback('error', buildImErrorPayload(reason));
+  // Capability rejection settles this tool only. The Runtime turn owns the
+  // eventual IM terminal, including any ordinary-text clarification.
   const active = getExternalActivePair();
   if (active) {
     void active.runtime
@@ -10293,9 +10295,6 @@ function autoDenyNonInteractiveRequest(
         event.requestId,
         'deny',
         reason,
-        undefined,
-        undefined,
-        true,
       )
       .catch((err) =>
         console.error(
@@ -10315,7 +10314,7 @@ function autoAllowFullAgencyNativeCardRequest(
   if (event.toolName === 'AskUserQuestion') return false;
   const scenario = getExternalLifecycleScenario();
   if (
-    !shouldUseNonBypassForNativeAskUserQuestion(
+    !shouldUseNonBypassForHostAskUserQuestion(
       getExternalRuntimeDesiredPermissionMode(),
       scenario,
     )
@@ -11064,7 +11063,7 @@ function applyUnifiedEvent(event: UnifiedEvent): void {
           data: requestPayload,
         });
         broadcast('ask-user-question:request', requestPayload);
-        if (supportsAskUserQuestionNativeCard(getExternalLifecycleScenario())) {
+        if (supportsHostAskUserQuestion(getExternalLifecycleScenario())) {
           fireExternalImCallback(
             'ask-user-question-request',
             JSON.stringify(requestPayload),

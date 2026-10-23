@@ -5528,6 +5528,16 @@ export class CodexRuntime implements AgentRuntime {
             ];
           }
           case 'dynamicToolCall': {
+            // Codex 0.163 can cancel one Code Mode cell without completing the
+            // root turn. Its item terminal also ends our exact Host call and
+            // any pending approval; otherwise a late approval can still run it.
+            const pending = codexProc.pendingHostCalls.get(item.id);
+            if (pending && pending.threadId === p.threadId && pending.turnId === p.turnId) {
+              codexProc.abortPendingHostCall(
+                item.id,
+                'Managed Codex Host tool call expired at the native item boundary',
+              );
+            }
             const texts: string[] = [];
             const attachments: ToolAttachment[] = [];
             for (const ci of item.contentItems ?? []) {

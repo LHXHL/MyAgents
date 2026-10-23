@@ -1,6 +1,6 @@
 [package]
 name = "myagents"
-version = "0.5.5"
+version = "0.5.6"
 description = "MyAgents - Desktop Claude Code for everyone"
 authors = ["MyAgents Team <myagents.io@gmail.com>"]
 license = "AGPL-3.0-only"
@@ -223,3 +223,7 @@ incremental = true
 # Paired with the exact JS API repair; see vendor/tauri/MYAGENTS_PATCH.md.
 [patch.crates-io]
 tauri = { path = "../vendor/tauri" }
+# Native AppKit quit must reach the same cancellable ExitRequested owner.
+# These two exact-version patches form one event-projection repair.
+tao = { path = "../vendor/tao" }
+tauri-runtime-wry = { path = "../vendor/tauri-runtime-wry" }

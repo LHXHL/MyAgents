@@ -119,7 +119,7 @@ export const channelFactsSchema = z
           )
           .nullable(),
         mediaTypes: z.array(z.enum(["image", "file"])).nullable(),
-        askUserQuestion: z.enum(["native-card", "none"]),
+        askUserQuestion: z.enum(["native-card", "text", "none"]),
       })
       .strict(),
     projection: z

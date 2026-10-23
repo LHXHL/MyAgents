@@ -83,6 +83,8 @@ V2 产品记录先更新 canonical live projection，再由 TranscriptWriter 后
 
 `profile-compiler.ts` 将 Host Provider/model 能力编译为声明式 model profile。通用接口按 Anthropic Messages、OpenAI Responses、Chat Completions 分流；DeepSeek 官方路径使用原生 adapter。模型能力、reasoning 选项与子 Agent 可选集合来自当前 Provider inventory，不另建静态白名单。不可表达的可选参数采用该模型的合法默认，不使基础模型失效。
 
+`ModelEntity.conversationUpdates` 是逐模型、逐传输的显式动态能力声明。compiler 只把本次已解析协议的能力送入 profile；品牌、相邻模型或另一个协议的声明不会补缺。system prompt 允许历史内更新时，Anthropic 可声明工具增删、Chat Completions 可声明只增工具；Responses 明确区分 additional-tools 与 tool-search，不能用泛化的“支持增工具”猜测具体机制。声明缺失保留原行为，非法组合在模型准入失败；变化参与 profile revision。当前目录未提供这些字段时不会推断，官方 DeepSeek flash 仍走既有原生精确能力路径。
+
 Provider credential 由 Host 的既有配置或认证 owner 管理，每个模型请求通过 `host/credential/resolve` 获取有效凭据和有界 `providerNetwork`。secret 不进入 profile、Session、argv 或常规日志；退休 generation 的 credential plane 只服务原请求，直到对应进程关闭后释放。
 
 代理有两个 scope：模型请求采用 Provider policy；普通网络与 Shell 使用 Host 创建进程时冻结的 general snapshot。并发模型请求各自拥有连接池，不能切换进程全局 dispatcher。general 配置变化沿共享 config lifecycle 在 idle 边界换代，当前 turn 不被中断。

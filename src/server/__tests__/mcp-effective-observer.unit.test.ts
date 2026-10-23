@@ -19,6 +19,7 @@ import {
   setQuerySession,
   setPreWarmDisabled,
   recordQueryBackgroundTask,
+  replaceQueryBackgroundActivity,
 } from '../builtin-session/lifecycle';
 import { resetConfigForTest, setCurrentMcpServers, setFrozenSdkMcpFingerprint } from '../builtin-session/config';
 import { beginPromotedItem, resetQueueForTest } from '../builtin-session/queue';
@@ -145,6 +146,7 @@ describe('effective MCP observer owns every asynchronous completion', () => {
     const target = query(async () => [{ name: 'playwright', status: 'failed' }]);
     await install(target, 'first');
     recordQueryBackgroundTask(target as never, 'background-task', { description: 'working' });
+    replaceQueryBackgroundActivity(target as never, [{ task_id: 'background-task', task_type: 'local_agent', description: 'working' }]);
     expect(retryBuiltinMcpServer('playwright')).toMatchObject({ success: false, errorCode: 'session_busy' });
     expect(target.interrupt).not.toHaveBeenCalled();
     expect(getBuiltinMcpEffectiveSnapshot()?.servers[0].state).toBe('failed');

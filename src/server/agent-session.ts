@@ -15,7 +15,7 @@ import { join, resolve } from 'path';
 import { createRequire } from 'module';
 import { query, getSessionMessages as sdkGetSessionMessages, forkSession as sdkForkSession, deleteSession as sdkDeleteSession, type Query, type SDKUserMessage, type AgentDefinition, type HookInput, type HookJSONOutput, type PreToolUseHookInput, type PostToolUseHookInput, type PermissionRequestHookInput, type SlashCommand as SdkSlashCommand } from '@anthropic-ai/claude-agent-sdk';
 import { isRetiredBundledMcpServer } from '../shared/mcpConfig';
-import { SDK_BUILTIN_TOOLS } from './sdk-builtin-tools';
+import { SDK_BUILTIN_TOOLS, SDK_RESERVED_MCP_NAMES } from './sdk-builtin-tools';
 import type { CanUseTool, McpServerProvenance } from '@anthropic-ai/claude-agent-sdk';
 import type { ToolPermissionHints } from '../shared/types/toolPermission';
 import { isContextInjectedSdkTool, toolPermissionGrantKey } from './utils/sdk-tool-permission';
@@ -291,11 +291,12 @@ import type { ProviderEnv } from './provider-types';
 export { stripPlaywrightResults } from './builtin-session/transcript-persistence';
 export { runSerializedSessionMutation } from './builtin-session/lifecycle';
 import {
+  applyQueryReasoningEffort,
+  initializeQueryReasoningEffort,
   clearQueryMcpPrewarmOwner,
   completeQueryBackgroundTask,
   getQueryMcpPrewarmOwner,
   hasQueryBackgroundTask,
-  hasQueryBackgroundTasks,
   hasQueryBackgroundWork,
   replaceQueryBackgroundActivity,
   readQueryMcpStatuses,
@@ -335,6 +336,7 @@ import {
   takeQueryBackgroundTasks,
   wakeGenerator as lifecycleWakeGenerator,
   waitForQueryExit,
+  isQueryAwaitingExit,
   waitForMessage as lifecycleWaitForMessage,
   type QueryMcpMutationResult,
   type BuiltinQueryAuthority,
@@ -555,13 +557,6 @@ const isDebugMode = process.env.DEBUG === '1' || process.env.NODE_ENV === 'devel
 const SUPPRESS_PER_TOKEN_LOG_BROADCAST = true;
 
 /**
- * Claude Agent SDK reserved MCP server names — using these causes the SDK to
- * crash with exit code 1: "Invalid MCP configuration: X is a reserved MCP name."
- * Source: claude-code/src/main.tsx (isClaudeInChromeMCPServer, isComputerUseMCPServer)
- */
-export const SDK_RESERVED_MCP_NAMES = ['claude-in-chrome', 'computer-use'];
-
-/**
  * MyAgents-reserved MCP server ids — names used by context-injected builtins
  * that are managed by the sidecar, not user-toggleable. User MCPs configured
  * with these ids are silently dropped at SDK build time so they cannot
@@ -738,7 +733,7 @@ function mapToEffectiveSdkPermissionMode(
   mode: PermissionMode,
   scenario: InteractionScenario,
 ): 'acceptEdits' | 'plan' | 'bypassPermissions' | 'default' {
-  if (shouldUseNonBypassForNativeAskUserQuestion(mode, scenario)) {
+  if (shouldUseNonBypassForHostAskUserQuestion(mode, scenario)) {
     return 'acceptEdits';
   }
   return mapToSdkPermissionMode(mode);
@@ -2307,8 +2302,8 @@ import {
   getChannelInteractionDisallowedTools,
   shouldDisallowAskUserQuestion,
   shouldHardDenyChannelInteractionTool,
-  shouldUseNonBypassForNativeAskUserQuestion,
-  supportsAskUserQuestionNativeCard,
+  shouldUseNonBypassForHostAskUserQuestion,
+  supportsHostAskUserQuestion,
 } from './host-interaction';
 
 let currentScenario: InteractionScenario = { type: 'desktop' };
@@ -2319,7 +2314,7 @@ let currentScenario: InteractionScenario = { type: 'desktop' };
  */
 export async function setInteractionScenario(scenario: InteractionScenario): Promise<void> {
   currentScenario = scenario;
-  if (shouldUseNonBypassForNativeAskUserQuestion(configState.currentPermissionMode, scenario)) {
+  if (shouldUseNonBypassForHostAskUserQuestion(configState.currentPermissionMode, scenario)) {
     await lifecycleState.query?.setPermissionMode('acceptEdits').catch(err => {
       console.warn('[agent] failed to switch native-card channel session out of bypassPermissions:', err);
     });
@@ -3031,7 +3026,7 @@ function clearBuiltinQueryMcpOwner(query?: Query): void {
 
 /** Explicit retry uses the existing resume + startup-admission owner, even for unchanged config. */
 export function retryBuiltinMcpServer(serverId: string): McpRetryResult {
-  if (isSessionBusy() || hasQueryBackgroundTasks(lifecycleState.query) || getQueryMcpMutation()) {
+  if (isSessionBusy() || hasQueryBackgroundWork(lifecycleState.query) || getQueryMcpMutation()) {
     return { success: false, status: 409, errorCode: 'session_busy' };
   }
   const failed = builtinMcpEffectiveSnapshot?.servers.find(server => server.id === serverId);
@@ -3531,10 +3526,9 @@ export async function applySessionModelSelection(input: { model: string; provide
   const snapshotted = isCurrentSessionSnapshotted();
   const provider = configApplyProviderEnvUpdate(input.providerEnv, { source: 'message-snapshot', isSnapshotted: snapshotted });
   const model = configApplyModelUpdate(input.model, { source: 'message-snapshot', isSnapshotted: snapshotted });
-  const effortChanged = normalizeReasoningEffort(input.reasoningEffort) !== configState.currentReasoningEffort;
-  configSetReasoningEffort(normalizeReasoningEffort(input.reasoningEffort));
+  await setSessionReasoningEffort(input.reasoningEffort);
   ensureActiveSessionBridgeRegistered();
-  if (model.applied && model.oldModel !== input.model || provider.changed || effortChanged) forceReloadActiveSession('provider');
+  if (model.applied && model.oldModel !== input.model || provider.changed) forceReloadActiveSession('provider');
   return { success: true, status: lifecycleState.processing ? 'pending-next-turn' : 'applied' };
 }
 
@@ -3647,42 +3641,28 @@ export async function setSessionModel(model: string, opts?: { imConfigSync?: boo
  * #324 — set the session's reasoning effort. `value` is the UI/persisted
  * setting ('default' | level); stored normalized (undefined = default).
  *
- * Application strategy mirrors setSessionModel's env-baked branch:
- *  - OpenAI-protocol provider: nothing to do beyond the state write — the
- *    bridge resolver (resolveActiveSessionUpstreamConfig) reads
- *    `configState.currentReasoningEffort` live per upstream request.
- *  - Anthropic protocol (official + third-party): `effort` is a query()-spawn
- *    option with no live SDK setter (sdk.d.ts has setModel/setMaxThinkingTokens
- *    only), so a live subprocess needs a respawn. Mid-turn → deferred restart
- *    (drains at turn end); idle/pre-warm → abort + re-warm now so the user's
- *    next message doesn't pay the restart latency.
+ * OpenAI bridge keeps its per-request resolver. Claude applies the native flag
+ * while idle; an admitted/promoted turn freezes it until the next admission.
+ * The generator owns that final fence, including changes made during startup.
  *
  * Desktop-picker only (no IM router caller), so no #327 imConfigSync guard —
  * the desktop push is authoritative and updates the snapshot itself, same as
  * the model picker.
  */
-export function setSessionReasoningEffort(value: string | null | undefined): void {
+export async function setSessionReasoningEffort(value: string | null | undefined): Promise<void> {
   const normalized = normalizeReasoningEffort(value);
   const effortUpdate = configApplyReasoningEffortUpdate(normalized);
-  if (!effortUpdate.changed) return;
-
-  const old = effortUpdate.oldValue;
-  console.log(`[agent] session reasoning effort set: ${old ?? 'default'} -> ${normalized ?? 'default'}`);
+  if (effortUpdate.changed) {
+    console.log(`[agent] session reasoning effort set: ${effortUpdate.oldValue ?? 'default'} -> ${normalized ?? 'default'}`);
+  }
 
   if (effortUpdate.providerApiProtocol === 'openai') {
     // Live bridge resolver picks it up on the next request — no respawn.
     return;
   }
 
-  if (lifecycleState.query) {
-    if (isTurnInFlight()) {
-      console.log('[agent] reasoning effort changed during active turn -> schedule deferred restart to reapply query() effort');
-      scheduleDeferredRestart('reasoning-effort');
-    } else {
-      console.log('[agent] reasoning effort changed while idle/pre-warming -> aborting session to reapply query() effort');
-      abortPersistentSession();
-      schedulePreWarm();
-    }
+  if (lifecycleState.query && !isTurnInFlight() && !queueState.promotedItemInFlight) {
+    await applyQueryReasoningEffort(lifecycleState.query, isSdkEffortLevel(normalized) ? normalized : null);
   }
 }
 
@@ -3906,7 +3886,7 @@ function schedulePreWarm(delayMs = 500): void {
         promotedItemInFlight: queueState.promotedItemInFlight,
         turnInFlight: isTurnInFlight(),
         sdkCommandInFlight: getInFlightQueueId() !== null,
-        backgroundTasksActive: hasQueryBackgroundTasks(lifecycleState.query),
+        backgroundTasksActive: hasQueryBackgroundWork(lifecycleState.query),
       })) {
         // The terminal path owns this drain. Never let a previously armed
         // pre-warm timer abort an item between promotion and SDK yield.
@@ -4808,7 +4788,7 @@ async function handleAskUserQuestion(
       cleanup();
       if (wasPending) {
         broadcast('ask-user-question:expired', { ...interactiveEventScope(), requestId, reason: 'aborted' });
-        if (supportsAskUserQuestionNativeCard(currentScenario)) {
+        if (supportsHostAskUserQuestion(currentScenario)) {
           emitImEvent('ask-user-question-expired', JSON.stringify({ requestId, reason: 'aborted' }));
         }
       }
@@ -4824,7 +4804,7 @@ async function handleAskUserQuestion(
     pendingAskUserQuestions.set(requestId, { resolve, input: questionInput, blocksRoot });
   });
   broadcast('ask-user-question:request', requestPayload);
-  if (supportsAskUserQuestionNativeCard(currentScenario)) {
+  if (supportsHostAskUserQuestion(currentScenario)) {
     emitImEvent('ask-user-question-request', JSON.stringify(requestPayload));
   }
   return response;
@@ -5238,7 +5218,7 @@ function drainPendingInteractiveRequests(reason: 'reset' | 'session-end'): void 
     pendingAskUserQuestions.delete(requestId);
     try { broadcast('ask-user-question:expired', { ...interactiveEventScope(), requestId, reason }); } catch { /* swallow */ }
     try {
-      if (supportsAskUserQuestionNativeCard(currentScenario)) {
+      if (supportsHostAskUserQuestion(currentScenario)) {
         emitImEvent('ask-user-question-expired', JSON.stringify({ requestId, reason }));
       }
     } catch { /* swallow */ }
@@ -7376,7 +7356,7 @@ function applyDeferredRestartIfNeeded(): void {
     promotedItemInFlight: queueState.promotedItemInFlight,
     turnInFlight: isTurnInFlight(),
     sdkCommandInFlight: getInFlightQueueId() !== null,
-    backgroundTasksActive: hasQueryBackgroundTasks(lifecycleState.query),
+    backgroundTasksActive: hasQueryBackgroundWork(lifecycleState.query),
   })) {
     return;
   }
@@ -8632,36 +8612,10 @@ async function applySessionConfig(newModel?: string, newPermissionMode?: Permiss
     }
   }
 
-  // #324 — apply reasoning-effort change from the send payload (the desktop
-  // /api/reasoning-effort/set push normally lands first; this is the
-  // send-time safety net, mirroring the model parameter below). `undefined`
-  // means "not provided" (cron/IM callers) → leave the current value alone.
-  // OpenAI-protocol: state write only, the bridge resolver reads it live.
-  // Anthropic protocol: query()-spawn option → restart with resume (same
-  // shape as the aliasEnvChanged branch below; sessionRegistered makes the
-  // next spawn resume, so no context loss).
+  // Omitted send intent keeps the current choice. The native write follows
+  // model selection below; the generator rechecks it at final admission.
   if (newReasoningEffort !== undefined) {
-    const normalizedEffort = normalizeReasoningEffort(newReasoningEffort);
-    if (normalizedEffort !== configState.currentReasoningEffort) {
-      configSetReasoningEffort(normalizedEffort);
-      if (configState.currentProviderEnv?.apiProtocol !== 'openai') {
-        // Carry a simultaneous model change along — the restarted subprocess
-        // spawns from configState.currentModel, so updating it here covers both knobs in
-        // one respawn.
-        if (newModel && newModel !== configState.currentModel) {
-          configSetModel(newModel);
-        }
-        console.log(`[agent] reasoning effort changed at send (${normalizedEffort ?? 'default'}) -> restarting session to reapply query() effort`);
-        abortPersistentSession();
-        await awaitSessionTermination(10_000, 'applySessionConfig/reasoningEffortChange');
-        setQuerySession(null);
-        setSessionProcessing(false);
-        setSessionState('idle');
-        resetAbortFlag();
-        return;
-      }
-      console.log(`[agent] reasoning effort changed at send (${normalizedEffort ?? 'default'}) -> live bridge update (openai protocol)`);
-    }
+    configSetReasoningEffort(normalizeReasoningEffort(newReasoningEffort));
   }
 
   // Apply model change if different. Same wrap rationale as setSessionModel():
@@ -8692,6 +8646,7 @@ async function applySessionConfig(newModel?: string, newPermissionMode?: Permiss
       console.error('[agent] failed to set model:', error);
     }
   }
+  await setSessionReasoningEffort(configState.currentReasoningEffort);
 }
 
 export type EnqueueResult = {
@@ -10159,8 +10114,16 @@ export async function interruptCurrentResponse(reason: CancelReason = 'user'): P
       ...(getTurnAdmissionTicket() ? [getTurnAdmissionTicket()!.queueId] : []),
     ]);
     const wasRunning = sessionState === 'running';
+    const stoppedQuery = lifecycleState.query;
     const results = await Promise.all([...queueIds].map(queueId => cancelQueueItem(queueId)));
     const cancelled = results.some(result => result.status === 'cancelled');
+    // A rebuild-quarantined input cannot accept another message. Explicit Stop
+    // retires that exact Query through the existing abort path; a normally
+    // parked Query and SDK-accepted future inputs retain their usual semantics.
+    if (wasRunning && stoppedQuery && lifecycleState.query === stoppedQuery
+      && isQueryAwaitingExit(stoppedQuery) && getInFlightQueueId() === null && !isTurnInFlight()) {
+      abortPersistentSession();
+    }
     const quiescent = settleCancelledInputActivity();
     traceBuiltinInputProgress('stop-settled');
     const stopped = cancelled || (wasRunning && quiescent);
@@ -11341,16 +11304,11 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       : queryProductSessionId;
     const sdkMcpServersInitial = await buildSdkMcpServers(browserProductSessionId);
 
-    // Build common query options (shared between normal start and "already in use" fallback)
-    // #324 — user-selected reasoning effort. Anthropic protocol only: the SDK
-    // EffortLevel union excludes OpenAI-side values like 'minimal', and for
-    // OpenAI-protocol providers the effort is injected at the bridge per
-    // request (resolveActiveSessionUpstreamConfig) — the SDK-side option
-    // stays at the historical 'high' there. 'high' === omitting the param
-    // per Anthropic docs, so 'default' keeps pre-#324 wire behavior exactly.
-    const sdkEffort = configState.currentProviderEnv?.apiProtocol !== 'openai' && isSdkEffortLevel(configState.currentReasoningEffort)
-      ? configState.currentReasoningEffort
-      : ('high' as const);
+    // Claude default follows the selected model. OpenAI bridge retains its
+    // existing SDK-side high setting and resolves upstream effort per request.
+    const sdkEffort = configState.currentProviderEnv?.apiProtocol === 'openai'
+      ? 'high' as const
+      : isSdkEffortLevel(configState.currentReasoningEffort) ? configState.currentReasoningEffort : undefined;
     const enabledOfficialToolIds = getEffectiveOfficialToolIdsForSession(
       agentDir,
       getCurrentProductSessionMetadata(),
@@ -11381,7 +11339,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       ...(configState.currentProviderEnv?.endpointSource ? { abortController: bindingController } : {}),
       enableFileCheckpointing: true,
       thinking: thinkingConfig,
-      effort: sdkEffort,
+      ...(sdkEffort !== undefined ? { effort: sdkEffort } : {}),
       // Load settings from project scope only (.claude/)
       // Enabled global Skills are projected into <cwd>/.claude/skills/ before Query launch.
       // CLAUDE_CONFIG_DIR is NOT set — preserves Anthropic subscription Keychain lookup
@@ -11724,7 +11682,6 @@ async function startStreamingSession(preWarm = false): Promise<void> {
             return {
               behavior: 'deny' as const,
               message: channelInteractionDenyReason(currentScenario),
-              interrupt: true,
             };
           }
           console.log('[canUseTool] AskUserQuestion detected, prompting user');
@@ -12022,6 +11979,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         productSessionId: queryProductSessionId,
         expectedSdkSessionId: effectiveSdkSessionId,
       });
+      initializeQueryReasoningEffort(activeQuery, sdkEffort);
       inputTrace.generation = getQueryGeneration();
       configState.currentCapabilitySnapshot = launchCapabilitySnapshot;
     } catch (queryError: unknown) {
@@ -12045,6 +12003,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           productSessionId: queryProductSessionId,
           expectedSdkSessionId: effectiveSdkSessionId,
         });
+        initializeQueryReasoningEffort(activeQuery, sdkEffort);
         inputTrace.generation = getQueryGeneration();
         configState.currentCapabilitySnapshot = launchCapabilitySnapshot;
       } else {
@@ -12218,7 +12177,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
 
     const retireRewoundQueryWhenQuiescent = (): void => {
       if (!deferredRewindResult || !rewindInputGate) return;
-      if (hasQueryBackgroundTasks(activeQuery)) return;
+      if (hasQueryBackgroundWork(activeQuery)) return;
       if (!rewindInputGate.retirement.signal.aborted) {
         console.log('[agent] rewind replacement result received; closing SDK input to publish durable native head');
         retireRewoundQueryInput(rewindInputGate);
@@ -12590,7 +12549,12 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       // its two terminal channels. A resumed task keeps task_id, not run_id.
       if (sdkMessage.type === 'system') {
         if (sdkMessage.subtype === 'background_tasks_changed') {
+          const wasWorking = hasQueryBackgroundWork(activeQuery);
           replaceQueryBackgroundActivity(activeQuery, sdkMessage.tasks);
+          if (wasWorking && !hasQueryBackgroundWork(activeQuery)) {
+            if (deferredRewindResult) retireRewoundQueryWhenQuiescent();
+            else applyDeferredRestartIfNeeded();
+          }
         }
         const taskMsg = sdkMessage as { subtype?: string; task_id?: string; run_id?: string;
           tool_use_id?: string; description?: string; task_type?: string;
@@ -13681,7 +13645,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       && rewindResumeAt
       && !lifecycleState.abortRequested
       && !builtinInterrupt.isInterrupting()
-      && !hasQueryBackgroundTasks(activeQuery)
+      && !hasQueryBackgroundWork(activeQuery)
       && isCurrentQueryAuthority(activeQueryAuthority)
     ) {
       // The streaming input ended and the SDK iterator returned normally, so
@@ -14346,7 +14310,7 @@ async function* messageGenerator(
         const activeSnapshot = item.deliveryMode === 'realtime' ? peekPendingOutputOwner()?.sourceItem?.channelSnapshot : undefined;
         item.channelSnapshot = activeSnapshot !== undefined ? activeSnapshot : await captureChannelTurn(
           currentScenario.type === 'im' || currentScenario.type === 'agent-channel'
-            ? currentScenario.hostInteraction?.askUserQuestion === 'native-card' ? 'native-card' : 'none' : 'none',
+            ? currentScenario.hostInteraction?.askUserQuestion ?? 'none' : 'none',
         );
         item.channelDelivery = effectiveChannelDelivery(item.channelSnapshot, item.channelDelivery);
         if (item.channelSnapshot) {
@@ -14373,6 +14337,42 @@ async function* messageGenerator(
       await rejectPromotedMessageBeforeDispatch(item, { accepted: false, error: error instanceof Error ? error.message : String(error) });
       continue;
     }
+    // Native effort is a Query setting, so realtime inputs joining an active
+    // turn must retain that turn's choice. At a fresh boundary, drain every
+    // idle write and freeze the latest desired value before the durable
+    // admission claim. The promoted-input owner defers later picker changes
+    // to the next turn; the claim remains the final awaited setup transition.
+    if (!isTurnInFlight() && configState.currentProviderEnv?.apiProtocol !== 'openai') {
+      try {
+        let appliedEffort: string | undefined;
+        do {
+          appliedEffort = configState.currentReasoningEffort;
+          if (!promotedQuery) throw new Error('Query is unavailable while applying reasoning effort');
+          await applyQueryReasoningEffort(promotedQuery, isSdkEffortLevel(appliedEffort) ? appliedEffort : null);
+        } while (appliedEffort !== configState.currentReasoningEffort);
+      } catch (error) {
+        const failure = error instanceof Error ? error.message : String(error);
+        if (!isPromotedItemCanceled(item.id) && lifecycleState.query === promotedQuery && !lifecycleState.abortRequested) {
+          broadcast('chat:message-error', `Failed to apply reasoning effort: ${failure}`);
+        }
+        await rejectPromotedMessageBeforeDispatch(item, {
+          accepted: false,
+          error: failure,
+          rollbackBeforeReject: Promise.resolve(item.beforeDispatch?.cancel?.()),
+        });
+        continue;
+      }
+      if (isPromotedItemCanceled(item.id)) {
+        await rejectPromotedMessageBeforeDispatch(item, {
+          accepted: false,
+          code: 'dispatch_canceled',
+          error: 'Queue item was cancelled',
+          rollbackBeforeReject: Promise.resolve(item.beforeDispatch?.cancel?.()),
+        });
+        continue;
+      }
+    }
+
     setCommittingTurnAdmissionQueueId(item.id);
     if (!await claimPreparedMaterializationForTurnAdmission(item.messageText, item.sessionBirthOrigin)) {
       setCommittingTurnAdmissionQueueId(null);

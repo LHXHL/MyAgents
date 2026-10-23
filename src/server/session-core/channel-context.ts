@@ -1,3 +1,4 @@
+import type { AskUserQuestionHostCapability } from "../../shared/types/hostInteraction";
 import { z } from "zod";
 import {
   channelActorSchema,
@@ -170,7 +171,7 @@ export type ChannelTurnSnapshot = {
   scope: z.infer<typeof scopeSchema>;
   startedAt: string;
   timezone: string;
-  askUserQuestion: "native-card" | "none";
+  askUserQuestion: AskUserQuestionHostCapability;
 };
 
 export function channelInputSource(
@@ -196,7 +197,7 @@ export function channelInputSource(
 }
 
 export async function captureChannelTurn(
-  askUserQuestion: "native-card" | "none",
+  askUserQuestion: AskUserQuestionHostCapability,
 ): Promise<ChannelTurnSnapshot | null> {
   const scope = await readChannelScope();
   if (!scope) return null;

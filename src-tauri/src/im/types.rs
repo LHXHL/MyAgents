@@ -167,8 +167,10 @@ impl HostInteractionCapability {
 
     pub fn for_platform(platform: &ImPlatform) -> Self {
         match platform {
-            ImPlatform::Feishu => Self::native_card(),
-            _ => Self::none(),
+            ImPlatform::Feishu | ImPlatform::Telegram => Self::native_card(),
+            _ => Self {
+                ask_user_question: "text".to_string(),
+            },
         }
     }
 }

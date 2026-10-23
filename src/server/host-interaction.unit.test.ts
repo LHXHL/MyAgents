@@ -6,8 +6,8 @@ import {
   resolveImGroupToolsDeny,
   shouldDisallowAskUserQuestion,
   shouldHardDenyChannelInteractionTool,
-  shouldUseNonBypassForNativeAskUserQuestion,
-  supportsAskUserQuestionNativeCard,
+  shouldUseNonBypassForHostAskUserQuestion,
+  supportsHostAskUserQuestion,
 } from './host-interaction';
 import type { InteractionScenario } from './system-prompt';
 
@@ -32,15 +32,15 @@ describe('host interaction policy', () => {
     ]);
   });
 
-  it('allows AskUserQuestion only for native-card capable channel hosts', () => {
+  it.each(['native-card', 'text'] as const)('allows AskUserQuestion for %s hosts', capability => {
     const scenario: InteractionScenario = {
       type: 'im',
       platform: 'feishu',
       sourceType: 'private',
-      hostInteraction: { askUserQuestion: 'native-card' },
+      hostInteraction: { askUserQuestion: capability },
     };
 
-    expect(supportsAskUserQuestionNativeCard(scenario)).toBe(true);
+    expect(supportsHostAskUserQuestion(scenario)).toBe(true);
     expect(shouldDisallowAskUserQuestion(scenario)).toBe(false);
     expect(getChannelInteractionDisallowedTools(scenario)).toEqual([
       'EnterPlanMode',
@@ -56,10 +56,10 @@ describe('host interaction policy', () => {
       hostInteraction: { askUserQuestion: 'native-card' },
     };
 
-    expect(shouldUseNonBypassForNativeAskUserQuestion('fullAgency', scenario)).toBe(true);
-    expect(shouldUseNonBypassForNativeAskUserQuestion('bypassPermissions', scenario)).toBe(true);
-    expect(shouldUseNonBypassForNativeAskUserQuestion('auto', scenario)).toBe(false);
-    expect(shouldUseNonBypassForNativeAskUserQuestion('fullAgency', { type: 'desktop' })).toBe(false);
+    expect(shouldUseNonBypassForHostAskUserQuestion('fullAgency', scenario)).toBe(true);
+    expect(shouldUseNonBypassForHostAskUserQuestion('bypassPermissions', scenario)).toBe(true);
+    expect(shouldUseNonBypassForHostAskUserQuestion('auto', scenario)).toBe(false);
+    expect(shouldUseNonBypassForHostAskUserQuestion('fullAgency', { type: 'desktop' })).toBe(false);
   });
 
   it('hard-denies channel interaction tools before SDK permission resolver can bypass canUseTool', () => {

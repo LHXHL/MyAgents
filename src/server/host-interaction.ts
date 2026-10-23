@@ -21,7 +21,7 @@ export function normalizeHostInteractionCapability(value: unknown): HostInteract
   if (!value || typeof value !== 'object') return DEFAULT_HOST_INTERACTION;
   const askUserQuestion = (value as { askUserQuestion?: unknown }).askUserQuestion;
   return {
-    askUserQuestion: askUserQuestion === 'native-card' ? 'native-card' : 'none',
+    askUserQuestion: askUserQuestion === 'native-card' || askUserQuestion === 'text' ? askUserQuestion : 'none',
   };
 }
 
@@ -38,17 +38,17 @@ export function hostInteractionCapabilityForScenario(
   return normalizeHostInteractionCapability(scenario.hostInteraction);
 }
 
-export function supportsAskUserQuestionNativeCard(scenario: InteractionScenario): boolean {
+export function supportsHostAskUserQuestion(scenario: InteractionScenario): boolean {
   return isChannelInteractionScenario(scenario)
-    && hostInteractionCapabilityForScenario(scenario).askUserQuestion === 'native-card';
+    && hostInteractionCapabilityForScenario(scenario).askUserQuestion !== 'none';
 }
 
 export function shouldDisallowAskUserQuestion(scenario: InteractionScenario): boolean {
-  return isChannelInteractionScenario(scenario) && !supportsAskUserQuestionNativeCard(scenario);
+  return isChannelInteractionScenario(scenario) && !supportsHostAskUserQuestion(scenario);
 }
 
 export function channelInteractionDenyReason(scenario: InteractionScenario): string {
-  return `当前 ${scenario.type} 渠道不支持结构化提问交互，请改用普通文本询问用户或在支持原生卡片的渠道中重试。`;
+  return `当前 ${scenario.type} 渠道不支持结构化提问交互，非敏感问题请按本轮发送方式用普通文本提问，等待用户后续消息；密码、密钥等敏感信息应通过安全配置入口提供，不在聊天中收集。`;
 }
 
 export function shouldHardDenyChannelInteractionTool(
@@ -68,12 +68,12 @@ export function getChannelInteractionDisallowedTools(scenario: InteractionScenar
   ];
 }
 
-export function shouldUseNonBypassForNativeAskUserQuestion(
+export function shouldUseNonBypassForHostAskUserQuestion(
   permissionMode: string | undefined,
   scenario: InteractionScenario,
 ): boolean {
   return (permissionMode === 'fullAgency' || permissionMode === 'bypassPermissions')
-    && supportsAskUserQuestionNativeCard(scenario);
+    && supportsHostAskUserQuestion(scenario);
 }
 
 export function isBridgeAskUserQuestionTool(toolName: string): boolean {

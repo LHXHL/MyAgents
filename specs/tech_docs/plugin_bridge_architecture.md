@@ -231,6 +231,12 @@ Bridge 的 `dispatcher_delivery_idle` 只表示 core dispatcher queue 已 drain�
 
 `/delivery-policy` 将实际执行轮的 mode 交给该 request 的 pending dispatcher。tool_only 丢弃 run-start/partial/block/final 内容，complete/abort 仍走原 terminal owner；控制命令由 Rust 明确允许。进入 admission 前 plugin context 默认为静默，避免 setup error 的 finally 旁路。已知微信 progress/debug/typing/error notice 与企微 finishThinking/模板卡片补发由 `plugin-compat-patches.ts` 按固定源码 hash 局部转换；Lark 同入口保留来源字段。未知源码版本明确拒绝加载并给诊断，不能假设新插件仍遵守已验证规则。补丁不改磁盘 npm 包，不建立额外 dispatcher 或重试队列。
 
+#### Runtime 同步问答
+
+Rust 的 PendingQuestions 与 Sidecar Runtime 仍拥有待答状态。Bridge `/send-question-card`、`/update-question-card` 只调用官方 Lark 插件已有的 `sendCardFeishu` / `updateCardFeishu`，复用插件账户与 WebSocket。标准 `dispatchPluginInteractiveHandler` shim 将 `myagents_question` namespace 回调交给 `/api/im-bridge/question-response`，进入现有 QuestionCallback；不调用插件内部异步提问工具、不建立第二套 pending、计时器或 synthetic message。
+
+平台回调入队只提示“回答已收到”；卡片完成态由 Rust 在 Sidecar 真正接纳后更新。其它插件或官方插件发送 API 不可用时，Rust 沿普通文字发送与原请求文字回答路径继续。Shim 的 registry 只是标准 namespace 路由，答案去重与失效由原 pending owner 裁决。
+
 #### Outbound 媒体文件名
 
 Rust `BridgeAdapter::send_file/send_photo` 会把 `{ filename, data }` POST 到 Bridge `/send-media`。Bridge 需要把 base64 payload materialize 成临时文件，再把绝对路径作为 `mediaUrl` 传给 OpenClaw plugin 的 `outbound.sendMedia`。

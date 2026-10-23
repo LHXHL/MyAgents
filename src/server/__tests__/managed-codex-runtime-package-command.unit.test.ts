@@ -32,12 +32,14 @@ describe('managed Codex package command spawning', () => {
     const policy = macNativePathPolicy(platform);
     const root = policy.codexPath.replace('/bin/codex', '');
     const paths = [...policy.openAiSignedPaths, ...policy.helperPaths];
-    expect(paths).toHaveLength(30);
+    expect(paths).toHaveLength(29);
     expect(policy.openAiSignedPaths.has(`${root}/codex-resources/voice/bin/codex-voice-host`)).toBe(true);
     expect(policy.openAiSignedPaths.has(`${root}/codex-resources/voice/lib/libglib-2.0.0.dylib`)).toBe(true);
     expect(policy.openAiSignedPaths.has(`${root}/codex-resources/voice/plugins/libgstapp.dylib`)).toBe(true);
-    expect([...policy.helperPaths]).toEqual([`${root}/codex-path/rg`, `${root}/codex-resources/zsh/bin/zsh`]);
+    expect([...policy.helperPaths]).toEqual([`${root}/codex-path/rg`]);
     expect(() => validateManagedCodexNativePaths(platform, paths)).not.toThrow();
+    // 0.163.0 removed the patched shell; stale package layouts must still fail.
+    expect(() => validateManagedCodexNativePaths(platform, [...paths, `${root}/codex-resources/zsh/bin/zsh`])).toThrow('native file set changed');
     // A new library must not gain trust merely by being under voice/lib.
     expect(() => validateManagedCodexNativePaths(platform, [...paths, `${root}/codex-resources/voice/lib/unreviewed.dylib`])).toThrow('native file set changed');
     expect(() => validateManagedCodexNativePaths(platform, paths.filter(path => !path.endsWith('/libglib-2.0.0.dylib')))).toThrow('native file set changed');
