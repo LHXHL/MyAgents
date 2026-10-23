@@ -297,7 +297,6 @@ import {
   completeQueryBackgroundTask,
   getQueryMcpPrewarmOwner,
   hasQueryBackgroundTask,
-  hasQueryBackgroundTasks,
   hasQueryBackgroundWork,
   replaceQueryBackgroundActivity,
   readQueryMcpStatuses,
@@ -337,6 +336,7 @@ import {
   takeQueryBackgroundTasks,
   wakeGenerator as lifecycleWakeGenerator,
   waitForQueryExit,
+  isQueryAwaitingExit,
   waitForMessage as lifecycleWaitForMessage,
   type QueryMcpMutationResult,
   type BuiltinQueryAuthority,
@@ -3026,7 +3026,7 @@ function clearBuiltinQueryMcpOwner(query?: Query): void {
 
 /** Explicit retry uses the existing resume + startup-admission owner, even for unchanged config. */
 export function retryBuiltinMcpServer(serverId: string): McpRetryResult {
-  if (isSessionBusy() || hasQueryBackgroundTasks(lifecycleState.query) || getQueryMcpMutation()) {
+  if (isSessionBusy() || hasQueryBackgroundWork(lifecycleState.query) || getQueryMcpMutation()) {
     return { success: false, status: 409, errorCode: 'session_busy' };
   }
   const failed = builtinMcpEffectiveSnapshot?.servers.find(server => server.id === serverId);
@@ -3886,7 +3886,7 @@ function schedulePreWarm(delayMs = 500): void {
         promotedItemInFlight: queueState.promotedItemInFlight,
         turnInFlight: isTurnInFlight(),
         sdkCommandInFlight: getInFlightQueueId() !== null,
-        backgroundTasksActive: hasQueryBackgroundTasks(lifecycleState.query),
+        backgroundTasksActive: hasQueryBackgroundWork(lifecycleState.query),
       })) {
         // The terminal path owns this drain. Never let a previously armed
         // pre-warm timer abort an item between promotion and SDK yield.
@@ -7356,7 +7356,7 @@ function applyDeferredRestartIfNeeded(): void {
     promotedItemInFlight: queueState.promotedItemInFlight,
     turnInFlight: isTurnInFlight(),
     sdkCommandInFlight: getInFlightQueueId() !== null,
-    backgroundTasksActive: hasQueryBackgroundTasks(lifecycleState.query),
+    backgroundTasksActive: hasQueryBackgroundWork(lifecycleState.query),
   })) {
     return;
   }
@@ -10114,8 +10114,16 @@ export async function interruptCurrentResponse(reason: CancelReason = 'user'): P
       ...(getTurnAdmissionTicket() ? [getTurnAdmissionTicket()!.queueId] : []),
     ]);
     const wasRunning = sessionState === 'running';
+    const stoppedQuery = lifecycleState.query;
     const results = await Promise.all([...queueIds].map(queueId => cancelQueueItem(queueId)));
     const cancelled = results.some(result => result.status === 'cancelled');
+    // A rebuild-quarantined input cannot accept another message. Explicit Stop
+    // retires that exact Query through the existing abort path; a normally
+    // parked Query and SDK-accepted future inputs retain their usual semantics.
+    if (wasRunning && stoppedQuery && lifecycleState.query === stoppedQuery
+      && isQueryAwaitingExit(stoppedQuery) && getInFlightQueueId() === null && !isTurnInFlight()) {
+      abortPersistentSession();
+    }
     const quiescent = settleCancelledInputActivity();
     traceBuiltinInputProgress('stop-settled');
     const stopped = cancelled || (wasRunning && quiescent);
@@ -12169,7 +12177,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
 
     const retireRewoundQueryWhenQuiescent = (): void => {
       if (!deferredRewindResult || !rewindInputGate) return;
-      if (hasQueryBackgroundTasks(activeQuery)) return;
+      if (hasQueryBackgroundWork(activeQuery)) return;
       if (!rewindInputGate.retirement.signal.aborted) {
         console.log('[agent] rewind replacement result received; closing SDK input to publish durable native head');
         retireRewoundQueryInput(rewindInputGate);
@@ -12541,7 +12549,12 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       // its two terminal channels. A resumed task keeps task_id, not run_id.
       if (sdkMessage.type === 'system') {
         if (sdkMessage.subtype === 'background_tasks_changed') {
+          const wasWorking = hasQueryBackgroundWork(activeQuery);
           replaceQueryBackgroundActivity(activeQuery, sdkMessage.tasks);
+          if (wasWorking && !hasQueryBackgroundWork(activeQuery)) {
+            if (deferredRewindResult) retireRewoundQueryWhenQuiescent();
+            else applyDeferredRestartIfNeeded();
+          }
         }
         const taskMsg = sdkMessage as { subtype?: string; task_id?: string; run_id?: string;
           tool_use_id?: string; description?: string; task_type?: string;
@@ -13632,7 +13645,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       && rewindResumeAt
       && !lifecycleState.abortRequested
       && !builtinInterrupt.isInterrupting()
-      && !hasQueryBackgroundTasks(activeQuery)
+      && !hasQueryBackgroundWork(activeQuery)
       && isCurrentQueryAuthority(activeQueryAuthority)
     ) {
       // The streaming input ended and the SDK iterator returned normally, so

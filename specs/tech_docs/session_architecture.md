@@ -138,7 +138,7 @@ Claude 推理强度是可热更新的 Query 设置：config owner 保存 desired
 
 desktop 连续发送支持 realtime 与 turn-boundary 两种策略，但两者仍共享同一个 Runtime queue owner。Stop 中止当前 turn，不凭空取消 SDK 已接纳但尚未消费的项；queue receipt、replay 或 assistant-start 才能确认后续项的真实状态。
 
-没有活跃 turn 时，常驻 Query 不代表消息正在执行。Stop 通过精确 queue owner 取消本地 message、pending、turn-boundary、admission 与尚未提交的 promoted input，等待取消结算后才返回结果；promoted token 留给 generator 确认清理。只有没有 turn、提交、输入或重试 owner 时才归置 idle，迟到取消不能覆盖新的输入。已提交给 SDK 的后续项不进入本地 Stop 的取消快照；启动中的 Stop 仍使用既有 canonical abort。
+没有活跃 turn 时，常驻 Query 不代表消息正在执行。Stop 通过精确 queue owner 取消本地 message、pending、turn-boundary、admission 与尚未提交的 promoted input，等待取消结算后才返回结果；promoted token 留给 generator 确认清理。只有没有 turn、提交、输入或重试 owner 时才归置 idle，迟到取消不能覆盖新的输入。已提交给 SDK 的后续项不进入本地 Stop 的取消快照；启动中的 Stop 仍使用既有 canonical abort。输入因必要重建停在 exact Query 的退出等待时，显式 Stop 也经该 abort 退休旧 Query，避免取消队列后保留无法接收下一条消息的输入通道；普通空闲 Query 不受影响。
 
 强制发送在有活跃 turn 时沿既有中断与 terminal 晋级路径处理；没有活跃 turn 时，只向准备好的 generator/启动入口交接目标。找到了目标却无法交接，应保留消息并返回显式错误；只有目标不存在才返回 stale，不能调用 Stop 清掉目标后宣称发送成功。
 
@@ -146,7 +146,7 @@ Builtin 中断请求由 `builtin-session/interrupt.ts` 在既有 Session 内按�
 
 普通 turn Stop 不等于关闭整个 Query。V1 / V2 都在逻辑结算点记录 terminal，持久化完成回调只发布捕获的记录，不写回当前 turn。SDK iterator 在该停止期间或停止 terminal 后退出时，Query catch 使用本 Query 生命周期内产生的停止记录，不能再把已停止回合改写为错误；启动时继承的旧记录不能抑制替代 Query 的启动失败；未接纳输入时只发布 Session 错误，不调用 turn 结算，未发送输入由既有队列 finalization 恢复或取消。新输入 / turn 接纳通过 `resetTurnUsage` 清除旧 terminal，真实后续失败继续按错误处理。Windows 无确定根因的 exit 1 只展示退出事实，stderr 尾巴保留在日志中，不作为面向用户的故障原因。
 
-SDK background Agent/Bash 与父 turn 共用同一个 Query 和 Sidecar。自动 deferred restart 必须等待该 Query 的 background-task registry 清空；显式 Stop、Reset、Session switch、应用退出和真实 Query crash 仍可终止。
+SDK background Agent/Bash 与父 turn 共用同一个 Query 和 Sidecar。自动 deferred restart、MCP 变更与 rewind 退休以该 Query 的 `background_tasks_changed` 活动快照裁决，真实后台工作结束的整表更新会重新推进延迟重建；ambient 监听和仅用于展示的 task 边沿记录不阻塞重建；显式 Stop、Reset、Session switch、应用退出和真实 Query crash 仍可终止。
 
 后台执行活跃性由 exact Query 的 SDK `background_tasks_changed.tasks` 整表替换，排除 `ambient`；Query replacement 时清空。它通过 SessionEngine live snapshot 的 `hasBackgroundWork` 提供给调度。不能从任务卡片或 start/terminal edge registry 推断：前台任务也可能发 start，前台转后台未必重发 start，ambient 监听也不应阻塞 Goal。
 
