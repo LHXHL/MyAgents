@@ -212,6 +212,8 @@ Telegram / 原生飞书提供审批按钮；钉钉 / Bridge 用明确的「允�
 
 未声明能力仍默认 `none`，旧调用方保持原语义。Rust 当前 Channel 都承接同步问答：原生飞书与 Telegram 声明 `native-card`，钉钉和 OpenClaw Bridge 声明 `text`。Bridge 对已安装官方 `@larksuite/openclaw-lark` 的原生发送与标准交互 dispatcher 接通后，优先发飞书卡片；其它插件或加载不支持时直接发原问题文字。插件自己的异步 AskUserQuestion 工具不替代 Runtime pending owner。
 
+Channel host 能力不覆盖 Runtime 自身的交互限制。`managed-provider` 来源的 Codex 在 IM/Agent Channel 仍禁用结构化用户输入，即使 host 声明 `native-card` 或 `text`，也通过普通文字澄清并等待下一条消息；该限制由 external-session 的 Runtime-aware policy 裁决。系统 CLI 来源的 Codex 不继承这一来源限制。
+
 同步文字问答会展示原题、所有选项和取消方式，用户回复编号、选项名或自己的文本，由既有 QuestionCallback 回到原待答调用；不是另开 AI 轮次。多选可用逗号分隔，多题按行回答。单题单选卡片提供按钮，其它问题使用文字回答。钉钉本次不创建自定义问答模板，走单次 send_message，不能误用只开启 draft 的 send_message_returning_id。
 
 PendingQuestions 在发送平台请求前登记，避免快速回调丢失；卡片不可用则文字呈现，所有发送都失败则请求 Sidecar 取消该问题。只有 Sidecar 确认成功才删除 pending；按钮与文字共用当前请求者校验、取消和失效链路。Telegram callback_data 只放短 ID 与选项序号，选项正文由 pending 问题解析，不受 64 字节回调限制。
