@@ -1,13 +1,14 @@
 import { isProviderEnabled } from '../../shared/config-types';
-import { normalizeOfficialToolIds, type OfficialToolId } from '../../shared/official-tools';
+import { normalizeOfficialToolIds } from '../../shared/official-tools';
 import { VALID_RUNTIMES, type RuntimeSource, type RuntimeType } from '../../shared/types/runtime';
 import type { RuntimeBackedProviderIdentity } from '../../shared/providerExecution';
 import type { SessionMetadata } from '../types/session';
+import type { TeamPeerProfile } from '../../shared/teamAi';
 import { getAllEffectiveProviders, getAllMcpServers, type AdminAppConfig } from './admin-config';
 
 /**
  * Team AI peer profile: the birth template one private chat / group owns once
- * its current Session configuration has been changed.
+ * its config has been changed from the Team AI page, `/model` or its Chat.
  *
  * Node owns this shape. Rust stores it opaquely in
  * `agents[].channels[].peerProfiles[sessionKey]` and only hands it back to
@@ -15,20 +16,12 @@ import { getAllEffectiveProviders, getAllMcpServers, type AdminAppConfig } from 
  * fields. Permission is deliberately absent: IM births always use the
  * Runtime's highest unattended mode.
  */
-export interface PeerProfile {
-  runtime: RuntimeType;
-  runtimeSource?: RuntimeSource;
-  providerExecutionIdentity?: RuntimeBackedProviderIdentity;
-  providerId?: string;
-  model?: string;
-  reasoningEffort?: string;
-  mcpEnabledServers?: string[];
-  enabledPluginIds?: string[];
-  enabledOfficialToolIds?: OfficialToolId[];
-}
+export type PeerProfile = TeamPeerProfile;
 
-/** Copy a Session's complete execution choices. Called only for a peer's current Session. */
-export function peerProfileFromSession(metadata: SessionMetadata): PeerProfile {
+type ExecutionChoice = Pick<SessionMetadata, 'runtime' | 'runtimeSource' | 'providerExecutionIdentity' | 'providerId' | 'model' | 'reasoningEffort' | 'mcpEnabledServers' | 'enabledPluginIds' | 'enabledOfficialToolIds'>;
+
+/** Copy a complete execution choice: a peer's current Session, or an Agent birth snapshot. */
+export function peerProfileFromSession(metadata: ExecutionChoice): PeerProfile {
   const identity = metadata.providerExecutionIdentity?.kind === 'runtime-backed-provider'
     ? metadata.providerExecutionIdentity
     : undefined;

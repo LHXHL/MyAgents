@@ -37,8 +37,24 @@ export const isBusyActivity = (activity: SessionActivity) =>
 
 export const shortId = (id: string) => (id.length > 16 ? `${id.slice(0, 6)}…${id.slice(-6)}` : id);
 
+/** A recorded name that is just the platform ID is not a name. */
+export const hasPeerName = (peer: Pick<TeamPeer, 'name' | 'sourceId'>) => !!peer.name?.trim() && peer.name.trim() !== peer.sourceId;
+
 /** Operator-facing peer name; unnamed peers fall back to a stable short ID. */
-export const peerLabel = (peer: Pick<TeamPeer, 'name' | 'sourceId'>) => peer.name?.trim() || shortId(peer.sourceId);
+export const peerLabel = (peer: Pick<TeamPeer, 'name' | 'sourceId'>) => (hasPeerName(peer) ? peer.name!.trim() : shortId(peer.sourceId));
+
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Figures the Session metadata can state exactly; nothing here needs transcripts. */
+export function peerStats(peer: TeamPeer, sessions: SessionMetadata[], now = Date.now()) {
+  const ids = new Set([peer.sessionId, ...peer.sessionIds].filter((id): id is string => !!id));
+  const mine = sessions.filter(session => ids.has(session.id));
+  return {
+    recentSessions: mine.filter(session => now - timeOf(session.lastActiveAt) <= WEEK_MS).length,
+    turns: mine.reduce((sum, session) => sum + (session.stats?.turnCount ?? 0), 0),
+    lastActiveMs: Math.max(timeOf(peer.lastActive), ...mine.map(session => timeOf(session.lastActiveAt))),
+  };
+}
 
 /** Why a Channel cannot accept changes, or null when it is online. */
 export function channelOffline(channel: TeamChannel): 'disabled' | 'connecting' | 'error' | 'offline' | null {

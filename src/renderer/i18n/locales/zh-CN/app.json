@@ -1453,9 +1453,7 @@
     "connecting": "连接中",
     "error": "连接异常",
     "offline": "未连接",
-    "current": "当前会话",
-    "noCurrent": "暂无当前会话。可以从历史中设一个为当前，或新建会话。",
-    "createdAt": "{{time}}创建",
+    "noCurrent": "暂无当前会话。可以把下面的会话设为当前，或新建会话。",
     "status": {
       "running": "执行中",
       "starting": "正在启动",
@@ -1466,29 +1464,14 @@
       "dormant": "未运行",
       "unknown": "状态未知"
     },
-    "statusDesc": {
-      "lastActive": "最近活动 {{time}}",
-      "dormant": "收到新消息时自动启动",
-      "error": "可以打开对话查看详情",
-      "unknown": "暂时无法读取执行状态"
-    },
-    "stop": "停止",
-    "context": "上下文",
-    "contextHint": "上下文占用；接近上限时建议新建会话",
     "profile": {
       "custom": "专属设置",
-      "customHint_private": "这个私聊的新会话也使用这组配置",
-      "customHint_group": "这个群聊的新会话也使用这组配置",
       "default": "跟随 Agent 默认",
-      "defaultHint_private": "修改后成为这个私聊的专属设置",
-      "defaultHint_group": "修改后成为这个群聊的专属设置",
       "reset": "恢复跟随 Agent 默认",
       "resetTitle": "恢复跟随 Agent 默认？",
       "resetMessage": "当前会话的配置保持不变。之后的新会话将按 Agent 默认设置创建，并随 Agent 默认变化。",
       "resetConfirm": "恢复",
-      "resetDone": "已恢复跟随 Agent 默认",
-      "followed": "，之后的新会话也会沿用",
-      "failed": "当前会话已修改，但专属设置未能保存"
+      "resetDone": "已恢复跟随 Agent 默认"
     },
     "runtime": "Runtime",
     "model": "模型",
@@ -1498,19 +1481,13 @@
     "toolsCount": "{{count}} 项已启用",
     "toolsBreakdown": "MCP {{mcp}} · 插件 {{plugins}} · 官方 {{official}}",
     "toolsExternal": "由 {{runtime}} 自身配置",
-    "toolsFooter": "下一轮对话生效。",
+    "toolsFooter": "新建会话使用；当前会话同一 Runtime 时下一轮生效。",
     "toolsExternalFooter": "{{runtime}} 的 MCP 和插件由其自身配置管理。",
     "plugins": "插件",
     "official": "官方工具",
     "none": "暂无可用项",
-    "requiresNew": "需新会话",
-    "switchTitle": "切换到 {{target}} 需要新会话",
-    "switchMessage": "将为「{{peer}}」新建一个使用 {{target}} 的会话并设为当前。原会话移入历史，正在执行的任务会继续完成。",
-    "switchConfirm": "新建并切换",
     "new": "新建会话",
     "open": "打开对话",
-    "history": "历史会话",
-    "noHistory": "暂无历史会话",
     "deletedCount": "另有 {{count}} 个会话已删除",
     "finishing": "收尾中",
     "finishingHint": "原任务仍在完成中",
@@ -1522,13 +1499,9 @@
     "done": {
       "created": "已新建并设为当前",
       "setCurrent": "已设为当前，新消息将进入此会话",
-      "model": "已切换到 {{name}}",
-      "nextTurn": "已保存，当前这轮结束后生效",
-      "effort": "推理强度已更新，下一轮生效",
-      "tools": "工具已保存，下一轮生效",
-      "stopped": "已停止当前执行，之后的新消息仍会正常处理"
+      "updated": "{{what}}已更新",
+      "savedAsOwn": "已保存为专属设置"
     },
-    "savedNotApplied": "配置已保存，运行时尚未成功应用。",
     "createdUnbound": "会话 {{id}} 已创建，但未完成绑定，可在工作区中打开。",
     "deliveryWarning": "绑定已生效，但保存或交接通知未完成，请刷新确认。",
     "efforts": {
@@ -1540,6 +1513,33 @@
       "xhigh": "深度",
       "max": "最深",
       "none": "关闭"
+    },
+    "stats": {
+      "recentSessions": "近 7 天会话",
+      "turns": "累计对话轮次",
+      "lastActive": "最近活跃"
+    },
+    "config": {
+      "title": "配置",
+      "differs": "当前会话不同",
+      "differsHint": "当前会话仍使用 {{what}}，新建会话后使用这组配置。",
+      "effortOf": "推理强度{{effort}}",
+      "toolsOf": "{{count}} 项工具",
+      "runtimeHint": "更换 Runtime 只影响之后新建的会话。",
+      "laterTag": "新会话生效",
+      "customFoot_private": "这个私聊的新会话使用这组配置，不随 Agent 默认变化。",
+      "customFoot_group": "这个群聊的新会话使用这组配置，不随 Agent 默认变化。",
+      "defaultFoot_private": "当前跟随 Agent 默认。修改后成为这个私聊的专属设置。",
+      "defaultFoot_group": "当前跟随 Agent 默认。修改后成为这个群聊的专属设置。",
+      "loadFailed": "配置读取失败"
+    },
+    "sessions": "会话",
+    "currentTag": "当前",
+    "apply": {
+      "applied": "，已同步到当前会话",
+      "deferred": "，当前会话下一轮生效",
+      "skipped": "，当前会话不变，新建会话后生效",
+      "failed": "专属设置已保存，但未能应用到当前会话。"
     }
   }
 }

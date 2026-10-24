@@ -674,6 +674,7 @@ pub fn run() {
             im::team_ai::cmd_team_ai_states,
             im::team_ai::cmd_team_ai_action,
             im::team_ai::cmd_team_ai_sync_peer_profile,
+            im::team_ai::cmd_team_ai_peer_config,
             im::commands::cmd_agent_status,
             im::commands::cmd_all_agents_status,
             im::commands::cmd_update_agent_config,

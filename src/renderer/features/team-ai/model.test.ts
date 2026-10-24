@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { SessionMetadata } from '@/api/sessionClient';
 import type { TeamChannel, TeamPeer } from '@/../shared/teamAi';
-import { observationTargets, sessionActivity } from './model';
+import { observationTargets, peerLabel, sessionActivity } from './model';
 
 const session = (id: string) => ({ id }) as SessionMetadata;
 const peer = (key: string, current: string, history: string[]): TeamPeer =>
@@ -21,5 +21,13 @@ describe('Team AI observation projection', () => {
     expect(sessionActivity(undefined)).toBe('unknown');
     expect(sessionActivity({ state: null, error: 'timeout' })).toBe('unknown');
     expect(sessionActivity({ state: 'generating' })).toBe('running');
+  });
+});
+
+describe('Team AI peer names', () => {
+  it('treats a recorded name equal to the platform ID as unnamed and shortens it', () => {
+    expect(peerLabel({ name: 'wrjb8IEAAAjPOpPxkuFFRpFv_FoDfK_Q', sourceId: 'wrjb8IEAAAjPOpPxkuFFRpFv_FoDfK_Q' })).toBe('wrjb8I…oDfK_Q');
+    expect(peerLabel({ name: ' 李奕晨 ', sourceId: 'u1' })).toBe('李奕晨');
+    expect(peerLabel({ name: null, sourceId: 'u1' })).toBe('u1');
   });
 });

@@ -32,25 +32,28 @@ const WorkspaceConfigPanel = lazy(() => import('@/components/WorkspaceConfigPane
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 /** Turn a committed action result into the one line of feedback the operator needs. */
-function noteFor(result: TeamActionResult, done: string, hadProfile: boolean, t: (key: string, options?: Record<string, unknown>) => string): TeamNote {
+function noteFor(result: TeamActionResult, done: string, hadProfile: boolean, t: (key: string, options?: Record<string, unknown>) => string): Omit<TeamNote, 'scope'> {
+  // A config edit commits the peer profile first; the current Session may then fail on its own.
+  if (result.sessionApply === 'failed') {
+    return { tone: 'err', text: [t('teamAi.apply.failed'), result.error].filter(Boolean).join(' ') };
+  }
   if (result.success === false) {
     return {
       tone: 'err',
       text: [
-        result.sessionConfig === 'saved' ? t('teamAi.savedNotApplied') : '',
         result.error,
         result.createdSessionId ? t('teamAi.createdUnbound', { id: result.createdSessionId.slice(0, 8) }) : '',
-        result.peerProfile === 'failed' ? t('teamAi.profile.failed') : '',
       ].filter(Boolean).join(' '),
     };
   }
-  if (result.peerProfile === 'failed') return { tone: 'err', text: t('teamAi.profile.failed') };
   if (result.statePersisted === false || result.notified === false || result.warning) {
     return { tone: 'info', text: result.warning ?? t('teamAi.deliveryWarning') };
   }
-  const followed = result.peerProfile === 'saved' && !hadProfile ? t('teamAi.profile.followed') : '';
-  const text = result.runtimeApply === 'deferred' || result.runtimeApply === 'pending-next-turn' ? t('teamAi.done.nextTurn') : done;
-  return { tone: 'ok', text: text + followed };
+  if (!result.sessionApply) return { tone: 'ok', text: done };
+  const head = hadProfile ? done : t('teamAi.done.savedAsOwn');
+  const tail = result.sessionApply === 'skipped' ? 'teamAi.apply.skipped'
+    : result.sessionApply === 'applied' ? 'teamAi.apply.applied' : 'teamAi.apply.deferred';
+  return { tone: 'ok', text: head + t(tail) };
 }
 
 export default function TeamAi({
@@ -156,22 +159,14 @@ export default function TeamAi({
   const run = useCallback(async (row: PeerRow, action: TeamAction, done: string) => {
     if (!agentId || pending) return;
     const key = peerRowKey(row.channel.channelId, row.peer.sessionKey);
+    const scope = action.kind === 'updateConfig' || action.kind === 'clearProfile' ? 'config' : 'sessions';
     setPending({ key, kind: action.kind, sessionId: action.kind === 'setPrimary' ? action.sessionId : undefined });
     setNote(null);
     try {
       const result = await teamAction(agentId, row.channel.channelId, row.peer, action);
-      if (result.requiresNewSession && action.kind === 'selectModel' && !action.confirmed) {
-        setConfirmation({
-          title: t('teamAi.switchTitle', { target: t('teamAi.model') }),
-          message: t('teamAi.switchMessage', { target: t('teamAi.model'), peer: row.peer.name ?? row.peer.sourceId }),
-          confirmText: t('teamAi.switchConfirm'),
-          onConfirm: () => { void run(row, { ...action, confirmed: true }, done); },
-        });
-        return;
-      }
-      showNote(key, noteFor(result, done, row.peer.hasProfile, t));
+      showNote(key, { ...noteFor(result, done, row.peer.hasProfile, t), scope });
     } catch (failure) {
-      showNote(key, { tone: 'err', text: errorText(failure) });
+      showNote(key, { tone: 'err', text: errorText(failure), scope });
     } finally {
       setPending(null);
       await refresh();

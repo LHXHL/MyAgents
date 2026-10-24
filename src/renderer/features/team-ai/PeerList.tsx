@@ -3,7 +3,7 @@ import { AlertIcon, SearchIcon, TeamIcon } from '@/components/icons';
 import { ChannelPlatformIcon } from '@/components/AgentSettings/channelPlatform';
 import { formatPastRelativeTime } from '@/i18n/format';
 import type { TeamChannel, TeamPeer } from '@/../shared/teamAi';
-import { channelOffline, isBusyActivity, peerLabel, peerRowKey, type PeerRow } from './model';
+import { channelOffline, hasPeerName, isBusyActivity, peerLabel, peerRowKey, type PeerRow } from './model';
 
 const AVATAR_COLORS = ['#c9734f', '#5b8fd4', '#4aa37a', '#9b6bd1', '#c99a3c', '#cf5f7a', '#3f9ea6'];
 
@@ -29,7 +29,7 @@ export function PeerAvatar({ peer, platform, size = 32 }: { peer: Pick<TeamPeer,
       style={{ width: size, height: size, background: AVATAR_COLORS[seed % AVATAR_COLORS.length], fontSize: Math.round(size * 0.42) }}
       aria-hidden="true"
     >
-      {peer.name?.trim() ? Array.from(name).slice(-1)[0] : '?'}
+      {hasPeerName(peer) ? Array.from(name).slice(-1)[0] : '?'}
       {badge}
     </span>
   );
@@ -115,7 +115,7 @@ export function PeerList({ rows, channels, query, onQuery, selectedKey, onSelect
             >
               <PeerAvatar peer={row.peer} platform={row.channel.platform} />
               <span className="min-w-0 flex-1">
-                <span className={`block truncate text-sm ${row.peer.name ? '' : 'font-[var(--font-code)] text-sm'}`} title={row.peer.name ? undefined : row.peer.sourceId}>
+                <span className={`block truncate text-sm ${hasPeerName(row.peer) ? '' : 'font-[var(--font-code)]'}`} title={hasPeerName(row.peer) ? undefined : row.peer.sourceId}>
                   {peerLabel(row.peer)}
                 </span>
                 <span className="mt-0.5 flex min-w-0 items-center gap-1 text-xs text-[var(--ink-muted)]">

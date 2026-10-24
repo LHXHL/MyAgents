@@ -216,14 +216,17 @@ export function snapshotForImSession(
   };
 }
 
-/** An explicit management switch starts from this Session's saved choices.
+/** A Team AI peer config switching Runtime starts from its saved choices.
  * CLI model/source/effort remain runtime-owned and are scrubbed by the same
  * compiler used by ordinary Runtime changes; integrated Provider choices carry.
  */
-export function snapshotForImRuntimeSwitch(source: SessionMetadata, runtime: RuntimeType): OwnedSessionSnapshot {
+export function snapshotForImRuntimeSwitch(
+  source: Pick<SessionMetadata, 'runtime' | 'runtimeSource' | 'permissionMode' | 'providerId' | 'model' | 'reasoningEffort' | 'providerEnvJson' | 'mcpEnabledServers' | 'enabledPluginIds' | 'enabledOfficialToolIds'>,
+  runtime: RuntimeType,
+): OwnedSessionSnapshot {
   const integrated = source.runtime === 'builtin' || source.runtime === 'dsh';
   const agent: AgentConfig = {
-    id: source.id, name: source.title, enabled: true, channels: [],
+    id: 'runtime-switch', name: 'Runtime switch', enabled: true, channels: [],
     runtime: source.runtime as RuntimeType | undefined,
     permissionMode: source.permissionMode ?? 'auto',
     providerId: integrated ? source.providerId : undefined,

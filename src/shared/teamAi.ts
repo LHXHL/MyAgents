@@ -1,5 +1,7 @@
 import type { AgentModelSelection } from './agentConfigMutation';
-import type { RuntimeType } from './types/runtime';
+import type { RuntimeSource, RuntimeType } from './types/runtime';
+import type { RuntimeBackedProviderIdentity } from './providerExecution';
+import type { OfficialToolId } from './official-tools';
 export interface TeamPeer {
   sessionKey: string;
   sourceType: 'private' | 'group';
@@ -24,32 +26,48 @@ export interface TeamChannel {
   loadError?: string | null;
   peers: TeamPeer[];
 }
-export interface TeamModelMenu {
-  snapshotObservation: string;
+/**
+ * Team AI peer config: the complete birth choice of one private chat / group.
+ * Stored opaquely by Rust (`channels[].peerProfiles`); Node validates and composes it.
+ * Permission is deliberately absent: IM births use the Runtime's unattended mode.
+ */
+export interface TeamPeerProfile {
   runtime: RuntimeType;
-  runtimeSource?: string;
+  runtimeSource?: RuntimeSource;
+  providerExecutionIdentity?: RuntimeBackedProviderIdentity;
+  providerId?: string;
   model?: string;
   reasoningEffort?: string;
-  reasoningEffortChoices?: readonly string[] | null;
-  options: { selection: AgentModelSelection; group: string; name: string; isCurrent: boolean; requiresNewSession: boolean }[];
+  mcpEnabledServers?: string[];
+  enabledPluginIds?: string[];
+  enabledOfficialToolIds?: OfficialToolId[];
 }
-export interface TeamTools {
-  canManageExtensions: boolean;
-  snapshotObservation: string;
-  mcp: { id: string; name: string }[];
-  plugins: { id: string; name: string }[];
-  official: { id: string; name: string }[];
-  mcpEnabledServers: string[];
-  enabledPluginIds: string[];
-  enabledOfficialToolIds: string[];
+export interface TeamModelOption {
+  selection: AgentModelSelection;
+  group: string;
+  name: string;
+  isCurrent: boolean;
+  /** The current Session can take this model without a new Session. */
+  appliesNow: boolean;
 }
+/** What new Sessions of a peer use, plus the catalogue to edit it. */
+export interface TeamPeerConfig {
+  config: TeamPeerProfile;
+  /** true = the peer owns a profile; false = it follows the Agent defaults. */
+  custom: boolean;
+  models: TeamModelOption[];
+  effortChoices: readonly string[] | null;
+  tools: { canManageExtensions: boolean; mcp: { id: string; name: string }[]; plugins: { id: string; name: string }[]; official: { id: string; name: string }[] };
+}
+export type TeamConfigChange =
+  | { runtime: RuntimeType }
+  | { selection: AgentModelSelection }
+  | { effort: string }
+  | { tools: { mcpEnabledServers?: string[]; enabledPluginIds?: string[]; enabledOfficialToolIds: string[] } };
 export type TeamAction =
-  | { kind: 'options' | 'tools' | 'new' | 'stop' | 'clearProfile' }
+  | { kind: 'new' | 'clearProfile' }
   | { kind: 'setPrimary'; sessionId: string }
-  | { kind: 'selectModel'; selection: AgentModelSelection; snapshotObservation: string; confirmed: boolean }
-  | { kind: 'switchRuntime'; runtime: RuntimeType; snapshotObservation: string }
-  | { kind: 'setEffort'; effort: string; snapshotObservation: string }
-  | { kind: 'saveTools'; snapshotObservation: string; mcpEnabledServers?: string[]; enabledPluginIds?: string[]; enabledOfficialToolIds: string[] };
+  | { kind: 'updateConfig'; change: TeamConfigChange };
 export interface TeamActionResult {
   success?: boolean;
   error?: string;
@@ -58,11 +76,11 @@ export interface TeamActionResult {
   notified?: boolean;
   sessionId?: string;
   createdSessionId?: string;
-  requiresNewSession?: boolean;
-  runtimeApply?: string;
   sessionConfig?: string;
-  /** Whether the peer profile followed a saved Session change (`null` when not applicable). */
+  /** Whether the peer profile was written (`null` when not applicable). */
   peerProfile?: 'saved' | 'failed' | null;
+  /** updateConfig: whether the change also reached the current Session. */
+  sessionApply?: 'applied' | 'deferred' | 'pending-next-turn' | 'skipped' | 'failed';
 }
 export interface TeamSessionTarget { channelId: string; sessionKey: string; sessionId: string }
 export interface TeamSessionState extends TeamSessionTarget { state: string | null; error?: string }

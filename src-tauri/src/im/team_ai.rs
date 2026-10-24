@@ -53,10 +53,10 @@ async fn live_channel(agents: &ManagedAgents, agent: &str, channel: &str) -> Opt
 //
 // One private chat / group of a Team AI Agent may own a complete birth template.
 // `config.json` holds it at `agents[].channels[].peerProfiles[sessionKey]`; Node
-// owns its shape (`src/server/utils/peer-profile.ts`). Writes happen only here,
-// under the peer fence, by copying the peer's current Session configuration —
-// never by merging partial edits — so every write is idempotent and the last
-// one always reflects the newest Session state.
+// owns its shape (`src/server/utils/peer-profile.ts`). Writes happen only here and
+// always replace the whole value: either composed by Node from the stored config
+// plus one Team AI page edit (`UpdateConfig`), or copied from the peer's current
+// Session after a Session-side change (`sync_peer_profile`) — never a partial merge.
 
 fn stored_peer_profile(agent_id: &str, channel_id: &str, session_key: &str) -> Option<Value> {
     if !super::config_store::agent_is_team_ai(agent_id) {
@@ -519,39 +519,65 @@ pub async fn cmd_team_ai_states(
     Ok(json!({"states":states}))
 }
 
+/// UpdateConfig result after the profile has committed: whatever happens to the current
+/// Session (start failure, request failure, apply failure) is reported, never thrown.
+fn config_apply_outcome(applied: Result<Option<Value>, String>) -> Value {
+    match applied {
+        Ok(Some(result)) if result["success"] == true => {
+            json!({"success":true,"peerProfile":"saved","sessionApply":result["runtimeApply"].as_str().unwrap_or("applied")})
+        }
+        Ok(Some(result)) => json!({"success":false,"peerProfile":"saved","sessionApply":"failed","sessionConfig":result["sessionConfig"],"error":result["error"]}),
+        Ok(None) => json!({"success":false,"peerProfile":"saved","sessionApply":"failed","error":"Session stopped"}),
+        Err(error) => json!({"success":false,"peerProfile":"saved","sessionApply":"failed","error":error}),
+    }
+}
+
+/// Current binding of a peer without requiring a live Channel (live Router, else health).
+async fn current_session(agents: &ManagedAgents, agent: &str, channel: &str, key: &str) -> Result<Option<String>, String> {
+    if let Some(live) = live_channel(agents, agent, channel).await {
+        return Ok(live.router.lock().await.peer_session_snapshot(key).map(|p| p.session_id));
+    }
+    Ok(read_health(agent, channel)?
+        .active_sessions
+        .into_iter()
+        .find(|peer| peer.session_key == key)
+        .map(|peer| peer.session_id))
+}
+
+/// Read-only view of a peer's config (its profile, else the Agent template) and the
+/// catalogue to edit it. Works for stopped Channels; never starts a Session.
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn cmd_team_ai_peer_config(
+    agentState: tauri::State<'_, ManagedAgents>,
+    manager: tauri::State<'_, ManagedSidecarManager>,
+    agentId: String,
+    channelId: String,
+    sessionKey: String,
+) -> Result<Value, String> {
+    let session = current_session(agentState.inner(), &agentId, &channelId, &sessionKey).await?;
+    let profile = stored_peer_profile(&agentId, &channelId, &sessionKey);
+    request_json(
+        model_commands::global_port(manager.inner())?,
+        "/api/im/peer-config",
+        Some(&json!({"agentId":agentId,"profile":profile,"sessionId":session})),
+    )
+    .await
+}
+
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum TeamAiAction {
-    Options,
-    Tools,
-    SaveTools {
-        #[serde(flatten)]
-        patch: Value,
-    },
-    SelectModel {
-        selection: Value,
-        #[serde(rename = "snapshotObservation")]
-        observation: String,
-        confirmed: bool,
-    },
-    SwitchRuntime {
-        runtime: String,
-        #[serde(rename = "snapshotObservation")]
-        observation: String,
-    },
-    SetEffort {
-        effort: String,
-        #[serde(rename = "snapshotObservation")]
-        observation: String,
-    },
     New,
     /// Stop owning a profile; later births follow the Agent template again.
     ClearProfile,
+    /// Change one field of the peer config. The whole next config becomes the profile;
+    /// a compatible change is also applied to the current Session.
+    UpdateConfig { change: Value },
     SetPrimary {
         #[serde(rename = "sessionId")]
         session_id: String,
     },
-    Stop,
 }
 
 #[tauri::command]
@@ -591,205 +617,85 @@ pub async fn cmd_team_ai_action(
     if !live.router.lock().await.knows_peer(&sessionKey) {
         return Err("Conversation unavailable".into());
     }
-    let global = || model_commands::global_port(manager.inner());
-    let mut target = None;
-    let mut notice = false;
-    let mut created = false;
-    // Config edits (not New / SetPrimary) make the peer's current Session its profile.
-    let mut follow_profile = false;
-    let result = match action {
+    let (target, created) = match action {
         TeamAiAction::SetPrimary { session_id } => {
-            known_session(
-                agentState.inner(),
-                &agentId,
-                &channelId,
-                &sessionKey,
-                &session_id,
-            )
-            .await?;
+            known_session(agentState.inner(), &agentId, &channelId, &sessionKey, &session_id).await?;
             if prior.as_deref() == Some(&session_id) {
                 return Ok(json!({"success":true}));
             }
-            target = Some(session_id);
-            notice = true;
-            json!({})
+            (session_id, false)
         }
         TeamAiAction::New => {
-            target = Some(
-                birth_for_peer(
-                    &crate::local_http::json_client(Duration::from_secs(60)),
-                    manager.inner(),
-                    &cfg.resolved_workspace_path,
-                    Some((&agentId, &channelId)),
-                    &sessionKey,
-                )
-                .await?,
-            );
-            created = true;
-            notice = true;
-            json!({})
+            let born = birth_for_peer(
+                &crate::local_http::json_client(Duration::from_secs(60)),
+                manager.inner(),
+                &cfg.resolved_workspace_path,
+                Some((&agentId, &channelId)),
+                &sessionKey,
+            )
+            .await?;
+            (born, true)
         }
         TeamAiAction::ClearProfile => {
             write_peer_profile(&channelId, &sessionKey, None, None)?;
             return Ok(json!({"success":true}));
         }
-        TeamAiAction::Options | TeamAiAction::Tools => {
-            let suffix = if matches!(action, TeamAiAction::Options) {
-                "session-model-options"
-            } else {
-                "session-tools"
-            };
-            let mut url = reqwest::Url::parse(&format!("http://localhost/api/im/{suffix}"))
-                .map_err(|e| e.to_string())?;
-            url.query_pairs_mut()
-                .append_pair("agentId", &agentId)
-                .append_pair("sessionId", prior.as_deref().ok_or("No main Session")?);
-            request_json(
-                global()?,
-                &format!("{}?{}", url.path(), url.query().unwrap_or_default()),
-                None,
-            )
-            .await?
-        }
-        TeamAiAction::Stop => {
-            let sid = prior.as_deref().ok_or("No main Session")?;
-            session_request(manager.inner(), sid, "/chat/stop", Some(&json!({})))
-                .await?
-                .unwrap_or(json!({"success":true,"alreadyStopped":true}))
-        }
-        TeamAiAction::SwitchRuntime {
-            runtime,
-            observation,
-        } => {
-            let plan = request_json(global()?, "/api/im/session-runtime", Some(&json!({"agentId":agentId,"sessionId":prior,"runtime":runtime,"snapshotObservation":observation}))).await?;
-            target = Some(
-                model_commands::create_birth(
-                    &crate::local_http::json_client(Duration::from_secs(60)),
-                    manager.inner(),
-                    &plan["birth"],
-                )
-                .await?,
-            );
-            created = true;
-            notice = true;
-            follow_profile = true;
-            json!({})
-        }
-        TeamAiAction::SelectModel {
-            selection,
-            observation,
-            confirmed,
-        } => {
-            let sid = prior.as_deref().ok_or("No main Session")?;
-            super::state::ensure_sidecar_port_for_command(
-                &live.router,
-                &sessionKey,
-                "builtin",
-                None,
-                &app,
-                manager.inner(),
-                &live.health,
+        TeamAiAction::UpdateConfig { change } => {
+            let profile = stored_peer_profile(&agentId, &channelId, &sessionKey);
+            let composed = request_json(
+                model_commands::global_port(manager.inner())?,
+                "/api/im/peer-config/compose",
+                Some(&json!({"agentId":agentId,"profile":profile,"sessionId":prior,"change":change})),
             )
             .await?;
-            let result = session_request(manager.inner(), sid, "/api/im/session-model-selection", Some(&json!({"agentId":agentId,"sessionId":sid,"snapshotObservation":observation,"selection":selection,"allowNewSession":true}))).await?.ok_or("Session stopped")?;
-            if result["requiresNewSession"] == true && confirmed {
-                target = Some(
-                    model_commands::create_birth(
-                        &crate::local_http::json_client(Duration::from_secs(60)),
-                        manager.inner(),
-                        &result["birth"],
-                    )
-                    .await?,
-                );
-                created = true;
-                notice = true;
-            }
-            follow_profile = true;
-            result
-        }
-        action @ (TeamAiAction::SaveTools { .. } | TeamAiAction::SetEffort { .. }) => {
-            let sid = prior.as_deref().ok_or("No main Session")?;
-            super::state::ensure_sidecar_port_for_command(
-                &live.router,
-                &sessionKey,
-                "builtin",
-                None,
-                &app,
-                manager.inner(),
-                &live.health,
-            )
-            .await?;
-            let (path, mut body) = match action {
-                TeamAiAction::SaveTools { patch } => ("/api/im/session-tools", patch),
-                TeamAiAction::SetEffort {
-                    effort,
-                    observation,
-                } => (
-                    "/api/im/session-effort",
-                    json!({"effort":effort,"snapshotObservation":observation}),
-                ),
-                _ => unreachable!(),
+            let next = composed.get("profile").filter(|p| p.is_object()).cloned().ok_or("Peer configuration unavailable")?;
+            // The profile is the operator's intent; it commits first and stands on its own.
+            write_peer_profile(&channelId, &sessionKey, Some(next), None)?;
+            let Some(apply) = composed.get("apply").filter(|a| a.is_object()) else {
+                return Ok(json!({"success":true,"peerProfile":"saved","sessionApply":"skipped"}));
             };
-            body["agentId"] = json!(agentId);
-            body["sessionId"] = json!(sid);
-            follow_profile = true;
-            session_request(manager.inner(), sid, path, Some(&body))
-                .await?
-                .ok_or("Session stopped")?
+            let (Some(sid), Some(path)) = (prior.as_deref(), apply["path"].as_str()) else {
+                return Ok(json!({"success":true,"peerProfile":"saved","sessionApply":"skipped"}));
+            };
+            let applied = match super::state::ensure_sidecar_port_for_command(&live.router, &sessionKey, "builtin", None, &app, manager.inner(), &live.health).await {
+                Ok(_) => session_request(manager.inner(), sid, path, Some(&apply["body"])).await,
+                Err(error) => Err(error),
+            };
+            drop(fence);
+            return Ok(config_apply_outcome(applied));
         }
     };
-    if let Some(target) = target {
-        let handover = super::handover::handover_session_to_channel(
-            app.clone(),
-            target.clone(),
-            agentId.clone(),
-            channelId.clone(),
-            cfg.resolved_workspace_path,
-            Some(sessionKey.clone()),
-            Some((sessionKey.clone(), fence)),
-            Some(prior.unwrap_or_default()),
-        )
-        .await;
-        return match handover {
-            Ok((result, fence, adapter, chat_id)) => {
-                let profile = if follow_profile && result.state_persisted {
-                    profile_outcome(sync_peer_profile(manager.inner(), &agentId, &channelId, &sessionKey, &target).await)
-                } else {
-                    Value::Null
-                };
-                drop(fence);
-                let notified = !notice
-                    || adapter
-                        .send_message(
-                            &chat_id,
-                            &format!(
-                                "当前会话切换至「{}」",
-                                target.chars().take(8).collect::<String>()
-                            ),
-                        )
-                        .await
-                        .is_ok();
-                let _ = app.emit(
-                    "agent:status-changed",
-                    json!({"agentId":agentId,"channelId":channelId}),
-                );
-                Ok(
-                    json!({"success":true,"sessionId":target,"statePersisted":result.state_persisted,"notified":notified,"warning":result.warning,"peerProfile":profile}),
+    let handover = super::handover::handover_session_to_channel(
+        app.clone(),
+        target.clone(),
+        agentId.clone(),
+        channelId.clone(),
+        cfg.resolved_workspace_path,
+        Some(sessionKey.clone()),
+        Some((sessionKey.clone(), fence)),
+        Some(prior.unwrap_or_default()),
+    )
+    .await;
+    match handover {
+        Ok((result, fence, adapter, chat_id)) => {
+            drop(fence);
+            let notified = adapter
+                .send_message(
+                    &chat_id,
+                    &format!("当前会话切换至「{}」", target.chars().take(8).collect::<String>()),
                 )
-            }
-            Err(error) => Ok(
-                json!({"success":false,"createdSessionId":if created { Some(target) } else { None },"error":error}),
-            ),
-        };
-    }
-    let mut result = result;
-    if follow_profile && result["sessionConfig"] == "saved" {
-        if let Some(sid) = prior.as_deref() {
-            result["peerProfile"] = profile_outcome(sync_peer_profile(manager.inner(), &agentId, &channelId, &sessionKey, sid).await);
+                .await
+                .is_ok();
+            let _ = app.emit(
+                "agent:status-changed",
+                json!({"agentId":agentId,"channelId":channelId}),
+            );
+            Ok(json!({"success":true,"sessionId":target,"statePersisted":result.state_persisted,"notified":notified,"warning":result.warning}))
         }
+        Err(error) => Ok(
+            json!({"success":false,"createdSessionId":if created { Some(target) } else { None },"error":error}),
+        ),
     }
-    drop(fence);
-    Ok(result)
 }
 
 #[cfg(test)]
@@ -847,6 +753,21 @@ mod tests {
         assert_eq!(stored_peer_profile("agent", "bot", "k"), Some(newer));
         write_peer_profile("bot", "k", None, None).unwrap();
         assert_eq!(stored_peer_profile("agent", "bot", "k"), None);
+    }
+
+    #[test]
+    fn config_edits_report_every_current_session_failure_after_the_profile_committed() {
+        let ok = config_apply_outcome(Ok(Some(json!({"success":true,"runtimeApply":"deferred"}))));
+        assert_eq!(ok, json!({"success":true,"peerProfile":"saved","sessionApply":"deferred"}));
+        for failure in [
+            Err("Session Sidecar failed to start".to_string()),
+            Ok(None),
+            Ok(Some(json!({"success":false,"sessionConfig":"saved","error":"apply failed"}))),
+        ] {
+            let outcome = config_apply_outcome(failure);
+            assert_eq!(outcome["peerProfile"], "saved");
+            assert_eq!(outcome["sessionApply"], "failed");
+        }
     }
 
     #[test]

@@ -1454,9 +1454,7 @@
     "connecting": "connecting",
     "error": "in error",
     "offline": "offline",
-    "current": "Current session",
-    "noCurrent": "No current session. Set one from history as current, or start a new session.",
-    "createdAt": "Created {{time}}",
+    "noCurrent": "No current session. Make one below current, or start a new session.",
     "status": {
       "running": "Running",
       "starting": "Starting",
@@ -1467,29 +1465,14 @@
       "dormant": "Not running",
       "unknown": "Status unknown"
     },
-    "statusDesc": {
-      "lastActive": "Last active {{time}}",
-      "dormant": "Starts automatically when a new message arrives",
-      "error": "Open the chat for details",
-      "unknown": "The run state could not be read right now"
-    },
-    "stop": "Stop",
-    "context": "Context",
-    "contextHint": "Context usage. Start a new session when it nears the limit.",
     "profile": {
       "custom": "Own settings",
-      "customHint_private": "New sessions in this private chat use these settings too",
-      "customHint_group": "New sessions in this group use these settings too",
       "default": "Agent defaults",
-      "defaultHint_private": "Changes here become this private chat's own settings",
-      "defaultHint_group": "Changes here become this group's own settings",
       "reset": "Follow Agent defaults",
       "resetTitle": "Follow Agent defaults again?",
       "resetMessage": "The current session keeps its settings. New sessions will use the Agent defaults and follow their changes.",
       "resetConfirm": "Follow defaults",
-      "resetDone": "Now following Agent defaults",
-      "followed": "; new sessions will use it too",
-      "failed": "This session was updated, but its conversation settings could not be saved"
+      "resetDone": "Now following Agent defaults"
     },
     "runtime": "Runtime",
     "model": "Model",
@@ -1499,19 +1482,13 @@
     "toolsCount": "{{count}} enabled",
     "toolsBreakdown": "MCP {{mcp}} · Plugins {{plugins}} · Official {{official}}",
     "toolsExternal": "Managed by {{runtime}}",
-    "toolsFooter": "Takes effect on the next turn.",
+    "toolsFooter": "Used by new sessions; the current session picks it up next turn when it uses the same Runtime.",
     "toolsExternalFooter": "{{runtime}} manages its own MCP servers and plugins.",
     "plugins": "Plugins",
     "official": "Official tools",
     "none": "Nothing available",
-    "requiresNew": "New session",
-    "switchTitle": "Switching to {{target}} needs a new session",
-    "switchMessage": "A new session using {{target}} will be created for “{{peer}}” and made current. The old session moves to history and any running task finishes normally.",
-    "switchConfirm": "Create and switch",
     "new": "New session",
     "open": "Open chat",
-    "history": "History",
-    "noHistory": "No previous sessions",
     "deletedCount": "{{count}} more sessions were deleted",
     "finishing": "Finishing",
     "finishingHint": "The previous task is still finishing",
@@ -1523,13 +1500,9 @@
     "done": {
       "created": "New session created and made current",
       "setCurrent": "Made current; new messages go to this session",
-      "model": "Switched to {{name}}",
-      "nextTurn": "Saved; applies after the current turn",
-      "effort": "Reasoning effort updated for the next turn",
-      "tools": "Tools saved for the next turn",
-      "stopped": "Stopped the current run; new messages are still handled"
+      "updated": "{{what}} updated",
+      "savedAsOwn": "Saved as this conversation’s own settings"
     },
-    "savedNotApplied": "Settings were saved but not yet applied to the runtime.",
     "createdUnbound": "Session {{id}} was created but not bound; open it from the workspace.",
     "deliveryWarning": "The switch took effect, but saving or the handover notice did not finish. Refresh to confirm.",
     "efforts": {
@@ -1541,6 +1514,33 @@
       "xhigh": "Extra high",
       "max": "Max",
       "none": "Off"
+    },
+    "stats": {
+      "recentSessions": "Sessions, last 7 days",
+      "turns": "Total turns",
+      "lastActive": "Last active"
+    },
+    "config": {
+      "title": "Settings",
+      "differs": "Current session differs",
+      "differsHint": "The current session still uses {{what}}; new sessions use these settings.",
+      "effortOf": "{{effort}} effort",
+      "toolsOf": "{{count}} tools",
+      "runtimeHint": "Changing the Runtime only affects sessions created afterwards.",
+      "laterTag": "New sessions",
+      "customFoot_private": "New sessions in this private chat use these settings, independent of Agent defaults.",
+      "customFoot_group": "New sessions in this group use these settings, independent of Agent defaults.",
+      "defaultFoot_private": "Following Agent defaults. Changes here become this private chat’s own settings.",
+      "defaultFoot_group": "Following Agent defaults. Changes here become this group’s own settings.",
+      "loadFailed": "Couldn’t load the settings"
+    },
+    "sessions": "Sessions",
+    "currentTag": "Current",
+    "apply": {
+      "applied": "; applied to the current session",
+      "deferred": "; the current session picks it up next turn",
+      "skipped": "; the current session is unchanged, new sessions use it",
+      "failed": "Settings saved, but they could not be applied to the current session."
     }
   }
 }
