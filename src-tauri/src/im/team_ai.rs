@@ -168,13 +168,18 @@ pub(super) async fn sync_peer_profile(
     if !super::config_store::agent_is_team_ai(agent_id) {
         return Ok(false);
     }
+    let profile = peer_profile_projection(manager, session_id).await?;
+    write_peer_profile(channel_id, session_key, Some(profile), None)?;
+    Ok(true)
+}
+
+/// Node's projection of a Session's complete execution choice (read-only).
+async fn peer_profile_projection(manager: &ManagedSidecarManager, session_id: &str) -> Result<Value, String> {
     let port = model_commands::global_port(manager)?;
     let mut url = reqwest::Url::parse("http://localhost/api/im/peer-profile").map_err(|e| e.to_string())?;
     url.query_pairs_mut().append_pair("sessionId", session_id);
     let value = request_json(port, &format!("{}?{}", url.path(), url.query().unwrap_or_default()), None).await?;
-    let profile = value.get("profile").filter(|p| p.is_object()).cloned().ok_or("Session configuration unavailable")?;
-    write_peer_profile(channel_id, session_key, Some(profile), None)?;
-    Ok(true)
+    value.get("profile").filter(|p| p.is_object()).cloned().ok_or_else(|| "Session configuration unavailable".into())
 }
 
 /// Response field shared by every Team AI write: whether the peer profile followed the Session.
@@ -202,40 +207,55 @@ pub async fn cmd_team_ai_sync_peer_profile(
     if !super::config_store::agent_is_team_ai(&agentId) {
         return Ok(json!({"peerProfile":null}));
     }
+    let mut unreadable = None;
     for channel in agent_config(&agentId)?.channels {
+        let lifecycle = super::agent_channel::agent_channel_lifecycle_lock(&agentId, &channel.id);
         if let Some(live) = live_channel(agentState.inner(), &agentId, &channel.id).await {
-            let key = live
-                .router
-                .lock()
-                .await
-                .active_sessions()
-                .into_iter()
-                .find(|peer| peer.session_id == sessionId)
-                .map(|peer| peer.session_key);
-            let Some(key) = key else { continue };
+            let current = |router: &SessionRouter| {
+                router.active_sessions().into_iter().find(|peer| peer.session_id == sessionId).map(|peer| peer.session_key)
+            };
+            let Some(key) = current(&*live.router.lock().await) else { continue };
+            // Never wait on the peer fence while holding the lifecycle lock: a fence holder
+            // (e.g. a heartbeat turn) may itself reload Agent config, which takes that lock.
             let lock = live.locks.lock().await.entry(key.clone()).or_insert_with(|| Arc::new(Mutex::new(()))).clone();
             let _fence = lock.lock_owned().await;
-            let still_current = live.router.lock().await.peer_session_snapshot(&key).map(|p| p.session_id) == Some(sessionId.clone());
-            if !still_current {
+            if current(&*live.router.lock().await).as_deref() != Some(key.as_str()) {
                 return Ok(json!({"peerProfile":null}));
             }
-            let outcome = sync_peer_profile(manager.inner(), &agentId, &channel.id, &key, &sessionId).await;
+            let outcome = async {
+                let profile = peer_profile_projection(manager.inner(), &sessionId).await?;
+                // Commit only if no start/stop is running and this is still the same Channel
+                // instance and binding; a replacement owns any later write.
+                let _lifecycle = lifecycle.try_lock().map_err(|_| "Channel is restarting; edit again to save the conversation settings".to_string())?;
+                let same = live_channel(agentState.inner(), &agentId, &channel.id).await
+                    .is_some_and(|now| Arc::ptr_eq(&now.router, &live.router));
+                if !same || current(&*live.router.lock().await).as_deref() != Some(key.as_str()) {
+                    return Err("Channel changed; edit again to save the conversation settings".to_string());
+                }
+                write_peer_profile(&channel.id, &key, Some(profile), None).map(|_| true)
+            }
+            .await;
             return Ok(json!({"peerProfile":profile_outcome(outcome)}));
         }
-        // A stopped Channel has no peer fence. Its lifecycle lock is the owner that keeps
-        // it stopped and its persisted binding stable for the whole read → write.
-        let lifecycle = super::agent_channel::agent_channel_lifecycle_lock(&agentId, &channel.id);
-        let _stopped = lifecycle.lock().await;
+        // A stopped Channel has no peer fence. Its lifecycle lock keeps it stopped and the
+        // persisted binding stable; nothing below waits on a lock a fence holder owns.
+        let _lifecycle = lifecycle.lock().await;
         if live_channel(agentState.inner(), &agentId, &channel.id).await.is_some() {
             return Ok(json!({"peerProfile":profile_outcome(Err("Channel started; edit again to save the conversation settings".into()))}));
         }
-        let Some(key) = read_health(&agentId, &channel.id).ok().and_then(|state| {
-            state.active_sessions.into_iter().find(|peer| peer.session_id == sessionId).map(|peer| peer.session_key)
-        }) else { continue };
+        let key = match read_health(&agentId, &channel.id) {
+            Ok(state) => state.active_sessions.into_iter().find(|peer| peer.session_id == sessionId).map(|peer| peer.session_key),
+            Err(error) => {
+                unreadable = Some(error);
+                None
+            }
+        };
+        let Some(key) = key else { continue };
         let outcome = sync_peer_profile(manager.inner(), &agentId, &channel.id, &key, &sessionId).await;
         return Ok(json!({"peerProfile":profile_outcome(outcome)}));
     }
-    Ok(json!({"peerProfile":null}))
+    // An unreadable binding is not proof that the Session is unbound.
+    Ok(json!({"peerProfile":unreadable.map_or(Value::Null, |error| profile_outcome(Err(error)))}))
 }
 
 /// Enumerate configured Channels, including disabled connections; read errors are not empty peers.

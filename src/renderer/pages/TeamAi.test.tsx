@@ -97,6 +97,7 @@ describe('Team AI list', () => {
 
 describe('Team AI current Session', () => {
   it('shows status and settings, never the transcript, and opens Chat through the App binding', async () => {
+    mocks.states.mockResolvedValue({ states: [{ channelId: 'bot-a', sessionKey: peer.sessionKey, sessionId: 'session-a', state: null }] });
     const open = props();
     render(<TeamAi {...open} />);
     await selectPeer();
@@ -106,6 +107,13 @@ describe('Team AI current Session', () => {
     expect(screen.getByText('teamAi.profile.default')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'teamAi.open' }));
     expect(open.onOpenSession).toHaveBeenCalledWith(metadata, project);
+  });
+
+  it('shows a Session without an observation row as unknown, never as not running', async () => {
+    render(<TeamAi {...props()} />);
+    await selectPeer();
+    expect(await screen.findByText('teamAi.status.unknown')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'teamAi.status.dormant' })).toBeNull();
   });
 
   it('shows a failed observation as unknown, never as not running', async () => {

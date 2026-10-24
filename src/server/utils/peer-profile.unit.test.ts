@@ -75,6 +75,11 @@ describe('complete peer profile births', () => {
     expect(born).toMatchObject({ model: undefined, providerId: undefined, providerRoute: undefined, providerEnvJson: undefined });
   });
 
+  it('keeps a provider-specific effort that a runtime-only coercer would reset', () => {
+    const born = completePeerProfileSnapshot({ ...agentTemplate, reasoningEffort: 'default' }, { runtime: 'dsh', runtimeSource: 'integrated', providerId: 'deepseek', model: 'v4', reasoningEffort: 'high' });
+    expect(born.reasoningEffort).toBe('high');
+  });
+
   it('keeps the explicit profile values', () => {
     const born = completePeerProfileSnapshot({ ...agentTemplate, model: 'opus', providerId: 'anthropic' }, { runtime: 'builtin', providerId: 'anthropic', model: 'opus' });
     expect(born).toMatchObject({ model: 'opus', providerId: 'anthropic' });

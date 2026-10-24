@@ -10,8 +10,10 @@ import type { TeamChannel, TeamPeer, TeamSessionState } from '@/../shared/teamAi
 export type SessionActivity = 'running' | 'starting' | 'compacting' | 'error' | 'interrupted' | 'idle' | 'dormant' | 'unknown';
 
 export function sessionActivity(observation: Pick<TeamSessionState, 'state' | 'error'> | undefined): SessionActivity {
-  if (observation?.error) return 'unknown';
-  const state = observation?.state;
+  // No observation row (e.g. beyond the bounded batch) is unknown; only an explicit
+  // `state: null` from the Channel owner proves there is no process.
+  if (!observation || observation.error) return 'unknown';
+  const state = observation.state;
   switch (state) {
     case 'running':
     case 'generating':
@@ -98,12 +100,15 @@ export function peerHistory(peer: TeamPeer, sessions: SessionMetadata[]): { item
 export const unobserved = (targets: ReturnType<typeof observationTargets>): TeamSessionState[] =>
   targets.map(target => ({ ...target, state: null, error: 'unavailable' }));
 
-/** Observation targets: every known Session of every peer, bounded by the Rust command limit. */
+/** Observation targets, bounded by the Rust command limit: every peer's current
+ *  Session first, then history (only history can show "finishing"). */
 export function observationTargets(channels: TeamChannel[], sessions: SessionMetadata[]) {
   const known = new Set(sessions.map(session => session.id));
-  return channels
-    .flatMap(channel => channel.peers.flatMap(peer =>
-      [...new Set([peer.sessionId, ...peer.sessionIds].filter((id): id is string => !!id && known.has(id)))]
-        .map(sessionId => ({ channelId: channel.channelId, sessionKey: peer.sessionKey, sessionId }))))
-    .slice(0, 64);
+  const target = (channel: TeamChannel, peer: TeamPeer, sessionId: string) => ({ channelId: channel.channelId, sessionKey: peer.sessionKey, sessionId });
+  const current = channels.flatMap(channel => channel.peers
+    .filter(peer => peer.sessionId && known.has(peer.sessionId))
+    .map(peer => target(channel, peer, peer.sessionId!)));
+  const history = channels.flatMap(channel => channel.peers.flatMap(peer =>
+    [...new Set(peer.sessionIds)].filter(id => id !== peer.sessionId && known.has(id)).map(id => target(channel, peer, id))));
+  return [...current, ...history].slice(0, 64);
 }

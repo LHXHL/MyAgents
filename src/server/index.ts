@@ -4058,9 +4058,6 @@ async function main() {
             );
           }
         }
-        if (appliedPeerProfile) {
-          Object.assign(baseSnapshot, completePeerProfileSnapshot(baseSnapshot, appliedPeerProfile));
-        }
         const snapshotRuntime = (baseSnapshot.runtime ??
           runtimeValue ??
           'builtin') as RuntimeType;
@@ -4099,6 +4096,9 @@ async function main() {
         );
         if (payloadReasoningEffort !== undefined)
           baseSnapshot.reasoningEffort = payloadReasoningEffort;
+        if (appliedPeerProfile) {
+          Object.assign(baseSnapshot, completePeerProfileSnapshot(baseSnapshot, appliedPeerProfile));
+        }
         if (payload.mcpEnabledServers !== undefined)
           baseSnapshot.mcpEnabledServers = payload.mcpEnabledServers;
         if (payload.enabledPluginIds !== undefined)

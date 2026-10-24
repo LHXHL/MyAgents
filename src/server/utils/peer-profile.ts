@@ -101,16 +101,19 @@ export function resolvePeerProfileBirth(
   };
 }
 
-type BirthSnapshot = Pick<SessionMetadata, 'model' | 'providerId' | 'providerRoute' | 'providerEnvJson' | 'providerExecutionIdentity'>;
+type BirthSnapshot = Pick<SessionMetadata, 'model' | 'providerId' | 'providerRoute' | 'providerEnvJson' | 'providerExecutionIdentity' | 'reasoningEffort'>;
 
 /**
  * A profile is the complete birth choice. `POST /sessions` starts from the
  * Agent template and overrides only fields that are present, so fields the
- * profile leaves unset must be cleared here rather than inherited.
+ * profile leaves unset must be cleared here rather than inherited. Call it
+ * after the endpoint's own field coercion so the profile has the last word.
  */
 export function completePeerProfileSnapshot<T extends BirthSnapshot>(snapshot: T, profile: PeerProfile): T {
-  if (profile.providerExecutionIdentity) return snapshot;
-  const next = { ...snapshot };
+  // The runtime-only effort coercer lacks Provider context (DSH, OpenAI levels);
+  // the profile's effort was already accepted by its source Session, so keep it.
+  const next = { ...snapshot, ...(profile.reasoningEffort !== undefined ? { reasoningEffort: profile.reasoningEffort } : {}) };
+  if (profile.providerExecutionIdentity) return next;
   if (profile.model === undefined) {
     next.model = undefined;
     next.providerRoute = undefined;
