@@ -1443,6 +1443,8 @@
     "model": "Model",
     "requiresNew": "New session required",
     "tools": "Tool settings",
+    "loadingTools": "Loading tools",
+    "toolsHint": "Choose the tools available to this session, then save to apply.",
     "plugins": "Plugins",
     "official": "Official tools",
     "none": "None available",
@@ -1471,6 +1473,7 @@
       "none": "None"
     },
     "states": {
+      "starting": "Starting",
       "idle": "Idle",
       "running": "Running",
       "generating": "Running",

@@ -145,6 +145,8 @@ peer 摘要展示主 Session、最近活动与可观察的执行状态；展开�
 
 详情复用 Message 呈现正文、工具过程、思考和实时消息，打开动作进入真实 Chat Tab。当前主 Session 支持 Runtime、模型、推理强度与工具配置；配置仅作用于该 Session，权限不在本面板编辑。不兼容切换先确认新建，普通新建仍使用 Agent 最新默认。停用/离线连接保持可读，管理变更要求连接在线。已保存、待下轮生效、应用失败、绑定保存或通知失败分别反馈。
 
+页面控件复用 `CustomSelect`（工作区图标、Runtime 图标、分组模型选项）、`DropdownMenu`、`ContextMenu`、`Tip` 与 `McpToolsCard`，按钮采用 `compact-action` 和 Theme 的主按钮语义。Runtime/模型选项仍由 Session 专用接口提供，不借用工作区默认配置的写入入口。详情和会话树按页面实际可用宽度切换双列/单列，窄窗工具栏换行；peer 展开箭头随原生 details 状态变化。
+
 ### Settings
 
 Settings 是单实例 Tab，内部导航顺序为：模型供应商、通用设置、聊天机器人 Bot、桌面宠物、使用统计、网络代理、外部调用、快捷键、关于。连续点击「关于」中的 MyAgents 标识解锁后，左侧在「关于」下方显示独立的「开发者」页；「默认 Integrated Runtime」放在该页，不在「实验室」展示。技能、插件和工具不在 Settings 重复出现。

@@ -9,14 +9,16 @@ export default function McpToolsCard({
     title,
     subtitle,
     emptyHint,
+    disabled = false,
 }: {
-    availableMcpServers: McpServerDefinition[];
-    enabledServerIds: string[];
+    availableMcpServers: readonly Pick<McpServerDefinition, 'id' | 'name' | 'description'>[];
+    enabledServerIds: readonly string[];
     onToggle: (serverId: string) => void;
     /** PRD 0.2.17 — optional override so the card can be reused for plugins. */
     title?: string;
     subtitle?: string;
     emptyHint?: string;
+    disabled?: boolean;
 }) {
     const { t } = useTranslation('settings');
     return (
@@ -32,11 +34,12 @@ export default function McpToolsCard({
                         return (
                             <label
                                 key={server.id}
-                                className="flex cursor-pointer items-center gap-3 rounded-lg border border-[var(--line)] p-3 transition-colors hover:border-[var(--line-strong)]"
+                                className={`flex items-center gap-3 rounded-lg border border-[var(--line)] p-3 transition-colors ${disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:border-[var(--line-strong)]'}`}
                             >
                                 <input
                                     type="checkbox"
                                     checked={checked}
+                                    disabled={disabled}
                                     onChange={() => onToggle(server.id)}
                                     className="h-4 w-4 rounded border-[var(--line)]"
                                 />

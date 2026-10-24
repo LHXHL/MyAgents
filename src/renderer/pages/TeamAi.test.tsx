@@ -4,8 +4,10 @@ import { useState } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Project } from '@/config/types';
 import type { SessionMetadata } from '@/api/sessionClient';
-const mocks = vi.hoisted(() => ({ projects: [] as Project[], patch: vi.fn(), channels: vi.fn(), sessions: vi.fn(), detail: vi.fn(), action: vi.fn(), states: vi.fn() }));
-vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+import type { TeamModelMenu, TeamTools } from '@/../shared/teamAi';
+import { i18n } from '@/i18n';
+const mocks = vi.hoisted(() => ({ projects: [] as Project[], patch: vi.fn(), channels: vi.fn(), sessions: vi.fn(), detail: vi.fn(), action: vi.fn(), states: vi.fn(), translate: vi.fn<(key: string, options?: Record<string, unknown>) => string | undefined>() }));
+vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string, options?: Record<string, unknown>) => mocks.translate(key, options) ?? key }) }));
 vi.mock('@/config/useConfigData', () => ({ useConfigData: () => ({ projects: mocks.projects, config: {} }) }));
 vi.mock('@/config/useConfigActions', () => ({ useConfigActions: () => ({ patchProject: mocks.patch }) }));
 vi.mock('@/utils/tauriListen', () => ({ listenWithCleanup: vi.fn(async () => ({})) }));
@@ -156,5 +158,98 @@ describe('Team AI review regressions', () => {
     render(<TeamAi isActive projectId="new-team" onCreate={vi.fn()} onSelectProject={vi.fn()} onOpenSession={vi.fn()} />);
     await waitFor(()=>expect(mocks.channels).toHaveBeenCalledWith('new-agent'));
     expect(screen.getByRole('button',{name:'Team AI'})).toHaveTextContent('New Team');
+  });
+});
+
+describe('Team AI shared controls', () => {
+  const catalog: TeamModelMenu = {
+    runtime: 'builtin', snapshotObservation: 'observed', options: [
+      { group: 'Department provider', name: 'Current model', isCurrent: true, requiresNewSession: false, selection: { kind: 'product-provider', providerId: 'provider-a', model: 'model-a' } },
+      { group: 'Other provider', name: 'Other model', isCurrent: false, requiresNewSession: true, selection: { kind: 'product-provider', providerId: 'provider-b', model: 'model-b' } },
+    ],
+  };
+  const tools: TeamTools = {
+    canManageExtensions: true, snapshotObservation: 'tools-observed',
+    mcp: [{ id: 'mcp-a', name: 'Department MCP' }], plugins: [{ id: 'plugin-a', name: 'Department plugin' }], official: [{ id: 'official-a', name: 'Official tool' }],
+    mcpEnabledServers: [], enabledPluginIds: [], enabledOfficialToolIds: [],
+  };
+  function respondWithControls(overrides: Partial<TeamTools> = {}) {
+    mocks.action.mockImplementation(async (_agent, _channel, _peer, action) => action.kind === 'options' ? catalog : action.kind === 'tools' ? { ...tools, ...overrides } : { success: true });
+  }
+  it('uses the shared overflow menu without selecting the row or changing the target peer', async () => {
+    render(<TeamAi isActive onCreate={vi.fn()} onSelectProject={vi.fn()} onOpenSession={vi.fn()} />);
+    const history = await screen.findByRole('button', { name: /Earlier analysis/ });
+    fireEvent.click(within(history.parentElement!).getByRole('button', { name: 'teamAi.sessionMenu' }));
+    expect(screen.queryByRole('complementary')).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole('button', { name: 'teamAi.setPrimary' }));
+    await waitFor(() => expect(mocks.action).toHaveBeenCalledWith('agent', 'bot-a', peer, { kind: 'setPrimary', sessionId: 'session-b' }));
+  });
+  it('closes the portaled overflow on tab inactivity and returns with the menu closed', async () => {
+    const props = { onCreate: vi.fn(), onSelectProject: vi.fn(), onOpenSession: vi.fn() };
+    const { rerender } = render(<TeamAi {...props} isActive />);
+    const history = await screen.findByRole('button', { name: /Earlier analysis/ });
+    fireEvent.click(within(history.parentElement!).getByRole('button', { name: 'teamAi.sessionMenu' }));
+    expect(await screen.findByRole('button', { name: 'teamAi.setPrimary' })).toBeInTheDocument();
+    rerender(<TeamAi {...props} isActive={false} />);
+    expect(screen.queryByRole('button', { name: 'teamAi.setPrimary' })).not.toBeInTheDocument();
+    rerender(<TeamAi {...props} isActive />);
+    expect(screen.queryByRole('button', { name: 'teamAi.setPrimary' })).not.toBeInTheDocument();
+    expect(mocks.action).not.toHaveBeenCalled();
+  });
+  it.each([['zh-CN', '正在启动'], ['en-US', 'Starting']])('shows the real startup state using %s translations', async (locale, label) => {
+    await i18n.changeLanguage(locale);
+    mocks.translate.mockImplementation((key, options) => String(i18n.t(key, { ...options, ns: 'app' })));
+    mocks.detail.mockResolvedValue({ session: { ...metadata, messages: [], liveSessionState: 'starting' } });
+    render(<TeamAi isActive onCreate={vi.fn()} onSelectProject={vi.fn()} onOpenSession={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('button', { name: /Budget analysis/ }));
+    expect(await within(screen.getByRole('complementary')).findByText(label)).toBeInTheDocument();
+  });
+  it('keeps shared tool-card edits as drafts and sends the original Session-only save payload', async () => {
+    respondWithControls();
+    render(<TeamAi isActive onCreate={vi.fn()} onSelectProject={vi.fn()} onOpenSession={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('button', { name: /Budget analysis/ }));
+    fireEvent.click(await screen.findByRole('button', { name: 'teamAi.tools' }));
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Department MCP' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Official tool' }));
+    expect(mocks.action.mock.calls.some(call => call[3].kind === 'saveTools')).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: 'teamAi.saveTools' }));
+    await waitFor(() => expect(mocks.action).toHaveBeenCalledWith('agent', 'bot-a', peer, {
+      kind: 'saveTools', snapshotObservation: 'tools-observed', mcpEnabledServers: ['mcp-a'], enabledPluginIds: [], enabledOfficialToolIds: ['official-a'],
+    }));
+    expect(mocks.patch).not.toHaveBeenCalled();
+  });
+  it('keeps native CLI extensions read-only in the reused tool cards', async () => {
+    respondWithControls({ canManageExtensions: false });
+    render(<TeamAi isActive onCreate={vi.fn()} onSelectProject={vi.fn()} onOpenSession={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('button', { name: /Budget analysis/ }));
+    fireEvent.click(await screen.findByRole('button', { name: 'teamAi.tools' }));
+    expect(await screen.findByRole('checkbox', { name: 'Department MCP' })).toBeDisabled();
+    expect(screen.getByRole('checkbox', { name: 'Department plugin' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Official tool' }));
+    fireEvent.click(screen.getByRole('button', { name: 'teamAi.saveTools' }));
+    await waitFor(() => expect(mocks.action).toHaveBeenCalledWith('agent', 'bot-a', peer, {
+      kind: 'saveTools', snapshotObservation: 'tools-observed', enabledOfficialToolIds: ['official-a'],
+    }));
+  });
+  it('retains confirmation when the shared model selector requires a new Session', async () => {
+    respondWithControls();
+    render(<TeamAi isActive onCreate={vi.fn()} onSelectProject={vi.fn()} onOpenSession={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('button', { name: /Budget analysis/ }));
+    fireEvent.click(await screen.findByRole('button', { name: 'teamAi.model' }));
+    expect(await screen.findByText('Department provider')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Other model'));
+    const confirmation = (await screen.findByText('teamAi.switchTitle')).closest('.glass-panel')!;
+    expect(mocks.action.mock.calls.some(call => call[3].kind === 'selectModel')).toBe(false);
+    fireEvent.click(within(confirmation as HTMLElement).getByRole('button', { name: 'teamAi.new' }));
+    await waitFor(() => expect(mocks.action).toHaveBeenCalledWith('agent', 'bot-a', peer, { kind: 'selectModel', selection: catalog.options[1].selection, snapshotObservation: 'observed', confirmed: true }));
+  });
+  it('shows localized live state and the same managed Runtime identity as Chat', async () => {
+    mocks.action.mockResolvedValue({ ...catalog, runtime: 'codex', runtimeSource: 'managed-provider' });
+    render(<TeamAi isActive onCreate={vi.fn()} onSelectProject={vi.fn()} onOpenSession={vi.fn()} />);
+    fireEvent.click(await screen.findByRole('button', { name: /Budget analysis/ }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Runtime' })).toHaveTextContent('Managed Codex'));
+    expect(within(screen.getByRole('complementary')).getByText('teamAi.states.idle')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'teamAi.close' }));
+    expect(screen.queryByRole('complementary')).not.toBeInTheDocument();
   });
 });

@@ -1442,6 +1442,8 @@
     "model": "模型",
     "requiresNew": "需要新会话",
     "tools": "工具设置",
+    "loadingTools": "正在读取工具",
+    "toolsHint": "选择当前会话可用的工具，点击保存后应用。",
     "plugins": "插件",
     "official": "官方工具",
     "none": "暂无可用项",
@@ -1470,6 +1472,7 @@
       "none": "关闭"
     },
     "states": {
+      "starting": "正在启动",
       "idle": "空闲",
       "running": "执行中",
       "generating": "执行中",
