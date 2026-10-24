@@ -96,8 +96,9 @@ export default function TeamAi({
   const [confirmation, setConfirmation] = useState<ConfirmRequest | null>(null);
   const [joining, setJoining] = useState(false);
   // Agent settings opens the whole settings panel; a Bot or "add Channel" opens only that Channel page.
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [channelPage, setChannelPage] = useState<ChannelOverlayEntry | null>(null);
+  // One overlay at a time, so a Channel page can never stack over (and later reveal) the settings panel.
+  const [overlay, setOverlay] = useState<{ kind: 'settings' } | { kind: 'channel'; entry: ChannelOverlayEntry } | null>(null);
+  const setChannelPage = (entry: ChannelOverlayEntry) => setOverlay({ kind: 'channel', entry });
   const { openPathExternal } = useWorkspaceFileService(null);
   const generation = useRef(0);
   const noteTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -244,7 +245,7 @@ export default function TeamAi({
           onJoin={() => setJoining(true)}
         />
         <div className="flex-1" />
-        <button className={ghostButton} onClick={() => setSettingsOpen(true)}>
+        <button className={ghostButton} aria-label={t('teamAi.agentSettings')} title={t('teamAi.agentSettings')} onClick={() => setOverlay({ kind: 'settings' })}>
           <SettingsIcon className="h-4 w-4" />
           <span className="hidden @[560px]/team-ai:inline">{t('teamAi.agentSettings')}</span>
         </button>
@@ -346,25 +347,25 @@ export default function TeamAi({
           onCancel={() => setConfirmation(null)}
         />
       )}
-      {settingsOpen && (
+      {overlay?.kind === 'settings' && (
         <Suspense fallback={null}>
           <WorkspaceConfigPanel
             agentDir={project.path}
             initialTab="general"
             onClose={() => {
-              setSettingsOpen(false);
+              setOverlay(null);
               void refresh();
             }}
           />
         </Suspense>
       )}
-      {channelPage && agent && (
+      {overlay?.kind === 'channel' && agent && (
         <ChannelOverlay
-          key={JSON.stringify(channelPage)}
+          key={JSON.stringify(overlay.entry)}
           agent={agent}
-          entry={channelPage}
+          entry={overlay.entry}
           onClose={() => {
-            setChannelPage(null);
+            setOverlay(null);
             void refreshConfig().then(refresh);
           }}
           onChanged={() => { void refreshConfig().then(refresh); }}

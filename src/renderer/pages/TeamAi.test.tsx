@@ -305,6 +305,16 @@ describe('Team AI header and connected Channels', () => {
     expect(screen.queryByTestId('channel-page')).toBeNull();
   });
 
+  it('never stacks the settings panel under a Channel page, even when reached by keyboard', async () => {
+    render(<TeamAi {...props()} />);
+    const bots = await screen.findByRole('region', { name: 'teamAi.connectedChannels' });
+    fireEvent.click(within(bots).getByTitle('teamAi.channelSettings'));
+    expect(await screen.findByTestId('channel-page')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'teamAi.agentSettings' }));
+    expect(screen.queryByTestId('channel-page')).toBeNull();
+    expect(screen.getByTestId('workspace-config-panel')).toBeInTheDocument();
+  });
+
   it('adds a Bot from the connected Channels heading', async () => {
     render(<TeamAi {...props()} />);
     const bots = await screen.findByRole('region', { name: 'teamAi.connectedChannels' });

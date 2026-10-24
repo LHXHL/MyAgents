@@ -78,7 +78,8 @@ export function PeerList({ rows, channels, selectedKey, onSelect, onRetry, onOpe
   return (
     <nav className="flex min-h-0 flex-1 flex-col" aria-label={t('tabs.teamAi')}>
       {/* Connected Bots: transport, access and status live in each Bot's own settings. */}
-      <section className="shrink-0 border-b border-[var(--line)] px-2 pt-2 pb-2" aria-label={t('teamAi.connectedChannels')}>
+      {/* Bounded so many Bots never squeeze the conversation list out of view. */}
+      <section className="flex max-h-[40%] shrink-0 flex-col border-b border-[var(--line)] px-2 pt-2 pb-2" aria-label={t('teamAi.connectedChannels')}>
         <div className={heading}>
           <span className="flex-1">{t('teamAi.connectedChannels')}</span>
           <button
@@ -90,6 +91,7 @@ export function PeerList({ rows, channels, selectedKey, onSelect, onRetry, onOpe
             <PlusIcon className="h-3.5 w-3.5" />
           </button>
         </div>
+        <div className="min-h-0 overflow-y-auto">
         {channels.map(channel => (
           <button
             key={channel.channelId}
@@ -104,6 +106,7 @@ export function PeerList({ rows, channels, selectedKey, onSelect, onRetry, onOpe
               : <OfflineTag channel={channel} />}
           </button>
         ))}
+        </div>
       </section>
       <div className={`${heading} mt-2 px-5`}>
         <span>{t('teamAi.peerList')}</span>
