@@ -26,19 +26,15 @@ interface AgentChannelsSectionProps {
    * cancel/complete/close to the Channels section, never the platform picker. */
   initialAddPlatform?: ChannelType;
   onInitialAddPlatformConsumed?: () => void;
-  /** Open a Channel's detail or the "add Channel" picker directly (Team AI deep links). */
-  initialChannel?: InitialChannelView;
 }
-
-export type InitialChannelView = { view: 'add' } | { view: 'detail'; channelId: string };
 
 function getChannelStatus(status: AgentStatusData | undefined, channelId: string): ChannelStatusData | undefined {
   return status?.channels.find(ch => ch.channelId === channelId);
 }
 
 // Overlay state machine
-type OverlayState =
-  | null
+/** Where a Channel overlay starts: the platform picker, a platform's wizard, or one Channel's detail. */
+export type ChannelOverlayEntry =
   | { view: 'add'; platform?: ChannelType }
   | { view: 'detail'; channelId: string };
 
@@ -95,18 +91,13 @@ export default function AgentChannelsSection({
   onAgentChanged,
   initialAddPlatform,
   onInitialAddPlatformConsumed,
-  initialChannel,
 }: AgentChannelsSectionProps) {
   const { t } = useTranslation('settings');
   const toast = useToast();
   const [loading, setLoading] = useState<string | null>(null);
-  const [overlay, setOverlay] = useState<OverlayState>(() => (
-    initialAddPlatform ? { view: 'add', platform: initialAddPlatform }
-      : initialChannel?.view === 'add' ? { view: 'add' }
-      : initialChannel && agent.channels?.some(channel => channel.id === initialChannel.channelId)
-        ? { view: 'detail', channelId: initialChannel.channelId } : null
+  const [overlay, setOverlay] = useState<ChannelOverlayEntry | null>(() => (
+    initialAddPlatform ? { view: 'add', platform: initialAddPlatform } : null
   ));
-  const directEntryRef = useRef(Boolean(initialAddPlatform));
   const isMountedRef = useRef(true);
 
   useEffect(() => {
@@ -156,74 +147,10 @@ export default function AgentChannelsSection({
     }
   }, [agent.id, onAgentChanged, t, toast]);
 
-  // Close overlay and refresh
   const closeOverlay = useCallback(() => {
-    directEntryRef.current = false;
     setOverlay(null);
     onAgentChanged();
   }, [onAgentChanged]);
-
-  // Platform selected → transition to wizard
-  const handlePlatformSelected = useCallback((platform: ChannelType) => {
-    setOverlay({ view: 'add', platform });
-  }, []);
-
-  // Wizard completed → close overlay
-  const handleWizardComplete = useCallback((_channelId: string) => {
-    closeOverlay();
-  }, [closeOverlay]);
-
-  // Wizard cancelled → go back to platform select
-  const handleWizardCancel = useCallback(() => {
-    if (directEntryRef.current) {
-      closeOverlay();
-      return;
-    }
-    setOverlay({ view: 'add' });
-  }, [closeOverlay]);
-
-  // Detail back → close overlay
-  const handleDetailBack = useCallback(() => {
-    closeOverlay();
-  }, [closeOverlay]);
-
-  // Render overlay content based on state
-  const renderOverlayContent = () => {
-    if (!overlay) return null;
-
-    if (overlay.view === 'add' && !overlay.platform) {
-      return (
-        <ChannelPlatformSelect
-          onSelect={handlePlatformSelected}
-          onCancel={closeOverlay}
-        />
-      );
-    }
-
-    if (overlay.view === 'add' && overlay.platform) {
-      return (
-        <ChannelWizard
-          agent={agent}
-          platform={overlay.platform}
-          onComplete={handleWizardComplete}
-          onCancel={handleWizardCancel}
-        />
-      );
-    }
-
-    if (overlay.view === 'detail') {
-      return (
-        <ChannelDetailView
-          agent={agent}
-          channelId={overlay.channelId}
-          onBack={handleDetailBack}
-          onChanged={onAgentChanged}
-        />
-      );
-    }
-
-    return null;
-  };
 
   return (
     <>
@@ -311,11 +238,41 @@ export default function AgentChannelsSection({
       </div>
 
       {/* === Unified Overlay Panel === */}
-      {overlay && (
-        <ChannelOverlayPanel onClose={closeOverlay}>
-          {renderOverlayContent()}
-        </ChannelOverlayPanel>
-      )}
+      {overlay && <ChannelOverlay agent={agent} entry={overlay} onClose={closeOverlay} onChanged={onAgentChanged} />}
     </>
+  );
+}
+
+/**
+ * The Channel page on its own: platform picker → wizard, or one Channel's detail.
+ * Settings opens it over the Channels card; Team AI opens it directly, so closing it
+ * returns to wherever it was opened from. A wizard entered directly (with a platform)
+ * closes on cancel; one reached from the picker goes back to the picker.
+ */
+export function ChannelOverlay({ agent, entry, onClose, onChanged }: {
+  agent: AgentConfig;
+  entry: ChannelOverlayEntry;
+  onClose: () => void;
+  onChanged: () => void;
+}) {
+  const [view, setView] = useState<ChannelOverlayEntry>(entry);
+  const startedInWizard = entry.view === 'add' && !!entry.platform;
+  return (
+    <ChannelOverlayPanel onClose={onClose}>
+      {view.view === 'add' && !view.platform && (
+        <ChannelPlatformSelect onSelect={platform => setView({ view: 'add', platform })} onCancel={onClose} />
+      )}
+      {view.view === 'add' && view.platform && (
+        <ChannelWizard
+          agent={agent}
+          platform={view.platform}
+          onComplete={() => onClose()}
+          onCancel={() => (startedInWizard ? onClose() : setView({ view: 'add' }))}
+        />
+      )}
+      {view.view === 'detail' && (
+        <ChannelDetailView agent={agent} channelId={view.channelId} onBack={onClose} onChanged={onChanged} />
+      )}
+    </ChannelOverlayPanel>
   );
 }

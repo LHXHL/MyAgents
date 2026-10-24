@@ -2,7 +2,6 @@
  * WorkspaceConfigPanel - Full-screen configuration overlay for workspace
  * Two tabs: 「系统提示词」(CLAUDE.md + rules) and 「技能 Skills」(skills + commands + agents)
  */
-import type { InitialChannelView } from './AgentSettings/sections/AgentChannelsSection';
 import { isImeComposingEvent } from '@/utils/imeKeyboard';
 import { CloseIcon, SlidersIcon, ChevronLeftIcon } from '@/components/icons';
 import { useCallback, useEffect, useState, useRef } from 'react';
@@ -49,8 +48,6 @@ interface WorkspaceConfigPanelProps {
     initialAddChannelPlatform?: ChannelType;
     /** Acknowledge the one-shot Channel deep-link after General consumes it. */
     onInitialAddChannelPlatformConsumed?: () => void;
-    /** Open the General tab directly in a Channel's detail, or in "add Channel". */
-    initialChannel?: InitialChannelView;
 }
 
 export type Tab = 'general' | 'system-prompts' | 'introduction' | 'skills' | 'agent';
@@ -83,7 +80,7 @@ const TAB_ITEMS: { key: Tab; labelKey: string }[] = [
     { key: 'skills', labelKey: 'agentSettings.panel.tabs.skills' },
 ];
 
-export default function WorkspaceConfigPanel({ agentDir, onClose, refreshKey: externalRefreshKey = 0, initialTab, initialSelect, onRequestInit, initialAddChannelPlatform, onInitialAddChannelPlatformConsumed, initialChannel }: WorkspaceConfigPanelProps) {
+export default function WorkspaceConfigPanel({ agentDir, onClose, refreshKey: externalRefreshKey = 0, initialTab, initialSelect, onRequestInit, initialAddChannelPlatform, onInitialAddChannelPlatformConsumed }: WorkspaceConfigPanelProps) {
     const { t } = useTranslation('settings');
     const toast = useToast();
     // Stabilize toast reference to avoid unnecessary effect re-runs
@@ -301,7 +298,6 @@ export default function WorkspaceConfigPanel({ agentDir, onClose, refreshKey: ex
                                     agentDir={agentDir}
                                     initialAddChannelPlatform={initialAddChannelPlatform}
                                     onInitialAddChannelPlatformConsumed={onInitialAddChannelPlatformConsumed}
-                                    initialChannel={initialChannel}
                                 />
                             )}
                             {activeTab === 'system-prompts' && (

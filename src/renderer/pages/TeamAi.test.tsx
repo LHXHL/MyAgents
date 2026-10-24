@@ -8,11 +8,14 @@ import { i18n } from '@/i18n';
 const mocks = vi.hoisted(() => ({ projects: [] as Project[], patch: vi.fn(), channels: vi.fn(), sessions: vi.fn(), action: vi.fn(), states: vi.fn(), enable: vi.fn(), peerConfig: vi.fn(), openPath: vi.fn(), translate: vi.fn<(key: string, options?: Record<string, unknown>) => string | undefined>() }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string, options?: Record<string, unknown>) => mocks.translate(key, options) ?? key }) }));
 vi.mock('@/config/useConfigData', () => ({ useConfigData: () => ({ projects: mocks.projects, config: {} }) }));
-vi.mock('@/config/useConfigActions', () => ({ useConfigActions: () => ({ patchProject: mocks.patch }) }));
-vi.mock('@/config/services/agentConfigService', () => ({ startAndEnableAgentChannel: mocks.enable }));
+vi.mock('@/config/useConfigActions', () => ({ useConfigActions: () => ({ patchProject: mocks.patch, refreshConfig: async () => undefined }) }));
+vi.mock('@/config/services/agentConfigService', () => ({ startAndEnableAgentChannel: mocks.enable, getAgentById: () => ({ id: 'agent', name: 'Agent', enabled: true, channels: [] }) }));
+vi.mock('@/components/AgentSettings/sections/AgentChannelsSection', () => ({
+  ChannelOverlay: ({ entry, onClose }: { entry: unknown; onClose: () => void }) => <div data-testid="channel-page" data-entry={JSON.stringify(entry)}><button onClick={onClose}>close channel page</button></div>,
+}));
 vi.mock('@/utils/tauriListen', () => ({ listenWithCleanup: vi.fn(async () => ({})) }));
 vi.mock('@/hooks/useWorkspaceFileService', () => ({ useWorkspaceFileService: () => ({ openPathExternal: mocks.openPath }) }));
-vi.mock('@/components/WorkspaceConfigPanel', () => ({ default: ({ initialChannel }: { initialChannel?: unknown }) => <div data-testid="workspace-config-panel" data-initial-channel={JSON.stringify(initialChannel)} /> }));
+vi.mock('@/components/WorkspaceConfigPanel', () => ({ default: () => <div data-testid="workspace-config-panel" /> }));
 vi.mock('@/api/sessionClient', () => ({ getSessions: mocks.sessions }));
 vi.mock('@/features/team-ai/client', () => ({ teamChannels: mocks.channels, teamAction: mocks.action, teamStates: mocks.states, teamPeerConfig: mocks.peerConfig }));
 import TeamAi from './TeamAi';
@@ -287,14 +290,27 @@ describe('Team AI header and connected Channels', () => {
     const bots = await screen.findByRole('region', { name: 'teamAi.connectedChannels' });
     expect(screen.queryByRole('textbox')).toBeNull();
     fireEvent.click(within(bots).getByTitle('teamAi.channelSettings'));
-    expect(await screen.findByTestId('workspace-config-panel')).toHaveAttribute('data-initial-channel', JSON.stringify({ view: 'detail', channelId: 'bot-a' }));
+    expect(await screen.findByTestId('channel-page')).toHaveAttribute('data-entry', JSON.stringify({ view: 'detail', channelId: 'bot-a' }));
+    expect(screen.queryByTestId('workspace-config-panel')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'close channel page' }));
+    expect(screen.queryByTestId('channel-page')).toBeNull();
+    expect(screen.queryByTestId('workspace-config-panel')).toBeNull();
+  });
+
+  it('opens the whole Agent settings panel only from Agent settings', async () => {
+    render(<TeamAi {...props()} />);
+    await screen.findAllByRole('option');
+    fireEvent.click(screen.getByRole('button', { name: /teamAi.agentSettings/ }));
+    expect(await screen.findByTestId('workspace-config-panel')).toBeInTheDocument();
+    expect(screen.queryByTestId('channel-page')).toBeNull();
   });
 
   it('adds a Bot from the connected Channels heading', async () => {
     render(<TeamAi {...props()} />);
     const bots = await screen.findByRole('region', { name: 'teamAi.connectedChannels' });
     fireEvent.click(within(bots).getByRole('button', { name: 'teamAi.connectBot' }));
-    expect(await screen.findByTestId('workspace-config-panel')).toHaveAttribute('data-initial-channel', JSON.stringify({ view: 'add' }));
+    expect(await screen.findByTestId('channel-page')).toHaveAttribute('data-entry', JSON.stringify({ view: 'add' }));
+    expect(screen.queryByTestId('workspace-config-panel')).toBeNull();
   });
 
   it('times each conversation by its current Session, exactly as the detail shows it', async () => {
@@ -317,7 +333,8 @@ describe('Team AI header and connected Channels', () => {
     fireEvent.click(screen.getByTitle('teamAi.agentMenu'));
     const menuItem = (await screen.findAllByRole('button', { name: 'teamAi.connectBot' })).find(button => !button.closest('[aria-label="teamAi.connectedChannels"]'))!;
     fireEvent.click(menuItem);
-    expect(await screen.findByTestId('workspace-config-panel')).toHaveAttribute('data-initial-channel', JSON.stringify({ view: 'add' }));
+    expect(await screen.findByTestId('channel-page')).toHaveAttribute('data-entry', JSON.stringify({ view: 'add' }));
+    expect(screen.queryByTestId('workspace-config-panel')).toBeNull();
   });
 });
 

@@ -27,7 +27,8 @@ import WorkspaceIcon from '@/components/launcher/WorkspaceIcon';
 import { DropdownMenu } from '@/components/ui/DropdownMenu';
 import { Popover } from '@/components/ui/Popover';
 import { AtIcon, CheckIcon, ChevronDownIcon, CloseIcon, FolderIcon, FolderOpenIcon, MessageIcon, PlusIcon, SettingsIcon } from '@/components/icons';
-import type { InitialChannelView } from '@/components/AgentSettings/sections/AgentChannelsSection';
+import { ChannelOverlay, type ChannelOverlayEntry } from '@/components/AgentSettings/sections/AgentChannelsSection';
+import { getAgentById } from '@/config/services/agentConfigService';
 import { useWorkspaceFileService } from '@/hooks/useWorkspaceFileService';
 
 const WorkspaceConfigPanel = lazy(() => import('@/components/WorkspaceConfigPanel'));
@@ -71,7 +72,7 @@ export default function TeamAi({
 }) {
   const { t } = useTranslation('app');
   const { projects, config } = useConfigData();
-  const { patchProject } = useConfigActions();
+  const { patchProject, refreshConfig } = useConfigActions();
   const visible = useMemo(() => projects.filter(p => isProjectVisibleToUser(p) && !isProjectArchived(p) && p.agentId), [projects]);
   const teams = useMemo(() => visible.filter(p => p.purpose === 'team-ai'), [visible]);
   const candidates = useMemo(
@@ -80,6 +81,7 @@ export default function TeamAi({
   );
   const project = teams.find(p => p.id === projectId) ?? teams[0];
   const agentId = project?.agentId;
+  const agent = agentId ? getAgentById(config, agentId) : undefined;
   const path = project?.path;
 
   const [channels, setChannels] = useState<TeamChannel[]>([]);
@@ -93,7 +95,9 @@ export default function TeamAi({
   const [note, setNote] = useState<{ key: string; note: TeamNote } | null>(null);
   const [confirmation, setConfirmation] = useState<ConfirmRequest | null>(null);
   const [joining, setJoining] = useState(false);
-  const [panel, setPanel] = useState<{ initialChannel?: InitialChannelView } | null>(null);
+  // Agent settings opens the whole settings panel; a Bot or "add Channel" opens only that Channel page.
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [channelPage, setChannelPage] = useState<ChannelOverlayEntry | null>(null);
   const { openPathExternal } = useWorkspaceFileService(null);
   const generation = useRef(0);
   const noteTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -240,7 +244,7 @@ export default function TeamAi({
           onJoin={() => setJoining(true)}
         />
         <div className="flex-1" />
-        <button className={ghostButton} onClick={() => setPanel({})}>
+        <button className={ghostButton} onClick={() => setSettingsOpen(true)}>
           <SettingsIcon className="h-4 w-4" />
           <span className="hidden @[560px]/team-ai:inline">{t('teamAi.agentSettings')}</span>
         </button>
@@ -250,7 +254,7 @@ export default function TeamAi({
           sections={[
             { items: [
               { icon: <FolderOpenIcon className="h-4 w-4" />, label: t('teamAi.openFolder'), onClick: () => { void openPathExternal({ fullPath: project.path, workspace: project.path }).catch(failure => setError(errorText(failure))); } },
-              { icon: <PlusIcon className="h-4 w-4" />, label: t('teamAi.connectBot'), onClick: () => setPanel({ initialChannel: { view: 'add' } }) },
+              { icon: <PlusIcon className="h-4 w-4" />, label: t('teamAi.connectBot'), onClick: () => setChannelPage({ view: 'add' }) },
             ] },
             { items: [{ icon: <CloseIcon className="h-4 w-4" />, label: t('teamAi.leave'), onClick: leave }] },
           ]}
@@ -271,7 +275,7 @@ export default function TeamAi({
           </span>
           <h2 className="text-lg font-semibold">{t('teamAi.noChannelTitle', { name: project.displayName || project.name })}</h2>
           <p className="mt-2 max-w-sm text-sm text-[var(--ink-muted)]">{t('teamAi.noChannelBody')}</p>
-          <button className={`${primaryButton} mt-5`} onClick={() => setPanel({ initialChannel: { view: 'add' } })}>
+          <button className={`${primaryButton} mt-5`} onClick={() => setChannelPage({ view: 'add' })}>
             <PlusIcon className="h-4 w-4" />
             {t('teamAi.connectBot')}
           </button>
@@ -287,8 +291,8 @@ export default function TeamAi({
               <PeerList
                 rows={rows}
                 channels={channels}
-                onOpenChannel={channelId => setPanel({ initialChannel: { view: 'detail', channelId } })}
-                onAddChannel={() => setPanel({ initialChannel: { view: 'add' } })}
+                onOpenChannel={channelId => setChannelPage({ view: 'detail', channelId })}
+                onAddChannel={() => setChannelPage({ view: 'add' })}
                 selectedKey={selectedKey}
                 onSelect={row => {
                   setSelectedKey(peerRowKey(row.channel.channelId, row.peer.sessionKey));
@@ -311,7 +315,7 @@ export default function TeamAi({
                 run={(action, done) => run(selected, action, done)}
                 confirm={setConfirmation}
                 onOpen={session => onOpenSession(session, project)}
-                onAccess={() => setPanel({ initialChannel: { view: 'detail', channelId: selected.channel.channelId } })}
+                onAccess={() => setChannelPage({ view: 'detail', channelId: selected.channel.channelId })}
                 onEnable={() => {
                   void startAndEnableAgentChannel(agentId, selected.channel.channelId)
                     .catch(failure => setError(errorText(failure)))
@@ -343,18 +347,29 @@ export default function TeamAi({
           onCancel={() => setConfirmation(null)}
         />
       )}
-      {panel && (
+      {settingsOpen && (
         <Suspense fallback={null}>
           <WorkspaceConfigPanel
             agentDir={project.path}
             initialTab="general"
-            initialChannel={panel.initialChannel}
             onClose={() => {
-              setPanel(null);
+              setSettingsOpen(false);
               void refresh();
             }}
           />
         </Suspense>
+      )}
+      {channelPage && agent && (
+        <ChannelOverlay
+          key={JSON.stringify(channelPage)}
+          agent={agent}
+          entry={channelPage}
+          onClose={() => {
+            setChannelPage(null);
+            void refreshConfig().then(refresh);
+          }}
+          onChanged={() => { void refreshConfig().then(refresh); }}
+        />
       )}
     </div>
   );

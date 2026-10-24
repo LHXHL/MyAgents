@@ -17,21 +17,18 @@ import AgentTasksSection from './sections/AgentTasksSection';
 import { SlidersIcon, HeartPulseIcon } from '@/components/icons';
 import type { ChannelType } from '../../../shared/types/agent';
 import AgentIdentityConflicts from './AgentIdentityConflicts';
-import type { InitialChannelView } from './sections/AgentChannelsSection';
 import { resolveAgentWorkspaceProjections } from '../../../shared/agentWorkspaceIdentity';
 
 interface WorkspaceGeneralTabProps {
   agentDir: string;
   initialAddChannelPlatform?: ChannelType;
   onInitialAddChannelPlatformConsumed?: () => void;
-  initialChannel?: InitialChannelView;
 }
 
 export default function WorkspaceGeneralTab({
   agentDir,
   initialAddChannelPlatform,
   onInitialAddChannelPlatformConsumed,
-  initialChannel,
 }: WorkspaceGeneralTabProps) {
   const { t } = useTranslation('settings');
   const { config, projects, patchProject, refreshConfig } = useConfig();
@@ -132,7 +129,6 @@ export default function WorkspaceGeneralTab({
               onAgentChanged={handleAgentChanged}
               initialAddPlatform={initialAddChannelPlatform}
               onInitialAddPlatformConsumed={onInitialAddChannelPlatformConsumed}
-              initialChannel={initialChannel}
             />
           )}
         </div>
