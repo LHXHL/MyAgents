@@ -14,6 +14,8 @@ import type { TeamAiBinding } from '@/features/team-ai/tabModule';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import ContextMenu from '@/components/ContextMenu';
 import CustomSelect from '@/components/CustomSelect';
+import AgentWorkspacePickerDialog from '@/components/AgentWorkspacePickerDialog';
+import { orderWorkspaceSelectorProjects } from '@/components/launcher/WorkspaceSelector';
 import { ChevronDownIcon, RefreshIcon, PlusIcon, SlidersIcon, MoreIcon } from '@/components/icons';
 const WorkspaceConfigPanel = lazy(() => import('@/components/WorkspaceConfigPanel'));
 const button = 'inline-flex h-8 items-center justify-center gap-1.5 rounded-md px-3 text-sm hover:bg-[var(--hover-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] disabled:cursor-not-allowed disabled:opacity-40';
@@ -22,10 +24,11 @@ type Selection = { channelId: string; sessionKey: string; sessionId: string };
 
 export default function TeamAi({ isActive, onCreate, onOpenSession, projectId, onSelectProject }: Omit<TeamAiBinding, 'onSelectProject'> & { isActive: boolean; projectId?: string; onSelectProject: (id: string) => void }) {
   const { t } = useTranslation('app');
-  const { projects } = useConfigData();
+  const { projects, config } = useConfigData();
   const { patchProject } = useConfigActions();
   const visible = useMemo(() => projects.filter(p => isProjectVisibleToUser(p) && !isProjectArchived(p) && p.agentId), [projects]);
   const teams = useMemo(() => visible.filter(p => p.purpose === 'team-ai'), [visible]);
+  const candidates = useMemo(() => orderWorkspaceSelectorProjects(visible.filter(p => p.purpose !== 'team-ai'), config.defaultWorkspacePath), [visible, config.defaultWorkspacePath]);
   const project = teams.find(p => p.id === projectId) ?? teams[0];
   const [joining, setJoining] = useState(false);
   const [channels, setChannels] = useState<TeamChannel[]>([]);
@@ -92,7 +95,7 @@ export default function TeamAi({ isActive, onCreate, onOpenSession, projectId, o
   }, [agentId, busy, refresh, t]);
   const join = async (id: string) => {
     setBusy(true);
-    try { await patchProject(id, { purpose: 'team-ai' }); onSelectProject(id); setJoining(false); setError(null); }
+    try { await patchProject(id, { purpose: 'team-ai' }); onSelectProject(id); setError(null); }
     catch (error) { setError(errorText(error)); }
     finally { setBusy(false); }
   };
@@ -101,14 +104,26 @@ export default function TeamAi({ isActive, onCreate, onOpenSession, projectId, o
       <header className="mb-7 flex flex-wrap items-start justify-between gap-4">
         <div><h1 className="text-xl font-semibold tracking-tight"><span className="mr-2 text-[var(--ink-muted)]" aria-hidden="true">@</span>Team AI</h1>
           <p className="mt-2 text-sm text-[var(--ink-muted)]">{t('teamAi.description')}</p></div>
-        <div className="flex gap-1"><button className={button} onClick={() => setJoining(value => !value)}>{t('teamAi.join')}</button>
+        <div className="flex gap-1">
+          {/* Keep the trigger focusable while saving; selection closes the modal before the async patch completes. */}
+          <button
+            className={`${button} aria-disabled:cursor-not-allowed aria-disabled:opacity-40`}
+            autoFocus={isActive}
+            aria-disabled={busy}
+            aria-haspopup="dialog"
+            aria-expanded={joining}
+            onClick={event => { if (busy) return; event.currentTarget.focus(); setJoining(true); }}
+          >{t('teamAi.join')}</button>
           <button className={`${button} bg-[var(--accent)] text-white hover:opacity-90`} onClick={onCreate}><PlusIcon className="h-4 w-4" />{t('teamAi.create')}</button></div>
       </header>
-      {joining && <section aria-label={t('teamAi.join')} className="mb-6 rounded-lg border border-[var(--line)] p-4">
-        <h2 className="mb-2 text-sm font-medium">{t('teamAi.join')}</h2>
-        {visible.filter(p => p.purpose !== 'team-ai').map(p => <button key={p.id} disabled={busy} className={`${button} mr-2 mb-1`} onClick={() => { void join(p.id); }}>{p.displayName || p.name}</button>)}
-        {!visible.some(p => p.purpose !== 'team-ai') && <p className="text-sm text-[var(--ink-muted)]">{t('teamAi.noCandidates')}</p>}
-      </section>}
+      {joining && <AgentWorkspacePickerDialog
+        projects={candidates}
+        title={t('teamAi.selectWorkspaceTitle')}
+        description={t('teamAi.selectWorkspaceDescription')}
+        emptyLabel={t('teamAi.noCandidates')}
+        onClose={() => setJoining(false)}
+        onSelect={project => { setJoining(false); void join(project.id); }}
+      />}
       {error && <div role="alert" className="mb-4 text-sm text-[var(--error)]">{error}<button className={button} onClick={() => { void refresh(); }}>{t('teamAi.retry')}</button></div>}
       {teams.length === 0 ? <div className="py-20 text-center"><p className="text-base font-medium">{t('teamAi.empty')}</p><p className="mt-2 text-sm text-[var(--ink-muted)]">{t('teamAi.emptyHint')}</p></div> : <>
         <div className="mb-5 flex items-center gap-2">

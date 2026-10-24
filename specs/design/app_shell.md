@@ -139,7 +139,7 @@ Session 注意力信号：
 
 Team AI 是带 @ 图标的单实例管理 Tab，入口位于“更多”末项。它按 Agent 工作区 → Channel/Bot 连接 → 私聊/群聊 peer → 当前及历史 Session 展示；同平台多个 Bot 保留独立连接。Project 的 `purpose=team-ai` 只表达用途，工作区仍在普通资源树展示。
 
-创建复用 `NewAgentPanel` 与现有 mino 模板，成功后选中该 Team AI；普通入口仍保持只闪现新工作区的行为。加入已有工作区只修改用途。页面选择归 Tab authority，展开和详情为页面临时状态。
+创建复用 `NewAgentPanel` 与现有 mino 模板，成功后选中该 Team AI；普通入口仍保持只闪现新工作区的行为。加入已有工作区复用聊天机器人 Bot 的 `AgentWorkspacePickerDialog`，按图标、名称和路径纵向展示尚未加入的可用 Agent 工作区，选择后只修改用途。页面选择归 Tab authority，展开和详情为页面临时状态。
 
 peer 摘要展示主 Session、最近活动与可观察的执行状态；展开后出现历史与管理动作。右键和行内更多菜单均可将本 peer 的历史设置为主 Session，不提供跨 peer 目标选择器。浏览离线连接和历史不启动 Session 进程；没有实时观察时明确显示未知。
 

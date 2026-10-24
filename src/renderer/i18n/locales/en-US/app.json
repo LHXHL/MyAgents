@@ -1408,6 +1408,8 @@
   "teamAi": {
     "description": "Manage your shared Agent across group and direct conversations.",
     "join": "Add existing Agent workspace",
+    "selectWorkspaceTitle": "Select an Agent workspace",
+    "selectWorkspaceDescription": "Choose an Agent workspace to add to Team AI.",
     "create": "Create Team AI",
     "noCandidates": "All available workspaces have been added.",
     "retry": "Retry",

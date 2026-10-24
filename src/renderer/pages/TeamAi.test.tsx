@@ -1,10 +1,12 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { useState } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Project } from '@/config/types';
 import type { SessionMetadata } from '@/api/sessionClient';
 const mocks = vi.hoisted(() => ({ projects: [] as Project[], patch: vi.fn(), channels: vi.fn(), sessions: vi.fn(), detail: vi.fn(), action: vi.fn(), states: vi.fn() }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
-vi.mock('@/config/useConfigData', () => ({ useConfigData: () => ({ projects: mocks.projects }) }));
+vi.mock('@/config/useConfigData', () => ({ useConfigData: () => ({ projects: mocks.projects, config: {} }) }));
 vi.mock('@/config/useConfigActions', () => ({ useConfigActions: () => ({ patchProject: mocks.patch }) }));
 vi.mock('@/utils/tauriListen', () => ({ listenWithCleanup: vi.fn(async () => ({})) }));
 vi.mock('@/api/sessionClient', () => ({ getSessions: mocks.sessions }));
@@ -50,11 +52,65 @@ describe('Team AI channel management', () => {
     expect(mocks.action).not.toHaveBeenCalled();
   });
   it('joins an existing workspace with a usage patch and preserves its identity', async () => {
+    mocks.projects = [
+      { ...project, displayName: 'Support department', purpose: undefined },
+      { ...project, id: 'joined', displayName: 'Already joined' },
+      { ...project, id: 'hidden', purpose: undefined, hidden: true },
+      { ...project, id: 'internal', purpose: undefined, internal: true },
+      { ...project, id: 'archived', purpose: undefined, archivedAt: '2026-10-24T00:00:00Z' },
+      { ...project, id: 'no-agent', purpose: undefined, agentId: undefined },
+    ];
+    const select = vi.fn();
+    render(<TeamAi isActive onCreate={vi.fn()} onSelectProject={select} onOpenSession={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'teamAi.join' }));
+    const dialog = screen.getByRole('dialog', { name: 'teamAi.selectWorkspaceTitle' });
+    expect(within(dialog).getByText('/workspace')).toBeInTheDocument();
+    expect(within(dialog).getAllByRole('button')).toHaveLength(2); // close + sole eligible workspace
+    expect(within(dialog).queryByText('Already joined')).not.toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('button', { name: /Support department/ }));
+    await waitFor(() => expect(mocks.patch).toHaveBeenCalledWith('workspace', { purpose: 'team-ai' }));
+    expect(select).toHaveBeenCalledWith('workspace');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+  it('dismisses the workspace picker with Escape and restores focus without changing config', async () => {
+    const user = userEvent.setup();
     mocks.projects = [{ ...project, purpose: undefined }];
     render(<TeamAi isActive onCreate={vi.fn()} onSelectProject={vi.fn()} onOpenSession={vi.fn()} />);
-    fireEvent.click(screen.getByRole('button', { name: 'teamAi.join' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Support department' }));
-    await waitFor(() => expect(mocks.patch).toHaveBeenCalledWith('workspace', { purpose: 'team-ai' }));
+    const trigger = screen.getByRole('button', { name: 'teamAi.join' });
+    await user.click(trigger);
+    const dialog = screen.getByRole('dialog');
+    await waitFor(() => expect(dialog).toContainElement(document.activeElement as HTMLElement));
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    await waitFor(() => expect(trigger).toHaveFocus());
+    expect(mocks.patch).not.toHaveBeenCalled();
+  });
+  it('keeps keyboard focus through pending persistence and the selected-workspace remount', async () => {
+    const user = userEvent.setup();
+    let complete!: () => void;
+    mocks.projects = [{ ...project, purpose: undefined }];
+    mocks.patch.mockImplementation(() => new Promise<void>(resolve => { complete = () => { mocks.projects = [project]; resolve(); }; }));
+    function SelectedWorkspacePage() {
+      const [id, select] = useState<string>();
+      return <TeamAi key={id} projectId={id} isActive onCreate={vi.fn()} onSelectProject={select} onOpenSession={vi.fn()} />;
+    }
+    render(<SelectedWorkspacePage />);
+    const trigger = screen.getByRole('button', { name: 'teamAi.join' });
+    await user.click(trigger);
+    await waitFor(() => expect(within(screen.getByRole('dialog')).getByRole('button', { name: 'actions.cancel' })).toHaveFocus());
+    await user.keyboard('{Tab}{Enter}');
+    await waitFor(() => expect(trigger).toHaveFocus());
+    expect(trigger).toHaveAttribute('aria-disabled', 'true');
+    await user.keyboard('{Enter}');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(mocks.patch).toHaveBeenCalledTimes(1);
+    complete();
+    await waitFor(() => {
+      const nextTrigger = screen.getByRole('button', { name: 'teamAi.join' });
+      expect(nextTrigger).not.toBe(trigger);
+      expect(nextTrigger).toHaveFocus();
+      expect(nextTrigger).toHaveAttribute('aria-disabled', 'false');
+    });
   });
   it('distinguishes a failed channel read from an empty channel list', async () => {
     mocks.channels.mockRejectedValue(new Error('State file unreadable'));

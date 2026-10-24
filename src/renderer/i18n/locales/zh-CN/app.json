@@ -1407,6 +1407,8 @@
   "teamAi": {
     "description": "管理共享 Agent 在各个群聊与私聊中的工作。",
     "join": "加入已有 Agent 工作区",
+    "selectWorkspaceTitle": "选择 Agent 工作区",
+    "selectWorkspaceDescription": "选择要加入 Team AI 的 Agent 工作区。",
     "create": "创建 Team AI",
     "noCandidates": "所有可用工作区都已加入。",
     "retry": "重试",
