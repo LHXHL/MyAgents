@@ -17,7 +17,6 @@ import {
   InfoIcon,
   PlusIcon,
   PowerIcon,
-  ShieldIcon,
 } from '@/components/icons';
 import { formatPastRelativeTime } from '@/i18n/format';
 import { getSessionDisplayText } from '@/utils/sessionDisplay';
@@ -51,7 +50,7 @@ const toolTotal = (config: TeamPeerProfile) =>
   (config.mcpEnabledServers?.length ?? 0) + (config.enabledPluginIds?.length ?? 0) + (config.enabledOfficialToolIds?.length ?? 0);
 const sameSet = (a: readonly string[] = [], b: readonly string[] = []) => a.length === b.length && a.every(id => b.includes(id));
 
-export function PeerDetail({ agentId, row, sessions, states, pending, note, run, confirm, onOpen, onAccess, onEnable, onBack }: {
+export function PeerDetail({ agentId, row, sessions, states, pending, note, run, confirm, onOpen, onEnable, onBack }: {
   agentId: string;
   row: PeerRow;
   sessions: SessionMetadata[];
@@ -61,7 +60,6 @@ export function PeerDetail({ agentId, row, sessions, states, pending, note, run,
   run: RunTeamAction;
   confirm: (request: ConfirmRequest) => void;
   onOpen: (session: SessionMetadata) => void;
-  onAccess: () => void;
   onEnable: () => void;
   onBack: () => void;
 }) {
@@ -69,7 +67,6 @@ export function PeerDetail({ agentId, row, sessions, states, pending, note, run,
   const { channel, peer } = row;
   const off = channelOffline(channel);
   const stats = peerStats(peer, sessions);
-  const copy = (value: string) => { void copyPlainText(value).catch(() => undefined); };
   return (
     <div className="mx-auto w-full max-w-[760px] px-6 pt-5 pb-10">
       {/* Wrapper owns visibility: `compact-action` sets display outside Tailwind layers. */}
@@ -90,18 +87,6 @@ export function PeerDetail({ agentId, row, sessions, states, pending, note, run,
             <span className="shrink-0">{t(`teamAi.${peer.sourceType}`)}</span>
           </p>
         </div>
-        <button className={ghostButton} onClick={onAccess}>
-          <ShieldIcon className="h-4 w-4" />
-          {t('teamAi.access')}
-        </button>
-        <DropdownMenu
-          size="md"
-          title={t('teamAi.peerMenu')}
-          sections={[{ items: [
-            { icon: <CopyIcon className="h-4 w-4" />, label: t('teamAi.copyPeerId'), onClick: () => copy(peer.sourceId) },
-            ...(peer.sessionId ? [{ icon: <CopyIcon className="h-4 w-4" />, label: t('teamAi.copySessionId'), onClick: () => copy(peer.sessionId!) }] : []),
-          ] }]}
-        />
       </header>
       {off && (
         <div className="mt-4 flex items-center gap-2.5 rounded-[var(--radius-md)] bg-[var(--paper-inset)] px-3.5 py-2.5 text-sm text-[var(--ink-muted)]">

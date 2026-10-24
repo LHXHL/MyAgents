@@ -315,7 +315,6 @@ export default function TeamAi({
                 run={(action, done) => run(selected, action, done)}
                 confirm={setConfirmation}
                 onOpen={session => onOpenSession(session, project)}
-                onAccess={() => setChannelPage({ view: 'detail', channelId: selected.channel.channelId })}
                 onEnable={() => {
                   void startAndEnableAgentChannel(agentId, selected.channel.channelId)
                     .catch(failure => setError(errorText(failure)))
