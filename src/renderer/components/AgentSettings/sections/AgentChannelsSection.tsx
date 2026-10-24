@@ -15,10 +15,7 @@ import { startAndEnableAgentChannel, stopAndDisableAgentChannel } from '@/config
 import ChannelPlatformSelect from '../channels/ChannelPlatformSelect';
 import ChannelWizard from '../channels/ChannelWizard';
 import ChannelDetailView from '../channels/ChannelDetailView';
-import telegramIcon from '../../ImSettings/assets/telegram.png';
-import feishuIcon from '../../ImSettings/assets/feishu.jpeg';
-import dingtalkIcon from '../../ImSettings/assets/dingtalk.svg';
-import { findPromotedByPlatform } from '../../ImSettings/promotedPlugins';
+import { ChannelPlatformIcon, getChannelPlatformLabel } from '../channelPlatform';
 import { resolveChannelDisplayName } from '@/utils/channelDisplayName';
 
 interface AgentChannelsSectionProps {
@@ -29,30 +26,8 @@ interface AgentChannelsSectionProps {
    * cancel/complete/close to the Channels section, never the platform picker. */
   initialAddPlatform?: ChannelType;
   onInitialAddPlatformConsumed?: () => void;
-}
-
-const PLATFORM_LABELS: Record<string, string> = {
-  telegram: 'Telegram',
-  feishu: '飞书',
-  dingtalk: '钉钉',
-};
-
-function getPlatformLabel(type: string): string {
-  if (type.startsWith('openclaw:')) {
-    const promoted = findPromotedByPlatform(type);
-    if (promoted) return promoted.name;
-    return type.slice('openclaw:'.length);
-  }
-  return PLATFORM_LABELS[type] || type;
-}
-
-function getPlatformIcon(type: string) {
-  if (type === 'telegram') return <img src={telegramIcon} alt="Telegram" className="h-5 w-5" />;
-  if (type === 'feishu') return <img src={feishuIcon} alt="飞书" className="h-5 w-5 rounded" />;
-  if (type === 'dingtalk') return <img src={dingtalkIcon} alt="钉钉" className="h-5 w-5 rounded" />;
-  const promoted = findPromotedByPlatform(type);
-  if (promoted) return <img src={promoted.icon} alt={promoted.name} className="h-5 w-5 rounded" />;
-  return <span className="text-base">💬</span>;
+  /** Open this Channel's detail directly (e.g. Team AI "准入"). */
+  initialChannelId?: string;
 }
 
 function getChannelStatus(status: AgentStatusData | undefined, channelId: string): ChannelStatusData | undefined {
@@ -118,12 +93,15 @@ export default function AgentChannelsSection({
   onAgentChanged,
   initialAddPlatform,
   onInitialAddPlatformConsumed,
+  initialChannelId,
 }: AgentChannelsSectionProps) {
   const { t } = useTranslation('settings');
   const toast = useToast();
   const [loading, setLoading] = useState<string | null>(null);
   const [overlay, setOverlay] = useState<OverlayState>(() => (
-    initialAddPlatform ? { view: 'add', platform: initialAddPlatform } : null
+    initialAddPlatform ? { view: 'add', platform: initialAddPlatform }
+      : initialChannelId && agent.channels?.some(channel => channel.id === initialChannelId)
+        ? { view: 'detail', channelId: initialChannelId } : null
   ));
   const directEntryRef = useRef(Boolean(initialAddPlatform));
   const isMountedRef = useRef(true);
@@ -280,7 +258,7 @@ export default function AgentChannelsSection({
             const displayName = resolveChannelDisplayName(
               channel,
               chStatus,
-              getPlatformLabel(channel.type),
+              getChannelPlatformLabel(channel.type),
             );
 
             return (
@@ -289,7 +267,7 @@ export default function AgentChannelsSection({
                 className="flex cursor-pointer items-center gap-3 rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] px-4 py-3 transition-all hover:border-[var(--line-strong)] hover:shadow-sm"
                 onClick={() => setOverlay({ view: 'detail', channelId: channel.id })}
               >
-                <span className="flex-shrink-0">{getPlatformIcon(channel.type)}</span>
+                <span className="flex-shrink-0"><ChannelPlatformIcon type={channel.type} /></span>
                 <div className="flex min-w-0 flex-1 items-center gap-2">
                   <span className="truncate text-sm font-medium text-[var(--ink)]">
                     {displayName}

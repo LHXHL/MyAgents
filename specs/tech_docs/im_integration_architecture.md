@@ -87,11 +87,18 @@ Team AI 复用 Project/Agent/Channel/Session，不拥有执行器或独立存储
 
 `im/team_ai.rs` 通过配置枚举所有连接，合并 live Router/Health 或持久 health，因此停用连接也可浏览。管理定位使用 `(agentId, channelId, sessionKey)`；sessionKey 本身不含 channelId，不能据此合并同平台 Bot。
 
-Router 的 `peer_history` 记录可证明的 peer→Session ID 集合，与 current bindings 一起写入同一 health 快照 `peerSessionHistory`。它不保存 peer 模型/工具默认值，不向 Session origin 双写绑定。轮换/移除前记住原关联，未提交的候选绑定不进入历史；缺字段的旧数据只从已有当前绑定恢复，不猜测旧会话。Session 删除不重建该 Session，页面标记失效引用。
+Router 的 `peer_history` 记录可证明的 peer→Session ID 集合，与 current bindings 一起写入同一 health 快照 `peerSessionHistory`。它是可重建的运行投影，不保存 peer 配置（见下文 peer 专属配置），不向 Session origin 双写绑定。轮换/移除前记住原关联，未提交的候选绑定不进入历史；缺字段的旧数据只从已有当前绑定恢复，不猜测旧会话。Session 删除不重建该 Session，页面标记失效引用。
 
-读取详情和有界状态观察通过 exact-generation dispatch lease；浏览不 ensure，也不注册 Tab owner。取得 dispatch lease 后释放 lifecycle 锁再请求 HTTP，以允许 Goal-aware stop 回调重入 Rust lifecycle owner。无活跃进程时详情读持久历史，实时状态为空。列表状态每批最多 64 个，详情只读最近 30 条；管理页关闭不释放渠道执行 owner。
+有界状态观察通过 exact-generation dispatch lease；浏览不 ensure，也不注册 Tab owner。取得 dispatch lease 后释放 lifecycle 锁再请求 HTTP，以允许 Goal-aware stop 回调重入 Rust lifecycle owner。无活跃进程时实时状态为空，页面显示“未运行（收到新消息时自动启动）”，不是未知或异常；观察请求本身失败才显示“状态未知”。列表状态每批最多 64 个；管理页只展示状态与配置，不读取对话正文，查看对话统一打开 Chat Tab；关闭页面不释放渠道执行 owner。peer 名称缺失时依次回退到 Channel 准入配置中的 `userDisplayNames` / `groupPermissions[].groupName`，仍缺失才显示 ID。
 
-操作沿用 Channel model-work gate、per-peer fence 和 expectedSessionId。兼容模型、推理强度和工具写入 Node Session-only 入口，经 snapshot observation CAS 与 SessionEngine facade 应用，不调用 Agent defaults writer。配置目录读 GET `/api/im/session-model-options`、GET `/api/im/session-tools` 可由 Global 提供；POST `/api/im/session-runtime` 只规划 birth，属于 Global。Session 配置 POST 仍属于目标 Session。显式 Runtime 切换从保存的 Session 编译，复用 Runtime 字段可移植性规则；普通 new 从 Agent 最新模板完整出生。完整 birth 后通过既有 handover 接管明确 peer，历史菜单仅允许已有归属的 Session。
+操作沿用 Channel model-work gate、per-peer fence 和 expectedSessionId。兼容模型、推理强度和工具写入 Node Session-only 入口，经 snapshot observation CAS 与 SessionEngine facade 应用，不调用 Agent defaults writer。配置目录读 GET `/api/im/session-model-options`、GET `/api/im/session-tools`、GET `/api/im/peer-profile` 可由 Global 提供；POST `/api/im/session-runtime` 只规划 birth，属于 Global。Session 配置 POST 仍属于目标 Session。显式 Runtime 切换从保存的 Session 编译，复用 Runtime 字段可移植性规则；普通 new 经 peer 出生入口（有 peer 专属配置用它，否则用 Agent 最新模板）完整出生。完整 birth 后通过既有 handover 接管明确 peer，历史菜单仅允许已有归属的 Session。
+
+**peer 专属配置（仅 Team AI）**。Team AI Agent 被多人共用，在某个私聊/群聊里调整配置改变的是该 peer 的出生模板，而不是 Agent 默认或单个 Session：
+
+- 存储：`config.json` → `agents[].channels[].peerProfiles[sessionKey]`，随 Channel 删除。值的形状只由 Node `src/server/utils/peer-profile.ts` 定义（Runtime/source、Provider 或 runtime-backed identity、模型、推理强度、MCP/插件/官方工具；不含权限），Rust 视为不透明 JSON。Renderer 的 Channel 写入不得改变该字段（`channelExecutionConfigChangeError` 拒绝）。
+- 唯一写入：`team_ai::sync_peer_profile` 在 per-peer fence 内，确认 Agent 为 Team AI（唯一 Project 的 `purpose=team-ai`）且 Session 是该 peer 当前绑定后，经 `/api/im/peer-profile` 复制该 Session 的最新完整配置并在 config lock 内整份写入；否则 no-op。它复制当前真值而不是合并增量，因此幂等、可重试，并发时最后一次同步必为最新。调用点：Team AI 页的配置修改与配置性新建（Runtime 切换、不兼容模型）、Team AI 私聊 `/model`、Team AI 工作区 Chat 对 Session snapshot 的写入（`cmd_team_ai_sync_peer_profile`；渠道停止时没有 peer fence，改在该 Channel 的 lifecycle lock 内读取持久绑定并写入，期间渠道无法启动）。普通“新建会话”和“设为当前”不改 peer 配置。`clearProfile` 删除即恢复跟随 Agent 默认，当前 Session 不变。
+- 唯一读取：`team_ai::birth_for_peer` 是所有 IM 出生（首条消息 `ensure_peer_snapshot`、私聊 `/new`、Team AI 新建）的共同入口，把 peer 配置作为 `peerProfile` 交给 Global `POST /sessions`。Node 仅在配置可证明永久失效时拒绝（Runtime 不存在、Provider 删除/停用、模型已不在该 Provider 列表）：按 Agent 模板出生并返回 `peerProfile: rejected`，Rust 以 compare-and-delete 删除该配置。凭据、订阅校验、托管 Codex 就绪、CLI 登录等暂态问题不判定失效；缺失的 MCP/插件只过滤。
+- 已有 Session 仍以自身 snapshot 为准；peer 配置只在出生时读取。Agent 移出 Team AI 后读取时忽略 peer 配置（数据保留，重新加入恢复）。
 
 改绑不停止原执行；已接纳的 IM 请求仍经旧 ReplySlot 完成原目标回复，客户端普通结果继续依当前 binding 投递。管理页不改变 ReplyRouter、BackgroundCompletion 和通知协议。handover 的 `state_persisted`、通知结果及已创建但未绑定的 Session 必须分别呈现，不能声明整体回滚。
 
@@ -138,7 +145,7 @@ desktop handover、heartbeat、模型选择和 surface migration 复用同一 pe
 
 IM 与桌面共享 owned Session 策略。`configSnapshotAt` 后，模型、Runtime/source/binding、effort、permission、MCP ID、plugins 和 official tools 服从该 Session；恢复、普通消息和 heartbeat 不读最新 Agent 模板覆盖它。SidecarManager 对 IM owner 同样优先持久执行身份，冲突 override 直接拒绝，不再按默认 Runtime drift 自动轮换。
 
-Agent 默认设置变更只刷新出生模板，并向所有已建立私聊 binding 发送系统提示；不发群聊，不启动目标 Sidecar、不查询模型目录、不进入 AI queue。已与默认一致的当前 Session 不重复提示。消息从当前 metadata 读取旧模型，提供 `/new`、`/model`；在业务锁释放后由一次性后台任务投递，配置刷新不等待平台，元数据 IPC 使用 5 秒期限。单个读取或发送失败继续其他私聊，不回滚默认，不增加通知 outbox。Channel 关闭或不可达时按 best effort 处理。
+Agent 默认设置变更只刷新出生模板，并向所有已建立私聊 binding 发送系统提示（Team AI 中拥有 peer 专属配置的私聊不跟随默认，跳过）；不发群聊，不启动目标 Sidecar、不查询模型目录、不进入 AI queue。已与默认一致的当前 Session 不重复提示。消息从当前 metadata 读取旧模型，提供 `/new`、`/model`；在业务锁释放后由一次性后台任务投递，配置刷新不等待平台，元数据 IPC 使用 5 秒期限。单个读取或发送失败继续其他私聊，不回滚默认，不增加通知 outbox。Channel 关闭或不可达时按 best effort 处理。
 
 旧完整快照原样使用。legacy 活跃实例仅由对应 Session owner freeze；离线数据无法证明完整配置时拒绝恢复并引导 `/new`，保留历史，不能拿当前默认制造旧 snapshot。Cloud registered Agent 的 live-follow 生命周期保持独立。
 
@@ -148,7 +155,7 @@ Agent 默认设置变更只刷新出生模板，并向所有已建立私聊 bind
 
 `/model` 从 Node 读取桌面同源 Provider 顺序、启用/删除/自定义模型与 readiness，按供应商分组、模型连续编号，混入真实 Managed Codex catalog。本机 Claude Code/Codex CLI Session 仅显示该 CLI 的模型。无 Runtime 或权限选择菜单。
 
-每个 peer 只保存最后成功展示的临时菜单（Session id、execution observation、条目 identity）；数字绑定该菜单而非重新计算的顺序。选择前重查 availability，在 SessionStore writer 锁内 CAS 校验 observation 与当前 engine binding。兼容选择先写 snapshot，再经 SessionEngine apply；忙时下一轮生效。随后在 fresh config 锁内写 Agent 默认，释放 peer fence 后触发 Rust 模板刷新。分阶段失败明确返回已提交内容。
+每个 peer 只保存最后成功展示的临时菜单（Session id、execution observation、条目 identity）；数字绑定该菜单而非重新计算的顺序。选择前重查 availability，在 SessionStore writer 锁内 CAS 校验 observation 与当前 engine binding。兼容选择先写 snapshot，再经 SessionEngine apply；忙时下一轮生效。普通 Agent 随后在 fresh config 锁内写 Agent 默认，释放 peer fence 后触发 Rust 模板刷新；Team AI Agent 改走 session-only 入口并在 fence 内同步该私聊的 peer 专属配置，不写 Agent 默认，菜单、`/help` 与回复文案同步说明作用范围。分阶段失败明确返回已提交内容。
 
 不兼容条目标记“（会启用新会话）”，选择后直接完整 birth 并复用既有 handover 接管该私聊，不二次确认、不修改旧 snapshot、不自动重放未确认写入。`chat:session-config-changed` 仅携带 Session id；打开同一 Session 的 Tab 经自己的代理回读 metadata 更新模型展示。
 
@@ -304,7 +311,7 @@ detached/new-session Goal需要独立parent/return-target设计，不能混入cu
 
 ## 10. 配置与持久化
 
-`config.json` 是 Agent 出生模板和 Channel transport 配置的 authority。Channel 不再拥有独立执行配置；详情与 writer 移除 model/provider/runtime/permission 覆盖，旧字段只读保留以免损坏存量信息，正常解析不采用。连接凭据、白名单、群规则和 toolsDeny 仍由 Channel 实时拥有。所有写入在config lock内fresh read-modify-write；Renderer提交typed intent并在成功后refresh完整snapshot，不能用可能过期的React state覆盖其它Channel。
+`config.json` 是 Agent 出生模板、Team AI peer 专属配置和 Channel transport 配置的 authority。Channel 级不拥有独立执行配置；详情与 writer 移除 model/provider/runtime/permission 覆盖，旧字段只读保留以免损坏存量信息，正常解析不采用。Team AI 的 `peerProfiles` 是按 peer 的出生模板而非 Channel 覆盖，写入规则见「Team AI 管理投影」。连接凭据、白名单、群规则和 toolsDeny 仍由 Channel 实时拥有。所有写入在config lock内fresh read-modify-write；Renderer提交typed intent并在成功后refresh完整snapshot，不能用可能过期的React state覆盖其它Channel。
 
 群聊与绑定用户的展示名保存于同一 Channel 配置：`groupPermissions[].groupName` 与 `userDisplayNames[userId]`。名称只用于展示，授权、群发现去重与路由继续使用 ID；不再把群名当作历史 ID 迁移依据。设置页显示 `名称（ID）`；私聊用户名称未知或等于 ID 时只显示 ID，群聊的未知/同 ID 名称留空并显示 `（ID）`。Rust 在配置锁内按最新已有 ID 合并名字，不创建授权记录，不修改群状态，查询失败/空值不清除旧名字。绑定成功和后续入站更新此元数据，沿 `im:bot-config-changed` 刷新 UI。
 

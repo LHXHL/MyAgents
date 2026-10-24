@@ -48,6 +48,8 @@ interface WorkspaceConfigPanelProps {
     initialAddChannelPlatform?: ChannelType;
     /** Acknowledge the one-shot Channel deep-link after General consumes it. */
     onInitialAddChannelPlatformConsumed?: () => void;
+    /** Open the General tab directly in this Channel's detail view. */
+    initialChannelId?: string;
 }
 
 export type Tab = 'general' | 'system-prompts' | 'introduction' | 'skills' | 'agent';
@@ -80,7 +82,7 @@ const TAB_ITEMS: { key: Tab; labelKey: string }[] = [
     { key: 'skills', labelKey: 'agentSettings.panel.tabs.skills' },
 ];
 
-export default function WorkspaceConfigPanel({ agentDir, onClose, refreshKey: externalRefreshKey = 0, initialTab, initialSelect, onRequestInit, initialAddChannelPlatform, onInitialAddChannelPlatformConsumed }: WorkspaceConfigPanelProps) {
+export default function WorkspaceConfigPanel({ agentDir, onClose, refreshKey: externalRefreshKey = 0, initialTab, initialSelect, onRequestInit, initialAddChannelPlatform, onInitialAddChannelPlatformConsumed, initialChannelId }: WorkspaceConfigPanelProps) {
     const { t } = useTranslation('settings');
     const toast = useToast();
     // Stabilize toast reference to avoid unnecessary effect re-runs
@@ -298,6 +300,7 @@ export default function WorkspaceConfigPanel({ agentDir, onClose, refreshKey: ex
                                     agentDir={agentDir}
                                     initialAddChannelPlatform={initialAddChannelPlatform}
                                     onInitialAddChannelPlatformConsumed={onInitialAddChannelPlatformConsumed}
+                                    initialChannelId={initialChannelId}
                                 />
                             )}
                             {activeTab === 'system-prompts' && (

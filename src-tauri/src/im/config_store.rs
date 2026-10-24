@@ -97,6 +97,8 @@ struct PartialProjectEntry {
     agent_id: Option<String>,
     path: Option<String>,
     archived_at: Option<String>,
+    #[serde(default)]
+    purpose: Option<String>,
 }
 
 fn read_projects_for_agent_projection() -> Vec<PartialProjectEntry> {
@@ -127,6 +129,18 @@ pub(super) fn project_id_for_agent(agent_id: &str) -> Option<String> {
         .filter(|id| !id.is_empty());
     let project_id = matches.next()?;
     matches.next().is_none().then_some(project_id)
+}
+
+/// Team AI is a Project usage classification; an ambiguous Agent claim is not Team AI.
+pub(super) fn agent_is_team_ai(agent_id: &str) -> bool {
+    agent_is_team_ai_in(&read_projects_for_agent_projection(), agent_id)
+}
+
+fn agent_is_team_ai_in(projects: &[PartialProjectEntry], agent_id: &str) -> bool {
+    let mut claims = projects
+        .iter()
+        .filter(|project| project.agent_id.as_deref() == Some(agent_id));
+    matches!((claims.next(), claims.next()), (Some(project), None) if project.purpose.as_deref() == Some("team-ai"))
 }
 
 fn agent_claim_conflict(projects: &[PartialProjectEntry], agent_id: &str) -> Option<String> {
@@ -760,6 +774,21 @@ mod workspace_projection_tests {
     use crate::mcp_selection::normalize_mcp_selection_field;
 
     #[test]
+    fn team_ai_requires_one_unambiguous_project_with_team_ai_purpose() {
+        let projects: Vec<PartialProjectEntry> = serde_json::from_value(serde_json::json!([
+            {"id":"p1", "agentId":"team", "path":"/t", "purpose":"team-ai"},
+            {"id":"p2", "agentId":"plain", "path":"/p"},
+            {"id":"p3", "agentId":"dup", "path":"/d1", "purpose":"team-ai"},
+            {"id":"p4", "agentId":"dup", "path":"/d2"}
+        ]))
+        .unwrap();
+        assert!(agent_is_team_ai_in(&projects, "team"));
+        assert!(!agent_is_team_ai_in(&projects, "plain"));
+        assert!(!agent_is_team_ai_in(&projects, "dup"));
+        assert!(!agent_is_team_ai_in(&projects, "missing"));
+    }
+
+    #[test]
     fn unbound_channel_scope_uses_project_agent_not_legacy_workspace_aliases() {
         let projects: Vec<PartialProjectEntry> = serde_json::from_value(serde_json::json!([
             {"id":"p", "agentId":"selected", "path":"/repo/current"}
@@ -870,6 +899,7 @@ mod workspace_projection_tests {
                 agent_id: project["agentId"].as_str().map(str::to_owned),
                 path: project["path"].as_str().map(str::to_owned),
                 archived_at: None,
+                purpose: None,
             })
             .collect::<Vec<_>>();
         let projected = project_agent_workspaces_with(&fixture, &projects, agents_from(&fixture));
@@ -932,6 +962,7 @@ mod workspace_projection_tests {
             agent_id: Some("selected".to_string()),
             path: Some("/repo/current".to_string()),
             archived_at: None,
+            purpose: None,
         }];
 
         let projected = project_agent_workspaces_with(&value, &projects, agents_from(&value));
@@ -958,12 +989,14 @@ mod workspace_projection_tests {
                 agent_id: Some("conflict".to_string()),
                 path: Some("/repo/a".to_string()),
                 archived_at: None,
+                purpose: None,
             },
             PartialProjectEntry {
                 id: None,
                 agent_id: Some("conflict".to_string()),
                 path: Some("/repo/b".to_string()),
                 archived_at: None,
+                purpose: None,
             },
         ];
 
@@ -989,18 +1022,21 @@ mod workspace_projection_tests {
                 agent_id: Some("conflict-a".to_string()),
                 path: Some("C:\\Repo".to_string()),
                 archived_at: None,
+                purpose: None,
             },
             PartialProjectEntry {
                 id: None,
                 agent_id: Some("conflict-b".to_string()),
                 path: Some("c:/repo/".to_string()),
                 archived_at: None,
+                purpose: None,
             },
             PartialProjectEntry {
                 id: None,
                 agent_id: Some("healthy".to_string()),
                 path: Some("/repo/healthy".to_string()),
                 archived_at: None,
+                purpose: None,
             },
         ];
 
@@ -1021,6 +1057,7 @@ mod workspace_projection_tests {
             agent_id: Some("new".to_string()),
             path: Some("/repo/new".to_string()),
             archived_at: None,
+            purpose: None,
         }];
 
         let projected = project_agent_workspaces_with(&value, &projects, agents_from(&value));

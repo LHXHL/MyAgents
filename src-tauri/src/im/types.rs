@@ -1227,6 +1227,12 @@ pub struct ChannelConfigRust {
     #[serde(default)]
     pub overrides: Option<ChannelOverrides>,
 
+    /// Team AI peer birth templates keyed by Router sessionKey. Node owns the
+    /// value shape (`src/server/utils/peer-profile.ts`); Rust stores it opaquely
+    /// and writes it only through `team_ai::write_peer_profile` (sync / clear / invalid-birth cleanup).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub peer_profiles: std::collections::BTreeMap<String, serde_json::Value>,
+
     // Legacy root-level AI fields (written by /provider command before v0.1.45 bc06386 fix).
     // Only used as fallback in to_im_config when overrides + agent are both missing.
     #[serde(default)]
@@ -1838,6 +1844,7 @@ mod tests {
             group_permissions: vec![],
             group_activation: None,
             overrides: None,
+            peer_profiles: Default::default(),
             provider_id: None,
             provider_env_json: None,
             model: None,

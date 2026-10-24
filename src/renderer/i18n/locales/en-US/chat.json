@@ -1060,6 +1060,7 @@
       "syncFailed": "Sync failed",
       "syncFailedRetry": "Sync failed. Please try again.",
       "configPartiallySaved": "Configuration was not fully saved and may revert after restart.",
+      "teamAiPeerProfileFailed": "This chat was updated, but its Team AI conversation settings could not be saved.",
       "extensionsDeferred": "This extension change will apply after the active turn.",
       "extensionsUnsupported": "Some selected extension capabilities are not supported by Managed Codex.",
       "searchUnsupported": "In-page search is not supported in this environment because the CSS Highlight API is missing.",

@@ -9,6 +9,7 @@ use super::{
     HealthManager, ManagedAgents,
 };
 use crate::sidecar::ManagedSidecarManager;
+use crate::ulog_warn;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{sync::Arc, time::Duration};
@@ -48,6 +49,195 @@ async fn live_channel(agents: &ManagedAgents, agent: &str, channel: &str) -> Opt
     })
 }
 
+// ===== Team AI peer profiles =====
+//
+// One private chat / group of a Team AI Agent may own a complete birth template.
+// `config.json` holds it at `agents[].channels[].peerProfiles[sessionKey]`; Node
+// owns its shape (`src/server/utils/peer-profile.ts`). Writes happen only here,
+// under the peer fence, by copying the peer's current Session configuration —
+// never by merging partial edits — so every write is idempotent and the last
+// one always reflects the newest Session state.
+
+fn stored_peer_profile(agent_id: &str, channel_id: &str, session_key: &str) -> Option<Value> {
+    if !super::config_store::agent_is_team_ai(agent_id) {
+        return None;
+    }
+    agent_config(agent_id)
+        .ok()?
+        .channels
+        .into_iter()
+        .find(|channel| channel.id == channel_id)?
+        .peer_profiles
+        .remove(session_key)
+}
+
+/// sessionKeys of a Channel whose Team AI peers own a profile (empty for ordinary Agents).
+pub(super) fn profiled_peer_keys(
+    agent_id: &str,
+    channel_id: &str,
+) -> std::collections::HashSet<String> {
+    if !super::config_store::agent_is_team_ai(agent_id) {
+        return Default::default();
+    }
+    agent_config(agent_id)
+        .ok()
+        .and_then(|cfg| cfg.channels.into_iter().find(|c| c.id == channel_id))
+        .map(|channel| channel.peer_profiles.into_keys().collect())
+        .unwrap_or_default()
+}
+
+/// Replace (`Some`) or delete (`None`) one peer profile. `expected` turns a
+/// delete into compare-and-delete so a stale rejection cannot drop a newer profile.
+fn write_peer_profile(
+    channel_id: &str,
+    session_key: &str,
+    profile: Option<Value>,
+    expected: Option<&Value>,
+) -> Result<(), String> {
+    super::commands::mutate_bot_config(channel_id, |channel, is_channel| {
+        if !is_channel {
+            return Err("Peer profiles belong to Agent Channels".into());
+        }
+        apply_peer_profile(channel, session_key, profile, expected);
+        Ok(())
+    })
+    .map(|_| ())
+}
+
+fn apply_peer_profile(channel: &mut Value, session_key: &str, profile: Option<Value>, expected: Option<&Value>) {
+    let Some(channel) = channel.as_object_mut() else { return };
+    let mut map = channel
+        .remove("peerProfiles")
+        .and_then(|value| match value {
+            Value::Object(map) => Some(map),
+            _ => None,
+        })
+        .unwrap_or_default();
+    match profile {
+        Some(profile) => {
+            map.insert(session_key.to_string(), profile);
+        }
+        None if expected.is_none() || map.get(session_key) == expected => {
+            map.remove(session_key);
+        }
+        None => {}
+    }
+    if !map.is_empty() {
+        channel.insert("peerProfiles".into(), Value::Object(map));
+    }
+}
+
+/// The single birth entry for IM-born Sessions. A Team AI peer profile seeds the
+/// Session when present; otherwise the Agent template does. A profile Node proves
+/// permanently invalid falls back to the Agent template and is deleted here.
+pub(super) async fn birth_for_peer(
+    client: &reqwest::Client,
+    manager: &ManagedSidecarManager,
+    workspace: &str,
+    owner: Option<(&str, &str)>,
+    session_key: &str,
+) -> Result<String, String> {
+    let profile = owner.and_then(|(agent, channel)| stored_peer_profile(agent, channel, session_key));
+    let mut birth = json!({"agentDir":workspace,"seedMaxPermission":true,"origin":{"kind":"agent-channel","surface":"channel_message"}});
+    if let Some(profile) = &profile {
+        birth["peerProfile"] = profile.clone();
+    }
+    let value = model_commands::create_birth_value(client, manager, &birth).await?;
+    if let (Some(profile), Some((_, channel))) = (&profile, owner) {
+        if value["peerProfile"] == "rejected" {
+            ulog_warn!("[team-ai] Peer profile is no longer valid; following Agent defaults: channel={} key={}", channel, session_key);
+            if let Err(error) = write_peer_profile(channel, session_key, None, Some(profile)) {
+                ulog_warn!("[team-ai] Failed to delete invalid peer profile: {}", error);
+            }
+        }
+    }
+    model_commands::birth_session_id(&value)
+}
+
+/// Copy the peer's current Session configuration into its profile.
+///
+/// Callers hold the peer fence and have verified `session_id` is the peer's
+/// current binding. Ordinary Agents are a no-op (`Ok(false)`).
+pub(super) async fn sync_peer_profile(
+    manager: &ManagedSidecarManager,
+    agent_id: &str,
+    channel_id: &str,
+    session_key: &str,
+    session_id: &str,
+) -> Result<bool, String> {
+    if !super::config_store::agent_is_team_ai(agent_id) {
+        return Ok(false);
+    }
+    let port = model_commands::global_port(manager)?;
+    let mut url = reqwest::Url::parse("http://localhost/api/im/peer-profile").map_err(|e| e.to_string())?;
+    url.query_pairs_mut().append_pair("sessionId", session_id);
+    let value = request_json(port, &format!("{}?{}", url.path(), url.query().unwrap_or_default()), None).await?;
+    let profile = value.get("profile").filter(|p| p.is_object()).cloned().ok_or("Session configuration unavailable")?;
+    write_peer_profile(channel_id, session_key, Some(profile), None)?;
+    Ok(true)
+}
+
+/// Response field shared by every Team AI write: whether the peer profile followed the Session.
+fn profile_outcome(result: Result<bool, String>) -> Value {
+    match result {
+        Ok(true) => json!("saved"),
+        Ok(false) => Value::Null,
+        Err(error) => {
+            ulog_warn!("[team-ai] Session saved but peer profile was not: {}", error);
+            json!("failed")
+        }
+    }
+}
+
+/// Desktop Chat entry: after a Team AI Session snapshot write, let its peer
+/// profile follow if (and only if) that Session is some peer's current binding.
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn cmd_team_ai_sync_peer_profile(
+    agentState: tauri::State<'_, ManagedAgents>,
+    manager: tauri::State<'_, ManagedSidecarManager>,
+    agentId: String,
+    sessionId: String,
+) -> Result<Value, String> {
+    if !super::config_store::agent_is_team_ai(&agentId) {
+        return Ok(json!({"peerProfile":null}));
+    }
+    for channel in agent_config(&agentId)?.channels {
+        if let Some(live) = live_channel(agentState.inner(), &agentId, &channel.id).await {
+            let key = live
+                .router
+                .lock()
+                .await
+                .active_sessions()
+                .into_iter()
+                .find(|peer| peer.session_id == sessionId)
+                .map(|peer| peer.session_key);
+            let Some(key) = key else { continue };
+            let lock = live.locks.lock().await.entry(key.clone()).or_insert_with(|| Arc::new(Mutex::new(()))).clone();
+            let _fence = lock.lock_owned().await;
+            let still_current = live.router.lock().await.peer_session_snapshot(&key).map(|p| p.session_id) == Some(sessionId.clone());
+            if !still_current {
+                return Ok(json!({"peerProfile":null}));
+            }
+            let outcome = sync_peer_profile(manager.inner(), &agentId, &channel.id, &key, &sessionId).await;
+            return Ok(json!({"peerProfile":profile_outcome(outcome)}));
+        }
+        // A stopped Channel has no peer fence. Its lifecycle lock is the owner that keeps
+        // it stopped and its persisted binding stable for the whole read → write.
+        let lifecycle = super::agent_channel::agent_channel_lifecycle_lock(&agentId, &channel.id);
+        let _stopped = lifecycle.lock().await;
+        if live_channel(agentState.inner(), &agentId, &channel.id).await.is_some() {
+            return Ok(json!({"peerProfile":profile_outcome(Err("Channel started; edit again to save the conversation settings".into()))}));
+        }
+        let Some(key) = read_health(&agentId, &channel.id).ok().and_then(|state| {
+            state.active_sessions.into_iter().find(|peer| peer.session_id == sessionId).map(|peer| peer.session_key)
+        }) else { continue };
+        let outcome = sync_peer_profile(manager.inner(), &agentId, &channel.id, &key, &sessionId).await;
+        return Ok(json!({"peerProfile":profile_outcome(outcome)}));
+    }
+    Ok(json!({"peerProfile":null}))
+}
+
 /// Enumerate configured Channels, including disabled connections; read errors are not empty peers.
 #[tauri::command]
 #[allow(non_snake_case)]
@@ -56,6 +246,7 @@ pub async fn cmd_team_ai_channels(
     agentId: String,
 ) -> Result<Value, String> {
     let cfg = agent_config(&agentId)?;
+    let team_ai = super::config_store::agent_is_team_ai(&agentId);
     let mut channels = Vec::new();
     for channel in &cfg.channels {
         let live = live_channel(agentState.inner(), &agentId, &channel.id).await;
@@ -67,7 +258,8 @@ pub async fn cmd_team_ai_channels(
         let mut row = json!({ "channelId": channel.id, "platform": channel.channel_type.to_string(), "name": channel.name,
             "enabled": channel.enabled, "online": false, "status": "stopped", "peers": [] });
         match state {
-            Err(error) => row["error"] = json!(error),
+            // A read failure is not an empty Channel; the page offers a retry.
+            Err(error) => row["loadError"] = json!(error),
             Ok(state) => {
                 let running = live.is_some();
                 row["online"] =
@@ -117,7 +309,9 @@ pub async fn cmd_team_ai_channels(
                 row["peers"] = json!(peers.into_iter().map(|peer| {
                     let active = current.iter().find(|p| p.session_key == peer.session_key);
                     json!({"sessionKey":peer.session_key,"sourceType":peer.source_type,"sourceId":peer.source_id,
-                        "name":active.and_then(|p| p.source_display_name.clone()).or(peer.source_display_name),
+                        "hasProfile":team_ai && channel.peer_profiles.contains_key(&peer.session_key),
+                        "name":active.and_then(|p| p.source_display_name.clone()).or(peer.source_display_name)
+                            .or_else(|| configured_peer_name(channel, &peer.source_type, &peer.source_id)),
                         "sessionId":active.map(|p| p.session_id.clone()),"sessionIds":peer.session_ids,
                         "lastActive":active.map(|p| p.last_active.clone())})
                 }).collect::<Vec<_>>());
@@ -126,6 +320,23 @@ pub async fn cmd_team_ai_channels(
         channels.push(row);
     }
     Ok(json!({"channels": channels}))
+}
+
+/// Names the operator already gave this peer in the Channel's access settings.
+fn configured_peer_name(
+    channel: &super::types::ChannelConfigRust,
+    source_type: &super::types::ImSourceType,
+    source_id: &str,
+) -> Option<String> {
+    let name = match source_type {
+        super::types::ImSourceType::Group => channel
+            .group_permissions
+            .iter()
+            .find(|group| group.group_id == source_id)
+            .map(|group| group.group_name.clone()),
+        _ => channel.user_display_names.get(source_id).cloned(),
+    };
+    name.filter(|name| !name.trim().is_empty())
 }
 
 async fn metadata(workspace: &str, session: &str) -> Result<Value, String> {
@@ -231,35 +442,6 @@ async fn known_session(
     Ok(cfg.resolved_workspace_path)
 }
 
-#[tauri::command]
-#[allow(non_snake_case)]
-pub async fn cmd_team_ai_session(
-    agentState: tauri::State<'_, ManagedAgents>,
-    manager: tauri::State<'_, ManagedSidecarManager>,
-    agentId: String,
-    channelId: String,
-    sessionKey: String,
-    sessionId: String,
-) -> Result<Value, String> {
-    let workspace = known_session(
-        agentState.inner(),
-        &agentId,
-        &channelId,
-        &sessionKey,
-        &sessionId,
-    )
-    .await?;
-    let path = format!("/sessions/{sessionId}?limit=30");
-    if let Some(value) = session_request(manager.inner(), &sessionId, &path, None).await? {
-        return Ok(value);
-    }
-    let port = model_commands::global_port(manager.inner())?;
-    let mut value = request_json(port, &path, None).await?;
-    value["session"]["liveSessionState"] = Value::Null;
-    value["session"]["agentDir"] = json!(workspace);
-    Ok(value)
-}
-
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TeamSessionTarget {
@@ -343,6 +525,8 @@ pub enum TeamAiAction {
         observation: String,
     },
     New,
+    /// Stop owning a profile; later births follow the Agent template again.
+    ClearProfile,
     SetPrimary {
         #[serde(rename = "sessionId")]
         session_id: String,
@@ -391,6 +575,8 @@ pub async fn cmd_team_ai_action(
     let mut target = None;
     let mut notice = false;
     let mut created = false;
+    // Config edits (not New / SetPrimary) make the peer's current Session its profile.
+    let mut follow_profile = false;
     let result = match action {
         TeamAiAction::SetPrimary { session_id } => {
             known_session(
@@ -409,11 +595,23 @@ pub async fn cmd_team_ai_action(
             json!({})
         }
         TeamAiAction::New => {
-            target = Some(model_commands::create_birth(&crate::local_http::json_client(Duration::from_secs(60)), manager.inner(),
-                &json!({"agentDir":cfg.resolved_workspace_path,"seedMaxPermission":true,"origin":{"kind":"agent-channel","surface":"channel_message"}})).await?);
+            target = Some(
+                birth_for_peer(
+                    &crate::local_http::json_client(Duration::from_secs(60)),
+                    manager.inner(),
+                    &cfg.resolved_workspace_path,
+                    Some((&agentId, &channelId)),
+                    &sessionKey,
+                )
+                .await?,
+            );
             created = true;
             notice = true;
             json!({})
+        }
+        TeamAiAction::ClearProfile => {
+            write_peer_profile(&channelId, &sessionKey, None, None)?;
+            return Ok(json!({"success":true}));
         }
         TeamAiAction::Options | TeamAiAction::Tools => {
             let suffix = if matches!(action, TeamAiAction::Options) {
@@ -454,6 +652,7 @@ pub async fn cmd_team_ai_action(
             );
             created = true;
             notice = true;
+            follow_profile = true;
             json!({})
         }
         TeamAiAction::SelectModel {
@@ -485,6 +684,7 @@ pub async fn cmd_team_ai_action(
                 created = true;
                 notice = true;
             }
+            follow_profile = true;
             result
         }
         action @ (TeamAiAction::SaveTools { .. } | TeamAiAction::SetEffort { .. }) => {
@@ -512,6 +712,7 @@ pub async fn cmd_team_ai_action(
             };
             body["agentId"] = json!(agentId);
             body["sessionId"] = json!(sid);
+            follow_profile = true;
             session_request(manager.inner(), sid, path, Some(&body))
                 .await?
                 .ok_or("Session stopped")?
@@ -525,12 +726,17 @@ pub async fn cmd_team_ai_action(
             channelId.clone(),
             cfg.resolved_workspace_path,
             Some(sessionKey.clone()),
-            Some((sessionKey, fence)),
+            Some((sessionKey.clone(), fence)),
             Some(prior.unwrap_or_default()),
         )
         .await;
         return match handover {
             Ok((result, fence, adapter, chat_id)) => {
+                let profile = if follow_profile && result.state_persisted {
+                    profile_outcome(sync_peer_profile(manager.inner(), &agentId, &channelId, &sessionKey, &target).await)
+                } else {
+                    Value::Null
+                };
                 drop(fence);
                 let notified = !notice
                     || adapter
@@ -548,7 +754,7 @@ pub async fn cmd_team_ai_action(
                     json!({"agentId":agentId,"channelId":channelId}),
                 );
                 Ok(
-                    json!({"success":true,"sessionId":target,"statePersisted":result.state_persisted,"notified":notified,"warning":result.warning}),
+                    json!({"success":true,"sessionId":target,"statePersisted":result.state_persisted,"notified":notified,"warning":result.warning,"peerProfile":profile}),
                 )
             }
             Err(error) => Ok(
@@ -556,6 +762,13 @@ pub async fn cmd_team_ai_action(
             ),
         };
     }
+    let mut result = result;
+    if follow_profile && result["sessionConfig"] == "saved" {
+        if let Some(sid) = prior.as_deref() {
+            result["peerProfile"] = profile_outcome(sync_peer_profile(manager.inner(), &agentId, &channelId, &sessionKey, sid).await);
+        }
+    }
+    drop(fence);
     Ok(result)
 }
 
@@ -563,6 +776,102 @@ pub async fn cmd_team_ai_action(
 mod tests {
     use super::*;
     use crate::sidecar::{SidecarManager, SidecarOwner};
+
+    // HOME isolates config IO on Unix (same pattern as im::commands group_access_tests).
+    #[cfg(unix)]
+    #[test]
+    fn peer_profiles_persist_and_are_read_only_for_team_ai_agents() {
+        let home = tempfile::tempdir().unwrap();
+        let output = crate::process_cmd::new(std::env::current_exe().unwrap())
+            .args(["--exact", "im::team_ai::tests::peer_profiles_disk_child", "--nocapture"])
+            .env("HOME", home.path())
+            .env("MYAGENTS_TEAM_AI_TEST_HOME", home.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn peer_profiles_disk_child() {
+        let Some(home) = std::env::var_os("MYAGENTS_TEAM_AI_TEST_HOME") else {
+            return;
+        };
+        let dir = std::path::PathBuf::from(home).join(".myagents");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("config.json"), serde_json::to_vec(&json!({"agents":[{"id":"agent","name":"Team","enabled":false,
+            "channels":[{"id":"bot","type":"telegram","enabled":false,"name":"Bot"}]}]})).unwrap()).unwrap();
+        let projects = |purpose: Option<&str>| {
+            std::fs::write(dir.join("projects.json"), serde_json::to_vec(&json!([{"id":"p","agentId":"agent","path":"/tmp/team","purpose":purpose}])).unwrap()).unwrap();
+        };
+        projects(Some("team-ai"));
+        let first = json!({"runtime":"builtin","model":"a"});
+        let newer = json!({"runtime":"builtin","model":"b"});
+        write_peer_profile("bot", "k", Some(first.clone()), None).unwrap();
+        assert_eq!(stored_peer_profile("agent", "bot", "k"), Some(first.clone()));
+        assert!(profiled_peer_keys("agent", "bot").contains("k"));
+        write_peer_profile("bot", "k", Some(newer.clone()), None).unwrap();
+        // A stale rejection (observed for `first`) must not delete the newer profile.
+        write_peer_profile("bot", "k", None, Some(&first)).unwrap();
+        assert_eq!(stored_peer_profile("agent", "bot", "k"), Some(newer.clone()));
+        // Ordinary Agents never read peer profiles; the data is kept for a later re-join.
+        projects(None);
+        assert_eq!(stored_peer_profile("agent", "bot", "k"), None);
+        assert!(profiled_peer_keys("agent", "bot").is_empty());
+        projects(Some("team-ai"));
+        assert_eq!(stored_peer_profile("agent", "bot", "k"), Some(newer));
+        write_peer_profile("bot", "k", None, None).unwrap();
+        assert_eq!(stored_peer_profile("agent", "bot", "k"), None);
+    }
+
+    #[test]
+    fn peer_profile_writes_replace_whole_values_and_delete_only_the_expected_stale_value() {
+        let mut channel = json!({"id":"c","peerProfiles":{"other":{"runtime":"dsh"}}});
+        let first = json!({"runtime":"builtin","model":"a"});
+        let newer = json!({"runtime":"builtin","model":"b"});
+        apply_peer_profile(&mut channel, "k", Some(first.clone()), None);
+        apply_peer_profile(&mut channel, "k", Some(newer.clone()), None);
+        assert_eq!(channel["peerProfiles"]["k"], newer);
+        // A rejection observed for `first` must not delete the newer profile.
+        apply_peer_profile(&mut channel, "k", None, Some(&first));
+        assert_eq!(channel["peerProfiles"]["k"], newer);
+        apply_peer_profile(&mut channel, "k", None, None);
+        assert!(channel["peerProfiles"].get("k").is_none());
+        assert_eq!(channel["peerProfiles"]["other"]["runtime"], "dsh");
+        apply_peer_profile(&mut channel, "other", None, None);
+        assert!(channel.get("peerProfiles").is_none(), "empty map is not persisted");
+    }
+
+    #[test]
+    fn peer_profiles_round_trip_through_the_typed_channel_config() {
+        let raw = json!({"id":"c","type":"telegram","enabled":true,
+            "peerProfiles":{"agent:a:telegram:private:1":{"runtime":"builtin","model":"m","mcpEnabledServers":["x"]}}});
+        let channel: super::super::types::ChannelConfigRust = serde_json::from_value(raw.clone()).unwrap();
+        assert_eq!(channel.peer_profiles.len(), 1);
+        assert_eq!(serde_json::to_value(&channel).unwrap()["peerProfiles"], raw["peerProfiles"]);
+        let empty: super::super::types::ChannelConfigRust =
+            serde_json::from_value(json!({"id":"c","type":"telegram","enabled":true})).unwrap();
+        assert!(serde_json::to_value(&empty).unwrap().get("peerProfiles").is_none());
+    }
+
+    #[test]
+    fn peer_names_fall_back_to_operator_given_access_names() {
+        let channel: super::super::types::ChannelConfigRust = serde_json::from_value(json!({
+            "id":"c","type":"telegram","enabled":true,
+            "userDisplayNames":{"u1":"李奕晨","u2":"  "},
+            "groupPermissions":[{"groupId":"g1","groupName":"产品研发群","platform":"telegram","status":"approved","discoveredAt":"t","addedBy":null}]
+        })).unwrap();
+        use super::super::types::ImSourceType;
+        assert_eq!(configured_peer_name(&channel, &ImSourceType::Private, "u1").as_deref(), Some("李奕晨"));
+        assert_eq!(configured_peer_name(&channel, &ImSourceType::Private, "u2"), None);
+        assert_eq!(configured_peer_name(&channel, &ImSourceType::Group, "g1").as_deref(), Some("产品研发群"));
+        assert_eq!(configured_peer_name(&channel, &ImSourceType::Group, "u1"), None);
+    }
 
     #[tokio::test]
     async fn stop_callback_can_reenter_goal_lifecycle_while_dispatch_generation_is_pinned() {

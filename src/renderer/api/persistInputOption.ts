@@ -129,6 +129,9 @@ export interface PersistInputOptionParams {
    *  Project/Agent default mutation. Launcher keeps the historical optional
    *  mode because no session owner exists yet. */
   snapshotWriteMode?: 'optional' | 'required' | 'disabled';
+  /** `disabled` keeps the change on the Session only: Team AI workspaces edit
+   *  Agent defaults solely from Agent settings, never from a conversation. */
+  defaultsWriteMode?: 'enabled' | 'disabled';
 
   /** Live sidecar push for MCP — chat-tab only (launcher has no Sidecar to
    *  push to; the new sidecar created during handoff picks up the disk write). */
@@ -195,9 +198,10 @@ export async function persistInputOptionChange(
   const errors: string[] = [];
   let snapshotWriteFailed = false;
 
-  const projectPatch = buildProjectPatch(params);
+  const writesDefaults = params.defaultsWriteMode !== 'disabled';
+  const projectPatch = writesDefaults ? buildProjectPatch(params) : {};
   const snapshotPatch = buildSnapshotPatch(params);
-  const agentPatch = buildAgentPatch(params);
+  const agentPatch = writesDefaults ? buildAgentPatch(params) : {};
 
   // Order: snapshot first (matches the existing dual-write order in
   // Chat.tsx::persistTabConfigChange) so a snapshot failure surfaces before

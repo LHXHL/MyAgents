@@ -8,6 +8,7 @@ const TeamAi = lazy(() => import('@/pages/TeamAi'));
 export interface TeamAiBinding {
   onCreate: () => void;
   onOpenSession: (session: SessionMetadata, project: Project) => unknown;
+  onOpenWorkspace: (project: Project) => void;
   onSelectProject: (tabId: string, projectId: string) => void;
 }
 const Renderer = memo(function TeamAiRenderer({ tab, isActive, isDeferred, binding }: {

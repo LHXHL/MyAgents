@@ -648,6 +648,7 @@ import { createGlobalSkillInventorySnapshot } from './global-skill-inventory';
 import { isManagedSymlink } from './utils/project-user-config-sync';
 import { managementApi } from './utils/management-api-client';
 import { snapshotForOwnedSession, snapshotForImSession, snapshotForImRuntimeSwitch } from './utils/session-snapshot';
+import { completePeerProfileSnapshot, resolvePeerProfileBirth, type PeerProfile } from './utils/peer-profile';
 import {
   isManagedCodexProviderReady,
   managedCodexNotReadyMessage,
@@ -3846,6 +3847,8 @@ async function main() {
           materializationSourceSessionId?: string;
           runtimeSwitchSourceSessionId?: string;
           runtimeSwitchObservation?: string;
+          /** Team AI peer birth template, stored opaquely by Rust. */
+          peerProfile?: unknown;
         };
         let payload: CreateSessionPayload;
         try {
@@ -3863,6 +3866,26 @@ async function main() {
             { success: false, error: 'agentDir is required.' },
             400,
           );
+        }
+        // A valid peer profile supplies the explicit birth fields below; a
+        // permanently invalid one falls back to the Agent template and is
+        // reported so its Rust owner deletes it.
+        let peerProfileOutcome: 'applied' | 'rejected' | undefined;
+        let appliedPeerProfile: PeerProfile | undefined;
+        if (payload.peerProfile !== undefined) {
+          const resolved = resolvePeerProfileBirth(
+            payload.peerProfile,
+            loadConfig(),
+            listInstalledPlugins().map((plugin) => plugin.id),
+          );
+          if (resolved.kind === 'applied') {
+            payload = { ...payload, ...resolved.fields };
+            appliedPeerProfile = resolved.fields;
+            peerProfileOutcome = 'applied';
+          } else {
+            console.warn(`[sessions] Peer profile rejected (${resolved.reason}); using Agent defaults`);
+            peerProfileOutcome = 'rejected';
+          }
         }
 
         // Use the shared VALID_RUNTIMES constant — same list that drives
@@ -4035,6 +4058,9 @@ async function main() {
             );
           }
         }
+        if (appliedPeerProfile) {
+          Object.assign(baseSnapshot, completePeerProfileSnapshot(baseSnapshot, appliedPeerProfile));
+        }
         const snapshotRuntime = (baseSnapshot.runtime ??
           runtimeValue ??
           'builtin') as RuntimeType;
@@ -4133,7 +4159,7 @@ async function main() {
           void deleteSession(session.id, { kind: 'user-delete' });
           return jsonResponse({ success: false, error: 'Unable to publish the new Session target.' }, 503);
         }
-        return jsonResponse({ success: true, session: toClientSessionMetadata(session) });
+        return jsonResponse({ success: true, session: toClientSessionMetadata(session), ...(peerProfileOutcome ? { peerProfile: peerProfileOutcome } : {}) });
       }
 
       // GET /sessions/:id/since/:lastMessageId - Incremental tail fetch

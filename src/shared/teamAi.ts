@@ -8,6 +8,8 @@ export interface TeamPeer {
   sessionId: string | null;
   sessionIds: string[];
   lastActive: string | null;
+  /** The peer owns a profile: new Sessions use it instead of the Agent defaults. */
+  hasProfile: boolean;
 }
 export interface TeamChannel {
   channelId: string;
@@ -16,7 +18,10 @@ export interface TeamChannel {
   enabled: boolean;
   online: boolean;
   status: string;
+  /** Last connection error reported by the running Channel. */
   error?: string | null;
+  /** The Channel's persisted state could not be read; peers are unknown, not empty. */
+  loadError?: string | null;
   peers: TeamPeer[];
 }
 export interface TeamModelMenu {
@@ -39,7 +44,7 @@ export interface TeamTools {
   enabledOfficialToolIds: string[];
 }
 export type TeamAction =
-  | { kind: 'options' | 'tools' | 'new' | 'stop' }
+  | { kind: 'options' | 'tools' | 'new' | 'stop' | 'clearProfile' }
   | { kind: 'setPrimary'; sessionId: string }
   | { kind: 'selectModel'; selection: AgentModelSelection; snapshotObservation: string; confirmed: boolean }
   | { kind: 'switchRuntime'; runtime: RuntimeType; snapshotObservation: string }
@@ -56,6 +61,8 @@ export interface TeamActionResult {
   requiresNewSession?: boolean;
   runtimeApply?: string;
   sessionConfig?: string;
+  /** Whether the peer profile followed a saved Session change (`null` when not applicable). */
+  peerProfile?: 'saved' | 'failed' | null;
 }
 export interface TeamSessionTarget { channelId: string; sessionKey: string; sessionId: string }
 export interface TeamSessionState extends TeamSessionTarget { state: string | null; error?: string }

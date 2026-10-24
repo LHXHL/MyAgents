@@ -23,12 +23,14 @@ interface WorkspaceGeneralTabProps {
   agentDir: string;
   initialAddChannelPlatform?: ChannelType;
   onInitialAddChannelPlatformConsumed?: () => void;
+  initialChannelId?: string;
 }
 
 export default function WorkspaceGeneralTab({
   agentDir,
   initialAddChannelPlatform,
   onInitialAddChannelPlatformConsumed,
+  initialChannelId,
 }: WorkspaceGeneralTabProps) {
   const { t } = useTranslation('settings');
   const { config, projects, patchProject, refreshConfig } = useConfig();
@@ -129,6 +131,7 @@ export default function WorkspaceGeneralTab({
               onAgentChanged={handleAgentChanged}
               initialAddPlatform={initialAddChannelPlatform}
               onInitialAddPlatformConsumed={onInitialAddChannelPlatformConsumed}
+              initialChannelId={initialChannelId}
             />
           )}
         </div>

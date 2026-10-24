@@ -1,100 +1,99 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useTranslation } from "react-i18next";
-import { listenWithCleanup } from "@/utils/tauriListen";
-import { useConfigData } from "@/config/useConfigData";
-import { useConfigActions } from "@/config/useConfigActions";
-import { getSessions, type SessionMetadata } from "@/api/sessionClient";
-import { isProjectVisibleToUser, isProjectArchived } from "@/config/types";
-import type { TeamAction, TeamChannel, TeamPeer, TeamModelMenu, TeamTools, TeamSessionState } from "@/../shared/teamAi";
-import { RUNTIME_DISPLAY_NAMES, type RuntimeType, type RuntimeSource } from "@/../shared/types/runtime";
-import { teamAction, teamChannels, teamSession, teamStates, type TeamSessionData } from "@/features/team-ai/client";
-import Message from "@/components/Message";
-import { normalizeSessionMessageContent } from "@/context/sessionRestoreGuards";
-import type { TeamAiBinding } from "@/features/team-ai/tabModule";
-import ConfirmDialog from "@/components/ConfirmDialog";
-import ContextMenu from "@/components/ContextMenu";
-import CustomSelect from "@/components/CustomSelect";
-import AgentWorkspacePickerDialog from "@/components/AgentWorkspacePickerDialog";
-import { orderWorkspaceSelectorProjects } from "@/components/launcher/WorkspaceSelector";
-import WorkspaceIcon from "@/components/launcher/WorkspaceIcon";
-import RuntimeIcon from "@/components/RuntimeIcon";
-import { sessionRuntimePresentation } from "@/components/runtimePresentation";
-import DropdownMenu from "@/components/ui/DropdownMenu";
-import McpToolsCard from "@/components/ImSettings/components/McpToolsCard";
-import Tip from "@/components/Tip";
-import { getChannelTypeLabel } from "@/utils/taskCenterUtils";
-import { getSessionDisplayText } from "@/utils/sessionDisplay";
-import { formatAbsoluteDateTime } from "@/i18n/format";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { listenWithCleanup } from '@/utils/tauriListen';
+import { useConfigData } from '@/config/useConfigData';
+import { useConfigActions } from '@/config/useConfigActions';
+import { getSessions, type SessionMetadata } from '@/api/sessionClient';
+import { isProjectVisibleToUser, isProjectArchived, type Project } from '@/config/types';
+import { startAndEnableAgentChannel } from '@/config/services/agentConfigService';
+import type { TeamAction, TeamActionResult, TeamChannel, TeamSessionState } from '@/../shared/teamAi';
+import { teamAction, teamChannels, teamStates } from '@/features/team-ai/client';
+import type { TeamAiBinding } from '@/features/team-ai/tabModule';
+import { buildPeerRows, matchesPeerQuery, observationTargets, peerRowKey, unobserved, type PeerRow } from '@/features/team-ai/model';
+import { PeerList } from '@/features/team-ai/PeerList';
 import {
-  AtIcon,
-  ChevronDownIcon,
-  CloseIcon,
-  RefreshIcon,
-  PlusIcon,
-  SlidersIcon,
-  MessageIcon,
-  UserIcon,
-  ExternalIcon,
-  CheckIcon,
-  StopIcon,
-} from "@/components/icons";
-const WorkspaceConfigPanel = lazy(() => import("@/components/WorkspaceConfigPanel"));
-const button =
-  "compact-action gap-1.5 px-3 text-sm text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-40";
-const primaryButton =
-  "compact-action gap-1.5 bg-[var(--button-primary-bg)] px-4 text-sm font-medium text-[var(--button-primary-text)] hover:bg-[var(--button-primary-bg-hover)] disabled:cursor-not-allowed disabled:opacity-40";
+  PeerDetail,
+  ghostButton,
+  primaryButton,
+  secondaryButton,
+  type ConfirmRequest,
+  type TeamNote,
+  type TeamPending,
+} from '@/features/team-ai/PeerDetail';
+import ConfirmDialog from '@/components/ConfirmDialog';
+import AgentWorkspacePickerDialog from '@/components/AgentWorkspacePickerDialog';
+import { orderWorkspaceSelectorProjects } from '@/components/launcher/WorkspaceSelector';
+import WorkspaceIcon from '@/components/launcher/WorkspaceIcon';
+import { DropdownMenu } from '@/components/ui/DropdownMenu';
+import { Popover } from '@/components/ui/Popover';
+import { AtIcon, CheckIcon, ChevronDownIcon, CloseIcon, FolderIcon, FolderOpenIcon, MessageIcon, PlusIcon, SettingsIcon } from '@/components/icons';
+
+const WorkspaceConfigPanel = lazy(() => import('@/components/WorkspaceConfigPanel'));
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
-type Selection = { channelId: string; sessionKey: string; sessionId: string };
+
+/** Turn a committed action result into the one line of feedback the operator needs. */
+function noteFor(result: TeamActionResult, done: string, hadProfile: boolean, t: (key: string, options?: Record<string, unknown>) => string): TeamNote {
+  if (result.success === false) {
+    return {
+      tone: 'err',
+      text: [
+        result.sessionConfig === 'saved' ? t('teamAi.savedNotApplied') : '',
+        result.error,
+        result.createdSessionId ? t('teamAi.createdUnbound', { id: result.createdSessionId.slice(0, 8) }) : '',
+        result.peerProfile === 'failed' ? t('teamAi.profile.failed') : '',
+      ].filter(Boolean).join(' '),
+    };
+  }
+  if (result.peerProfile === 'failed') return { tone: 'err', text: t('teamAi.profile.failed') };
+  if (result.statePersisted === false || result.notified === false || result.warning) {
+    return { tone: 'info', text: result.warning ?? t('teamAi.deliveryWarning') };
+  }
+  const followed = result.peerProfile === 'saved' && !hadProfile ? t('teamAi.profile.followed') : '';
+  const text = result.runtimeApply === 'deferred' || result.runtimeApply === 'pending-next-turn' ? t('teamAi.done.nextTurn') : done;
+  return { tone: 'ok', text: text + followed };
+}
 
 export default function TeamAi({
   isActive,
   onCreate,
   onOpenSession,
+  onOpenWorkspace,
   projectId,
   onSelectProject,
-}: Omit<TeamAiBinding, "onSelectProject"> & {
+}: Omit<TeamAiBinding, 'onSelectProject'> & {
   isActive: boolean;
   projectId?: string;
   onSelectProject: (id: string) => void;
 }) {
-  const { t } = useTranslation("app");
+  const { t } = useTranslation('app');
   const { projects, config } = useConfigData();
   const { patchProject } = useConfigActions();
-  const visible = useMemo(
-    () => projects.filter((p) => isProjectVisibleToUser(p) && !isProjectArchived(p) && p.agentId),
-    [projects],
-  );
-  const teams = useMemo(() => visible.filter((p) => p.purpose === "team-ai"), [visible]);
+  const visible = useMemo(() => projects.filter(p => isProjectVisibleToUser(p) && !isProjectArchived(p) && p.agentId), [projects]);
+  const teams = useMemo(() => visible.filter(p => p.purpose === 'team-ai'), [visible]);
   const candidates = useMemo(
-    () =>
-      orderWorkspaceSelectorProjects(
-        visible.filter((p) => p.purpose !== "team-ai"),
-        config.defaultWorkspacePath,
-      ),
+    () => orderWorkspaceSelectorProjects(visible.filter(p => p.purpose !== 'team-ai'), config.defaultWorkspacePath),
     [visible, config.defaultWorkspacePath],
   );
-  const project = teams.find((p) => p.id === projectId) ?? teams[0];
-  const [joining, setJoining] = useState(false);
+  const project = teams.find(p => p.id === projectId) ?? teams[0];
+  const agentId = project?.agentId;
+  const path = project?.path;
+
   const [channels, setChannels] = useState<TeamChannel[]>([]);
   const [sessions, setSessions] = useState<SessionMetadata[]>([]);
   const [states, setStates] = useState<TeamSessionState[]>([]);
-  const [selection, setSelection] = useState<Selection | null>(null);
+  const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [settings, setSettings] = useState(false);
-  const [menu, setMenu] = useState<{
-    x: number;
-    y: number;
-    channel: TeamChannel;
-    peer: TeamPeer;
-    session: SessionMetadata;
-  } | null>(null);
-  const [confirmation, setConfirmation] = useState<(() => void) | null>(null);
+  const [query, setQuery] = useState('');
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [showDetail, setShowDetail] = useState(false);
+  const [pending, setPending] = useState<TeamPending | null>(null);
+  const [note, setNote] = useState<{ key: string; note: TeamNote } | null>(null);
+  const [confirmation, setConfirmation] = useState<ConfirmRequest | null>(null);
+  const [joining, setJoining] = useState(false);
+  const [panel, setPanel] = useState<{ channelId?: string } | null>(null);
   const generation = useRef(0);
-  const agentId = project?.agentId;
-  const path = project?.path;
+  const noteTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
   const refresh = useCallback(async () => {
     if (!agentId || !path) {
       setChannels([]);
@@ -102,504 +101,262 @@ export default function TeamAi({
       return;
     }
     const epoch = ++generation.current;
-    setLoading(true);
     try {
       const [result, metadata] = await Promise.all([teamChannels(agentId), getSessions(path)]);
       if (generation.current !== epoch) return;
       setChannels(result.channels);
       setSessions(metadata);
       setError(null);
-      const targets = result.channels
-        .flatMap((channel) =>
-          channel.peers.flatMap((peer) =>
-            [...new Set([peer.sessionId, ...peer.sessionIds].filter((id): id is string => !!id))]
-              .filter((id) => metadata.some((session) => session.id === id))
-              .map((sessionId) => ({
-                channelId: channel.channelId,
-                sessionKey: peer.sessionKey,
-                sessionId,
-              })),
-          ),
-        )
-        .slice(0, 64);
+      const targets = observationTargets(result.channels, metadata);
       try {
         const observed = await teamStates(agentId, targets);
         if (generation.current === epoch) setStates(observed.states);
       } catch {
-        if (generation.current === epoch) setStates([]);
+        if (generation.current === epoch) setStates(unobserved(targets));
       }
-    } catch (error) {
-      if (generation.current === epoch) setError(errorText(error));
+    } catch (failure) {
+      if (generation.current === epoch) setError(errorText(failure));
     } finally {
-      if (generation.current === epoch) setLoading(false);
+      if (generation.current === epoch) setLoaded(true);
     }
   }, [agentId, path]);
+
   useEffect(() => {
+    setLoaded(false);
     void refresh();
+    return () => { generation.current += 1; };
   }, [refresh]);
-  useEffect(
-    () => () => {
-      generation.current += 1;
-    },
-    [agentId],
-  );
+
   useEffect(() => {
     if (!isActive || !agentId) return;
     const controller = new AbortController();
-    const subscriptions = ["agent:status-changed", "session:metadata-changed"].map((event) =>
-      listenWithCleanup(
-        event,
-        () => {
-          void refresh();
-        },
-        controller.signal,
-      ),
-    );
-    for (const subscription of subscriptions)
-      void subscription.catch((error) => console.warn("[team-ai] listener unavailable", error));
-    const interval = setInterval(() => {
-      void refresh();
-    }, 8000);
+    for (const event of ['agent:status-changed', 'session:metadata-changed']) {
+      void listenWithCleanup(event, () => { void refresh(); }, controller.signal)
+        .catch(failure => console.warn('[team-ai] listener unavailable', failure));
+    }
+    const interval = setInterval(() => { void refresh(); }, 8000);
     return () => {
       controller.abort();
       clearInterval(interval);
     };
   }, [agentId, isActive, refresh]);
-  const selectedChannel = channels.find((c) => c.channelId === selection?.channelId);
-  const selectedPeer = selectedChannel?.peers.find((p) => p.sessionKey === selection?.sessionKey);
-  const selectedMetadata = sessions.find((s) => s.id === selection?.sessionId);
-  const perform = useCallback(
-    async (channel: TeamChannel, peer: TeamPeer, action: TeamAction) => {
-      if (!agentId || busy) return;
-      setBusy(true);
-      setNotice(null);
-      try {
-        const result = await teamAction(agentId, channel.channelId, peer, action);
-        if (result.requiresNewSession && !("confirmed" in action && action.confirmed)) {
-          if (action.kind === "selectModel")
-            setConfirmation(() => () => {
-              void perform(channel, peer, { ...action, confirmed: true });
-            });
-          return;
-        }
-        if (result.success === false)
-          setNotice(
-            [
-              result.sessionConfig === "saved" ? t("teamAi.savedNotApplied") : "",
-              result.error,
-              result.createdSessionId ? t("teamAi.createdUnbound", { id: result.createdSessionId }) : "",
-            ]
-              .filter(Boolean)
-              .join(" "),
-          );
-        else if (result.statePersisted === false || result.notified === false || result.warning)
-          setNotice(result.warning ?? t("teamAi.deliveryWarning"));
-        else if (result.runtimeApply === "deferred" || result.runtimeApply === "pending-next-turn")
-          setNotice(t("teamAi.nextTurn"));
-        if (result.sessionId)
-          setSelection({
-            channelId: channel.channelId,
-            sessionKey: peer.sessionKey,
-            sessionId: result.sessionId,
-          });
-        await refresh();
-      } catch (error) {
-        setNotice(errorText(error));
-        await refresh();
-      } finally {
-        setBusy(false);
-      }
-    },
-    [agentId, busy, refresh, t],
-  );
-  const join = async (id: string) => {
-    setBusy(true);
+
+  useEffect(() => () => clearTimeout(noteTimer.current), []);
+
+  const rows = useMemo(() => buildPeerRows(channels, sessions, states), [channels, sessions, states]);
+  const visibleRows = useMemo(() => rows.filter(row => matchesPeerQuery(row, query)), [rows, query]);
+  const selected = rows.find(row => peerRowKey(row.channel.channelId, row.peer.sessionKey) === selectedKey);
+
+  const showNote = useCallback((key: string, next: TeamNote) => {
+    clearTimeout(noteTimer.current);
+    setNote({ key, note: next });
+    if (next.tone === 'ok') noteTimer.current = setTimeout(() => setNote(null), 5000);
+  }, []);
+
+  const run = useCallback(async (row: PeerRow, action: TeamAction, done: string) => {
+    if (!agentId || pending) return;
+    const key = peerRowKey(row.channel.channelId, row.peer.sessionKey);
+    setPending({ key, kind: action.kind, sessionId: action.kind === 'setPrimary' ? action.sessionId : undefined });
+    setNote(null);
     try {
-      await patchProject(id, { purpose: "team-ai" });
-      onSelectProject(id);
-      setError(null);
-    } catch (error) {
-      setError(errorText(error));
+      const result = await teamAction(agentId, row.channel.channelId, row.peer, action);
+      if (result.requiresNewSession && action.kind === 'selectModel' && !action.confirmed) {
+        setConfirmation({
+          title: t('teamAi.switchTitle', { target: t('teamAi.model') }),
+          message: t('teamAi.switchMessage', { target: t('teamAi.model'), peer: row.peer.name ?? row.peer.sourceId }),
+          confirmText: t('teamAi.switchConfirm'),
+          onConfirm: () => { void run(row, { ...action, confirmed: true }, done); },
+        });
+        return;
+      }
+      showNote(key, noteFor(result, done, row.peer.hasProfile, t));
+    } catch (failure) {
+      showNote(key, { tone: 'err', text: errorText(failure) });
     } finally {
-      setBusy(false);
+      setPending(null);
+      await refresh();
+    }
+  }, [agentId, pending, refresh, showNote, t]);
+
+  const selectProject = (id: string) => {
+    setSelectedKey(null);
+    setShowDetail(false);
+    setChannels([]);
+    setSessions([]);
+    setStates([]);
+    setQuery('');
+    onSelectProject(id);
+  };
+
+  const join = async (target: Project) => {
+    try {
+      await patchProject(target.id, { purpose: 'team-ai' });
+      selectProject(target.id);
+    } catch (failure) {
+      setError(errorText(failure));
     }
   };
-  const sessionActions = (channel: TeamChannel, peer: TeamPeer, session: SessionMetadata) => [
-    {
-      label: t("teamAi.open"),
-      icon: <ExternalIcon className="h-4 w-4" />,
-      onClick: () => {
-        if (project) onOpenSession(session, project);
+
+  const leave = () => {
+    if (!project) return;
+    setConfirmation({
+      title: t('teamAi.leaveTitle', { name: project.displayName || project.name }),
+      message: t('teamAi.leaveMessage'),
+      confirmText: t('teamAi.leaveConfirm'),
+      onConfirm: () => {
+        void patchProject(project.id, { purpose: undefined })
+          .then(() => selectProject(teams.find(p => p.id !== project.id)?.id ?? ''))
+          .catch(failure => setError(errorText(failure)));
       },
-    },
-    {
-      label: t("teamAi.setPrimary"),
-      icon: <CheckIcon className="h-4 w-4" />,
-      disabled: busy || !channel.online || peer.sessionId === session.id,
-      onClick: () => {
-        void perform(channel, peer, {
-          kind: "setPrimary",
-          sessionId: session.id,
-        });
-      },
-    },
-  ];
-  return (
-    <div
-      className="@container/team-ai h-full overflow-y-auto bg-[var(--paper)] text-[var(--ink)]"
-      data-testid="team-ai-page"
-    >
-      <div className="mx-auto max-w-6xl px-6 py-7">
-        <header className="mb-7 flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
-              <AtIcon className="h-6 w-6 text-[var(--ink-muted)]" aria-hidden="true" />
-              Team AI
-            </h1>
-            <p className="mt-2 text-sm text-[var(--ink-muted)]">{t("teamAi.description")}</p>
-          </div>
-          <div className="flex gap-1">
-            {/* Keep the trigger focusable while saving; selection closes the modal before the async patch completes. */}
-            <button
-              className={`${button} aria-disabled:cursor-not-allowed aria-disabled:opacity-40`}
-              autoFocus={isActive}
-              aria-disabled={busy}
-              aria-haspopup="dialog"
-              aria-expanded={joining}
-              onClick={(event) => {
-                if (busy) return;
-                event.currentTarget.focus();
-                setJoining(true);
-              }}
-            >
-              {t("teamAi.join")}
-            </button>
-            <button className={primaryButton} onClick={onCreate}>
-              <PlusIcon className="h-4 w-4" />
-              {t("teamAi.create")}
-            </button>
-          </div>
-        </header>
-        {joining && (
-          <AgentWorkspacePickerDialog
-            projects={candidates}
-            title={t("teamAi.selectWorkspaceTitle")}
-            description={t("teamAi.selectWorkspaceDescription")}
-            emptyLabel={t("teamAi.noCandidates")}
-            onClose={() => setJoining(false)}
-            onSelect={(project) => {
-              setJoining(false);
-              void join(project.id);
-            }}
-          />
-        )}
-        {error && (
-          <div
-            role="alert"
-            className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-lg bg-[var(--error-bg)] px-4 py-3 text-sm text-[var(--error)]"
-          >
-            {error}
-            <button
-              className={button}
-              onClick={() => {
-                void refresh();
-              }}
-            >
-              {t("teamAi.retry")}
-            </button>
-          </div>
-        )}
-        {teams.length === 0 ? (
-          <div className="py-20 text-center">
-            <AtIcon className="mx-auto mb-4 h-6 w-6 text-[var(--ink-muted)]" aria-hidden="true" />
-            <p className="text-base font-medium">{t("teamAi.empty")}</p>
-            <p className="mt-2 text-sm text-[var(--ink-muted)]">{t("teamAi.emptyHint")}</p>
-          </div>
-        ) : (
-          <>
-            <div className="mb-5 flex flex-wrap items-center gap-2">
-              <CustomSelect
-                ariaLabel="Team AI"
-                className="w-72 max-w-full"
-                size="toolbar"
-                disabled={busy}
-                value={project?.id ?? ""}
-                onChange={(id) => {
-                  setSelection(null);
-                  setChannels([]);
-                  setSessions([]);
-                  setStates([]);
-                  onSelectProject(id);
-                }}
-                options={teams.map((p) => ({
-                  value: p.id,
-                  label: p.displayName || p.name,
-                  icon: <WorkspaceIcon icon={p.icon} size={20} />,
-                }))}
-              />
-              <button className={button} onClick={() => setSettings(true)}>
-                <SlidersIcon className="h-4 w-4" />
-                {t("teamAi.channels")}
-              </button>
-              <Tip label={t("teamAi.refresh")}>
-                <button
-                  className="compact-action text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] disabled:opacity-40"
-                  disabled={loading}
-                  aria-label={t("teamAi.refresh")}
-                  onClick={() => {
-                    void refresh();
-                  }}
-                >
-                  <RefreshIcon className={`h-4 w-4 ${loading ? "animate-spin motion-reduce:animate-none" : ""}`} />
-                </button>
-              </Tip>
-            </div>
-            {notice && (
-              <p role="status" className="mb-4 rounded-md bg-[var(--paper-inset)] p-3 text-sm">
-                {notice}
-              </p>
-            )}
-            {loading && channels.length === 0 && (
-              <div className="space-y-3" aria-label={t("teamAi.loading")}>
-                {[0, 1, 2].map((i) => (
-                  <div key={i} className="h-12 animate-pulse rounded-md bg-[var(--paper-inset)]" />
-                ))}
-              </div>
-            )}
-            {!loading && !error && channels.length === 0 && (
-              <p className="py-12 text-sm text-[var(--ink-muted)]">{t("teamAi.noChannels")}</p>
-            )}
-            <div
-              className={`grid items-start gap-6 ${selection ? "@[900px]/team-ai:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]" : ""}`}
-            >
-              <div className="min-w-0">
-                {channels.map((channel) => (
-                  <section key={channel.channelId} className="mb-6">
-                    <div className="mb-2 flex min-w-0 items-center justify-between gap-2">
-                      <h2 className="min-w-0 truncate text-sm font-semibold">
-                        {channel.name || getChannelTypeLabel(channel.platform)}
-                        {channel.name && channel.name !== getChannelTypeLabel(channel.platform) && (
-                          <span className="ml-2 font-normal text-[var(--ink-muted)]">
-                            {getChannelTypeLabel(channel.platform)}
-                          </span>
-                        )}
-                      </h2>
-                      <span
-                        className={`shrink-0 text-xs ${!channel.enabled ? "text-[var(--ink-muted)]" : channel.status === "error" ? "text-[var(--error)]" : channel.status === "connecting" ? "text-[var(--warning)]" : channel.online ? "text-[var(--success)]" : "text-[var(--ink-muted)]"}`}
-                      >
-                        {t(
-                          `teamAi.${!channel.enabled ? "disabled" : ["online", "connecting", "error"].includes(channel.status) ? channel.status : "offline"}`,
-                        )}
-                      </span>
-                    </div>
-                    {channel.error && (
-                      <p role="alert" className="mb-2 text-xs text-[var(--error)]">
-                        {channel.error}
-                      </p>
-                    )}
-                    {channel.peers.length === 0 && (
-                      <p className="py-3 text-sm text-[var(--ink-muted)]">{t("teamAi.noPeers")}</p>
-                    )}
-                    {channel.peers.map((peer) => (
-                      <details key={peer.sessionKey} className="group/peer border-t border-[var(--line)] py-1">
-                        <summary className="flex cursor-pointer list-none items-center gap-2 rounded-md px-2 py-3 hover:bg-[var(--hover-bg)] focus-visible:outline-2 focus-visible:outline-[var(--accent)] [&::-webkit-details-marker]:hidden">
-                          <ChevronDownIcon className="h-3.5 w-3.5 shrink-0 -rotate-90 text-[var(--ink-muted)] transition-transform group-open/peer:rotate-0 motion-reduce:transition-none" />
-                          <span className="min-w-0 flex-1">
-                            <span className="flex min-w-0 items-center gap-2 text-sm">
-                              {peer.sourceType === "group" ? (
-                                <MessageIcon className="h-4 w-4 shrink-0 text-[var(--ink-muted)]" />
-                              ) : (
-                                <UserIcon className="h-4 w-4 shrink-0 text-[var(--ink-muted)]" />
-                              )}
-                              <span className="truncate">{peer.name || peer.sourceId}</span>
-                            </span>
-                            <span className="mt-1 block truncate text-xs text-[var(--ink-muted)]">
-                              {sessions.find((s) => s.id === peer.sessionId)?.title || t("teamAi.noPrimary")} ·{" "}
-                              {peer.lastActive && Number.isFinite(Date.parse(peer.lastActive))
-                                ? formatAbsoluteDateTime(new Date(peer.lastActive))
-                                : t("teamAi.noActivity")}
-                            </span>
-                          </span>
-                          <span className="shrink-0 text-right text-xs text-[var(--ink-muted)]">
-                            {t(`teamAi.${peer.sourceType}`)}
-                            <span className="mt-1 block">
-                              {t(
-                                `teamAi.states.${states.find((s) => s.channelId === channel.channelId && s.sessionKey === peer.sessionKey && s.sessionId === peer.sessionId)?.state ?? "unknown"}`,
-                                { defaultValue: t("teamAi.noLiveState") },
-                              )}
-                            </span>
-                          </span>
-                        </summary>
-                        <div className="mb-2 ml-4 flex flex-wrap gap-1">
-                          <Tip label={t("teamAi.offlineHelp")} disabled={channel.online}>
-                            <button
-                              className={button}
-                              disabled={!channel.online || busy}
-                              onClick={() => {
-                                void perform(channel, peer, { kind: "new" });
-                              }}
-                            >
-                              <PlusIcon className="h-4 w-4" />
-                              {t("teamAi.new")}
-                            </button>
-                          </Tip>
-                          <button
-                            className={button}
-                            disabled={!channel.online || !peer.sessionId || busy}
-                            onClick={() => {
-                              void perform(channel, peer, { kind: "stop" });
-                            }}
-                          >
-                            <StopIcon className="h-4 w-4" />
-                            {t("teamAi.stop")}
-                          </button>
-                        </div>
-                        {[...new Set([peer.sessionId, ...peer.sessionIds].filter((id): id is string => !!id))].map(
-                          (id) => {
-                            const metadata = sessions.find((s) => s.id === id);
-                            if (!metadata)
-                              return (
-                                <p key={id} className="ml-6 py-2 text-xs text-[var(--ink-muted)]">
-                                  {t("teamAi.unavailable")} · {id.slice(0, 8)}
-                                </p>
-                              );
-                            const observation = states.find(
-                              (s) =>
-                                s.channelId === channel.channelId &&
-                                s.sessionKey === peer.sessionKey &&
-                                s.sessionId === id,
-                            );
-                            return (
-                              <div
-                                key={id}
-                                className={`group ml-4 flex items-center gap-1 rounded-md ${selection?.sessionId === id && selection.channelId === channel.channelId && selection.sessionKey === peer.sessionKey ? "bg-[var(--paper-inset)]" : "hover:bg-[var(--hover-bg)]"}`}
-                                onContextMenu={(event) => {
-                                  event.preventDefault();
-                                  setMenu({
-                                    x: event.clientX,
-                                    y: event.clientY,
-                                    channel,
-                                    peer,
-                                    session: metadata,
-                                  });
-                                }}
-                              >
-                                <button
-                                  className="min-w-0 flex-1 rounded-md px-3 py-2 text-left focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
-                                  aria-pressed={
-                                    selection?.sessionId === id &&
-                                    selection.channelId === channel.channelId &&
-                                    selection.sessionKey === peer.sessionKey
-                                  }
-                                  onClick={() =>
-                                    setSelection({
-                                      channelId: channel.channelId,
-                                      sessionKey: peer.sessionKey,
-                                      sessionId: id,
-                                    })
-                                  }
-                                >
-                                  <span className="block truncate text-sm">{getSessionDisplayText(metadata)}</span>
-                                  <span className="mt-1 flex min-w-0 items-center gap-1.5 text-xs text-[var(--ink-muted)]">
-                                    {peer.sessionId === id ? <CheckIcon className="h-3 w-3 shrink-0" /> : null}
-                                    <span className="shrink-0">
-                                      {peer.sessionId === id ? t("teamAi.primary") : t("teamAi.history")}
-                                    </span>
-                                    <span className="truncate">
-                                      ·{" "}
-                                      {metadata.runtime && metadata.runtime in RUNTIME_DISPLAY_NAMES
-                                        ? sessionRuntimePresentation(
-                                            metadata.runtime as RuntimeType,
-                                            metadata.runtimeSource,
-                                          ).name
-                                        : metadata.runtime || "Claude Agent SDK"}{" "}
-                                      · {metadata.model || t("teamAi.defaultModel")}
-                                    </span>
-                                  </span>
-                                </button>
-                                <Tip
-                                  label={
-                                    observation?.error ||
-                                    t(`teamAi.states.${observation?.state ?? "unknown"}`, {
-                                      defaultValue: t("teamAi.noLiveState"),
-                                    })
-                                  }
-                                >
-                                  <span className="shrink-0 text-xs text-[var(--ink-muted)]">
-                                    {t(`teamAi.states.${observation?.state ?? "unknown"}`, {
-                                      defaultValue: observation?.state ?? t("teamAi.noLiveState"),
-                                    })}
-                                  </span>
-                                </Tip>
-                                {isActive && (
-                                  <DropdownMenu
-                                    size="md"
-                                    title={t("teamAi.sessionMenu")}
-                                    sections={[
-                                      {
-                                        items: sessionActions(channel, peer, metadata),
-                                      },
-                                    ]}
-                                  />
-                                )}
-                              </div>
-                            );
-                          },
-                        )}
-                      </details>
-                    ))}
-                  </section>
-                ))}
-              </div>
-              {project && selection && selectedChannel && selectedPeer && selectedMetadata && (
-                <SessionDetail
-                  key={`${selection.channelId}:${selection.sessionId}:${selectedMetadata.configSnapshotAt}:${selectedPeer.sessionId}:${selectedChannel.online}`}
-                  agentId={agentId!}
-                  channel={selectedChannel}
-                  peer={selectedPeer}
-                  session={selectedMetadata}
-                  active={isActive}
-                  busy={busy}
-                  onClose={() => setSelection(null)}
-                  onOpen={() => onOpenSession(selectedMetadata, project)}
-                  onAction={(action) => {
-                    void perform(selectedChannel, selectedPeer, action);
-                  }}
-                  onConfirm={(callback) => setConfirmation(() => callback)}
-                />
-              )}
-            </div>
-          </>
-        )}
+    });
+  };
+
+  const picker = joining && (
+    <AgentWorkspacePickerDialog
+      projects={candidates}
+      title={t('teamAi.selectWorkspaceTitle')}
+      description={t('teamAi.selectWorkspaceDescription')}
+      emptyLabel={t('teamAi.noCandidates')}
+      onClose={() => setJoining(false)}
+      onSelect={target => {
+        setJoining(false);
+        void join(target);
+      }}
+    />
+  );
+
+  if (!project) {
+    return (
+      <div className="h-full overflow-y-auto bg-[var(--paper)] text-[var(--ink)]" data-testid="team-ai-page">
+        <Onboarding onCreate={onCreate} onJoin={() => setJoining(true)} />
+        {picker}
       </div>
-      {menu && (
-        <ContextMenu
-          x={menu.x}
-          y={menu.y}
-          onClose={() => setMenu(null)}
-          items={sessionActions(menu.channel, menu.peer, menu.session)}
+    );
+  }
+
+  const noChannels = loaded && !error && channels.length === 0;
+  return (
+    <div className="@container/team-ai flex h-full flex-col bg-[var(--paper)] text-[var(--ink)]" data-testid="team-ai-page">
+      <header className="flex h-14 shrink-0 items-center gap-2 border-b border-[var(--line)] px-4">
+        <AgentSwitcher
+          teams={teams}
+          current={project}
+          onSelect={selectProject}
+          onCreate={onCreate}
+          onJoin={() => setJoining(true)}
         />
+        <div className="flex-1" />
+        <button className={ghostButton} onClick={() => onOpenWorkspace(project)}>
+          <FolderOpenIcon className="h-4 w-4" />
+          <span className="hidden @[560px]/team-ai:inline">{t('teamAi.openWorkspace')}</span>
+        </button>
+        <DropdownMenu
+          size="md"
+          title={t('teamAi.agentMenu')}
+          sections={[
+            { items: [
+              { icon: <SettingsIcon className="h-4 w-4" />, label: t('teamAi.agentSettings'), onClick: () => setPanel({}) },
+              { icon: <PlusIcon className="h-4 w-4" />, label: t('teamAi.connectBot'), onClick: () => setPanel({}) },
+            ] },
+            { items: [{ icon: <CloseIcon className="h-4 w-4" />, label: t('teamAi.leave'), onClick: leave }] },
+          ]}
+        />
+      </header>
+
+      {error && (
+        <div role="alert" className="mx-4 mt-3 flex items-center gap-2 rounded-[var(--radius-md)] bg-[var(--error-bg)] px-3.5 py-2.5 text-sm text-[var(--error)]">
+          <span className="min-w-0 flex-1">{error}</span>
+          <button className="shrink-0 font-medium underline-offset-2 hover:underline" onClick={() => { void refresh(); }}>{t('teamAi.retry')}</button>
+        </div>
       )}
+
+      {noChannels ? (
+        <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
+          <span className="mb-4 flex h-11 w-11 items-center justify-center rounded-[var(--radius-lg)] bg-[var(--paper-inset)] text-[var(--ink-muted)]">
+            <MessageIcon className="h-5 w-5" />
+          </span>
+          <h2 className="text-lg font-semibold">{t('teamAi.noChannelTitle', { name: project.displayName || project.name })}</h2>
+          <p className="mt-2 max-w-sm text-sm text-[var(--ink-muted)]">{t('teamAi.noChannelBody')}</p>
+          <button className={`${primaryButton} mt-5`} onClick={() => setPanel({})}>
+            <PlusIcon className="h-4 w-4" />
+            {t('teamAi.connectBot')}
+          </button>
+        </div>
+      ) : (
+        <div className="flex min-h-0 flex-1">
+          <div className={`${showDetail ? 'hidden' : 'flex'} min-h-0 w-full flex-col @[720px]/team-ai:flex @[720px]/team-ai:w-[300px] @[720px]/team-ai:shrink-0 @[720px]/team-ai:border-r @[720px]/team-ai:border-[var(--line)]`}>
+            {!loaded ? (
+              <div className="space-y-2 p-3" aria-label={t('teamAi.loading')}>
+                {[0, 1, 2, 3].map(i => <div key={i} className="h-[52px] animate-pulse rounded-[var(--radius-md)] bg-[var(--paper-inset)]" />)}
+              </div>
+            ) : (
+              <PeerList
+                rows={visibleRows}
+                channels={channels}
+                query={query}
+                onQuery={setQuery}
+                selectedKey={selectedKey}
+                onSelect={row => {
+                  setSelectedKey(peerRowKey(row.channel.channelId, row.peer.sessionKey));
+                  setShowDetail(true);
+                }}
+                onRetry={() => { void refresh(); }}
+              />
+            )}
+          </div>
+          <main className={`${showDetail ? 'block' : 'hidden'} min-w-0 flex-1 overflow-y-auto @[720px]/team-ai:block`}>
+            {selected && agentId ? (
+              <PeerDetail
+                key={selectedKey}
+                agentId={agentId}
+                row={selected}
+                sessions={sessions}
+                states={states}
+                pending={pending?.key === selectedKey ? pending : null}
+                note={note?.key === selectedKey ? note.note : null}
+                run={(action, done) => run(selected, action, done)}
+                confirm={setConfirmation}
+                onOpen={session => onOpenSession(session, project)}
+                onAccess={() => setPanel({ channelId: selected.channel.channelId })}
+                onEnable={() => {
+                  void startAndEnableAgentChannel(agentId, selected.channel.channelId)
+                    .catch(failure => setError(errorText(failure)))
+                    .finally(() => { void refresh(); });
+                }}
+                onBack={() => setShowDetail(false)}
+              />
+            ) : (
+              <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-[var(--ink-muted)]">
+                <MessageIcon className="h-7 w-7 text-[var(--ink-subtle)]" />
+                {t('teamAi.selectPeer')}
+              </div>
+            )}
+          </main>
+        </div>
+      )}
+
+      {picker}
       {confirmation && (
         <ConfirmDialog
-          title={t("teamAi.switchTitle")}
-          message={t("teamAi.switchMessage")}
-          confirmText={t("teamAi.new")}
+          title={confirmation.title}
+          message={confirmation.message}
+          confirmText={confirmation.confirmText}
           onConfirm={() => {
-            const callback = confirmation;
+            const request = confirmation;
             setConfirmation(null);
-            callback();
+            request.onConfirm();
           }}
           onCancel={() => setConfirmation(null)}
         />
       )}
-      {settings && project && (
+      {panel && (
         <Suspense fallback={null}>
           <WorkspaceConfigPanel
             agentDir={project.path}
-            initialTab="agent"
+            initialTab="general"
+            initialChannelId={panel.channelId}
             onClose={() => {
-              setSettings(false);
+              setPanel(null);
               void refresh();
             }}
           />
@@ -609,335 +366,80 @@ export default function TeamAi({
   );
 }
 
-function SessionDetail({
-  agentId,
-  channel,
-  peer,
-  session,
-  active,
-  busy,
-  onClose,
-  onOpen,
-  onAction,
-  onConfirm,
-}: {
-  agentId: string;
-  channel: TeamChannel;
-  peer: TeamPeer;
-  session: SessionMetadata;
-  active: boolean;
-  busy: boolean;
-  onClose: () => void;
-  onOpen: () => void;
-  onAction: (action: TeamAction) => void;
-  onConfirm: (callback: () => void) => void;
+function AgentSwitcher({ teams, current, onSelect, onCreate, onJoin }: {
+  teams: Project[];
+  current: Project;
+  onSelect: (id: string) => void;
+  onCreate: () => void;
+  onJoin: () => void;
 }) {
-  const { t } = useTranslation("app");
-  const [data, setData] = useState<TeamSessionData | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [catalog, setCatalog] = useState<TeamModelMenu | null>(null);
-  const [tools, setTools] = useState<TeamTools | null>(null);
-  const [toolsLoading, setToolsLoading] = useState(false);
-  const primary = peer.sessionId === session.id;
-  const editable = channel.online && primary && !busy;
-  useEffect(() => {
-    if (!active) return;
-    let stale = false;
-    const read = () => {
-      void teamSession(agentId, channel.channelId, peer.sessionKey, session.id)
-        .then((result) => {
-          if (!stale) {
-            setData(result.session);
-            setError(null);
-          }
-        })
-        .catch((error) => {
-          if (!stale) setError(errorText(error));
-        });
-    };
-    read();
-    const timer = setInterval(read, 4000);
-    return () => {
-      stale = true;
-      clearInterval(timer);
-    };
-  }, [active, agentId, channel.channelId, peer.sessionKey, session.id]);
-  useEffect(() => {
-    if (!channel.online || !primary || !active) return;
-    let stale = false;
-    void teamAction<TeamModelMenu>(
-      agentId,
-      channel.channelId,
-      { sessionKey: peer.sessionKey, sessionId: peer.sessionId },
-      { kind: "options" },
-    )
-      .then((menu) => {
-        if (!stale) setCatalog(menu);
-      })
-      .catch((error) => {
-        if (!stale) setError(errorText(error));
-      });
-    return () => {
-      stale = true;
-    };
-  }, [
-    active,
-    agentId,
-    channel.channelId,
-    channel.online,
-    peer.sessionKey,
-    peer.sessionId,
-    primary,
-    session.configSnapshotAt,
-  ]);
-  const showTools = async () => {
-    setToolsLoading(true);
-    try {
-      setTools(
-        await teamAction<TeamTools>(agentId, channel.channelId, peer, {
-          kind: "tools",
-        }),
-      );
-    } catch (error) {
-      setError(errorText(error));
-    } finally {
-      setToolsLoading(false);
-    }
-  };
-  const runtimeOptions = (["builtin", "dsh", "codex", "claude-code"] as const).map((runtime) => ({
-    value: runtime,
-    label: sessionRuntimePresentation(runtime).name,
-    icon: <RuntimeIcon type={runtime} size={16} />,
-  }));
+  const { t } = useTranslation('app');
+  const anchor = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
+  const item = 'flex w-full items-center gap-2.5 rounded-[var(--radius-sm)] px-2.5 py-2 text-left text-sm hover:bg-[var(--hover-bg)]';
   return (
-    <aside
-      className="min-w-0 rounded-[var(--radius-lg)] border border-[var(--line)] bg-[var(--paper-elevated)] p-4"
-      aria-label={t("teamAi.detail")}
-    >
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <h2 className="truncate text-sm font-semibold">{getSessionDisplayText(session)}</h2>
-          <p className="mt-1 break-all text-xs text-[var(--ink-muted)]">{session.id}</p>
-        </div>
-        <Tip label={t("teamAi.close")}>
-          <button
-            className="compact-action text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
-            aria-label={t("teamAi.close")}
-            onClick={onClose}
-          >
-            <CloseIcon className="h-4 w-4" />
+    <>
+      <button
+        ref={anchor}
+        className="flex h-9 min-w-0 items-center gap-2 rounded-[var(--radius-md)] px-2 hover:bg-[var(--hover-bg)] focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={t('teamAi.switchAgent')}
+        onClick={() => setOpen(!open)}
+      >
+        <WorkspaceIcon icon={current.icon} size={24} />
+        <span className="truncate text-base font-semibold">{current.displayName || current.name}</span>
+        <ChevronDownIcon className="h-4 w-4 shrink-0 text-[var(--ink-muted)]" />
+      </button>
+      <Popover open={open} onClose={() => setOpen(false)} anchorRef={anchor} placement="bottom-start" className="min-w-[260px] p-1">
+        <div role="menu">
+          {teams.map(team => (
+            <button key={team.id} role="menuitem" className={item} onClick={() => { setOpen(false); if (team.id !== current.id) onSelect(team.id); }}>
+              <WorkspaceIcon icon={team.icon} size={22} />
+              <span className="min-w-0 flex-1 truncate">{team.displayName || team.name}</span>
+              {team.id === current.id && <CheckIcon className="h-4 w-4 text-[var(--accent)]" />}
+            </button>
+          ))}
+          <div className="my-1 border-t border-[var(--line-subtle)]" />
+          <button role="menuitem" className={item} onClick={() => { setOpen(false); onCreate(); }}>
+            <PlusIcon className="h-4 w-4 text-[var(--ink-muted)]" />
+            {t('teamAi.create')}
           </button>
-        </Tip>
-      </div>
-      <div className="my-3 flex flex-wrap items-center justify-between gap-2">
-        <span className="text-xs text-[var(--ink-muted)]">
-          {data?.liveSessionState
-            ? t(`teamAi.states.${data.liveSessionState}`, {
-                defaultValue: String(data.liveSessionState),
-              })
-            : t("teamAi.noLiveState")}
-        </span>
-        <button className={button} onClick={onOpen}>
-          <ExternalIcon className="h-4 w-4" />
-          {t("teamAi.open")}
+          <button role="menuitem" className={item} onClick={() => { setOpen(false); onJoin(); }}>
+            <FolderIcon className="h-4 w-4 text-[var(--ink-muted)]" />
+            {t('teamAi.join')}…
+          </button>
+        </div>
+      </Popover>
+    </>
+  );
+}
+
+function Onboarding({ onCreate, onJoin }: { onCreate: () => void; onJoin: () => void }) {
+  const { t } = useTranslation('app');
+  return (
+    <div className="mx-auto flex max-w-[640px] flex-col items-center px-6 py-20 text-center">
+      <span className="mb-5 flex h-[52px] w-[52px] items-center justify-center rounded-[14px] bg-[var(--accent-warm-subtle)] text-[var(--accent-warm)]">
+        <AtIcon className="h-6 w-6" />
+      </span>
+      <h1 className="text-2xl font-semibold tracking-tight">{t('teamAi.onboarding.title')}</h1>
+      <p className="mt-3 max-w-[480px] text-sm leading-relaxed text-[var(--ink-muted)]">{t('teamAi.onboarding.body')}</p>
+      <ol className="mt-8 grid w-full gap-3 text-left @[560px]:grid-cols-3 sm:grid-cols-3">
+        {[1, 2, 3].map(step => (
+          <li key={step} className="rounded-[var(--radius-lg)] border border-[var(--line)] bg-[var(--paper-elevated)] p-4">
+            <span className="mb-2 flex h-6 w-6 items-center justify-center rounded-full bg-[var(--paper-inset)] text-xs font-semibold text-[var(--ink-muted)]">{step}</span>
+            <b className="block text-sm font-semibold">{t(`teamAi.onboarding.step${step}`)}</b>
+            <span className="mt-1 block text-xs leading-relaxed text-[var(--ink-muted)]">{t(`teamAi.onboarding.step${step}Body`)}</span>
+          </li>
+        ))}
+      </ol>
+      <div className="mt-8 flex gap-2">
+        <button className={secondaryButton} onClick={onJoin}>{t('teamAi.join')}</button>
+        <button className={primaryButton} onClick={onCreate}>
+          <PlusIcon className="h-4 w-4" />
+          {t('teamAi.create')}
         </button>
       </div>
-      {error && (
-        <p role="alert" className="mb-3 text-xs text-[var(--error)]">
-          {error}
-        </p>
-      )}
-      {!primary && <p className="mb-4 text-xs text-[var(--ink-muted)]">{t("teamAi.historyHint")}</p>}
-      {catalog && (
-        <div className="mb-5 space-y-3">
-          <div>
-            <p className="mb-1 text-xs text-[var(--ink-muted)]">Runtime</p>
-            <CustomSelect
-              ariaLabel="Runtime"
-              size="toolbar"
-              value={catalog.runtimeSource === "managed-provider" ? "managed-provider" : catalog.runtime}
-              disabled={!editable}
-              onChange={(value) => {
-                const runtime = value as RuntimeType;
-                if (runtime === catalog.runtime && catalog.runtimeSource !== "managed-provider") return;
-                onConfirm(() =>
-                  onAction({
-                    kind: "switchRuntime",
-                    runtime,
-                    snapshotObservation: catalog.snapshotObservation,
-                  }),
-                );
-              }}
-              options={
-                catalog.runtimeSource === "managed-provider"
-                  ? [
-                      {
-                        value: "managed-provider",
-                        label: sessionRuntimePresentation(catalog.runtime, catalog.runtimeSource as RuntimeSource).name,
-                        icon: <RuntimeIcon type={catalog.runtime} size={16} />,
-                        isSeparator: true,
-                      },
-                      ...runtimeOptions,
-                    ]
-                  : runtimeOptions
-              }
-            />
-          </div>
-          <div>
-            <p className="mb-1 text-xs text-[var(--ink-muted)]">{t("teamAi.model")}</p>
-            <CustomSelect
-              ariaLabel={t("teamAi.model")}
-              size="toolbar"
-              disabled={!editable}
-              value={String(catalog.options.findIndex((o) => o.isCurrent))}
-              placeholder={session.model || t("teamAi.defaultModel")}
-              onChange={(value) => {
-                const option = catalog.options[Number(value)];
-                if (!option) return;
-                const apply = () =>
-                  onAction({
-                    kind: "selectModel",
-                    selection: option.selection,
-                    snapshotObservation: catalog.snapshotObservation,
-                    confirmed: option.requiresNewSession,
-                  });
-                if (option.requiresNewSession) onConfirm(apply);
-                else apply();
-              }}
-              options={catalog.options.flatMap((option, index) => [
-                ...(index === 0 || option.group !== catalog.options[index - 1].group
-                  ? [
-                      {
-                        value: `group-${index}`,
-                        label: option.group,
-                        isSeparator: true,
-                      },
-                    ]
-                  : []),
-                {
-                  value: String(index),
-                  label: option.name,
-                  suffix: option.requiresNewSession ? t("teamAi.requiresNew") : undefined,
-                },
-              ])}
-            />
-          </div>
-          {!!catalog.reasoningEffortChoices?.length && (
-            <div>
-              <p className="mb-1 text-xs text-[var(--ink-muted)]">{t("teamAi.effort")}</p>
-              <CustomSelect
-                ariaLabel={t("teamAi.effort")}
-                size="toolbar"
-                disabled={!editable}
-                value={catalog.reasoningEffort ?? "default"}
-                options={["default", ...catalog.reasoningEffortChoices].map((value) => ({
-                  value,
-                  label: t(`teamAi.efforts.${value}`, {
-                    defaultValue: value,
-                  }),
-                }))}
-                onChange={(effort) =>
-                  onAction({
-                    kind: "setEffort",
-                    effort,
-                    snapshotObservation: catalog.snapshotObservation,
-                  })
-                }
-              />
-            </div>
-          )}
-          <button
-            className={button}
-            disabled={!editable || toolsLoading}
-            aria-expanded={!!tools}
-            aria-busy={toolsLoading}
-            onClick={() => {
-              if (tools) setTools(null);
-              else void showTools();
-            }}
-          >
-            <SlidersIcon className="h-4 w-4" />
-            {toolsLoading ? t("teamAi.loadingTools") : t("teamAi.tools")}
-            <ChevronDownIcon className={`h-3.5 w-3.5 ${tools ? "rotate-180" : ""}`} />
-          </button>
-        </div>
-      )}
-      {tools && (
-        <div className="mb-5 space-y-3">
-          {(
-            [
-              ["mcp", "mcpEnabledServers", "MCP"],
-              ["plugins", "enabledPluginIds", t("teamAi.plugins")],
-              ["official", "enabledOfficialToolIds", t("teamAi.official")],
-            ] as const
-          ).map(([items, field, title]) => (
-            <McpToolsCard
-              key={field}
-              title={title}
-              subtitle={t("teamAi.toolsHint")}
-              emptyHint={t("teamAi.none")}
-              availableMcpServers={tools[items]}
-              enabledServerIds={tools[field]}
-              disabled={!editable || (field !== "enabledOfficialToolIds" && !tools.canManageExtensions)}
-              onToggle={(id) =>
-                setTools({
-                  ...tools,
-                  [field]: tools[field].includes(id)
-                    ? tools[field].filter((item) => item !== id)
-                    : [...tools[field], id],
-                })
-              }
-            />
-          ))}
-          <button
-            className={primaryButton}
-            disabled={!editable}
-            onClick={() =>
-              onAction({
-                kind: "saveTools",
-                snapshotObservation: tools.snapshotObservation,
-                ...(tools.canManageExtensions
-                  ? {
-                      mcpEnabledServers: tools.mcpEnabledServers,
-                      enabledPluginIds: tools.enabledPluginIds,
-                    }
-                  : {}),
-                enabledOfficialToolIds: tools.enabledOfficialToolIds,
-              })
-            }
-          >
-            {t("teamAi.saveTools")}
-          </button>
-        </div>
-      )}
-      {!channel.online && <p className="mb-4 text-xs text-[var(--ink-muted)]">{t("teamAi.offlineHelp")}</p>}
-      <h3 className="mb-2 text-xs font-medium text-[var(--ink-muted)]">{t("teamAi.recent")}</h3>
-      <div className="max-h-[520px] space-y-3 overflow-y-auto">
-        {[
-          ...(data?.messages ?? []).filter((message) => message.id !== data?.liveStreamingMessage?.id),
-          ...(data?.liveStreamingMessage ? [data.liveStreamingMessage] : []),
-        ].map((message) => (
-          <Message
-            key={message.id}
-            isLoading={message.id === data?.liveStreamingMessage?.id}
-            message={{
-              ...message,
-              attachments: message.attachments?.map((attachment) => ({
-                ...attachment,
-                size: 0,
-                relativePath: attachment.path,
-                isImage: attachment.mimeType.startsWith("image/"),
-              })),
-              content: normalizeSessionMessageContent(message.content),
-              timestamp: new Date(message.timestamp),
-            }}
-          />
-        ))}
-        {data?.messages?.length === 0 && !data.liveStreamingMessage && (
-          <p className="py-4 text-sm text-[var(--ink-muted)]">{t("teamAi.noMessages")}</p>
-        )}
-        {!data && !error && <div className="h-20 animate-pulse rounded-md bg-[var(--paper-inset)]" />}
-      </div>
-    </aside>
+    </div>
   );
 }

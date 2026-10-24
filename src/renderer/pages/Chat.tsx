@@ -189,6 +189,7 @@ import {
 import { BrowserPanelContext } from '@/context/BrowserPanelContext';
 import { BROWSER_BLANK_URL } from '@/components/browserConstants';
 import { CUSTOM_EVENTS, isPendingSessionId } from '../../shared/constants';
+import { syncTeamAiPeerProfile } from '@/features/team-ai/client';
 import {
   applyBuiltinBrowserExecutionToolToggle,
   MANAGED_BROWSER_MCP_ID,
@@ -3257,6 +3258,9 @@ export default function Chat({
       enabledOfficialToolIds?: OfficialToolId[];
     }) => {
       if (!currentProject) return false;
+      // Team AI Agents are shared: a conversation never edits the Agent
+      // defaults. A peer's current Session instead carries its peer profile.
+      const teamAiWorkspace = currentProject.purpose === 'team-ai';
       const nextManagedModel = patch.runtimeBackedProviderSelection?.model;
       const nextEffort = nextManagedModel
         ? reasoningEffortAfterModelChange(
@@ -3314,6 +3318,7 @@ export default function Chat({
         // still wired with a policy hook so future non-Tab surfaces cannot drift.
         patchSnapshot: skipSnapshotWrite ? undefined : patchSnapshot,
         snapshotWriteMode: skipSnapshotWrite ? 'disabled' : 'required',
+        defaultsWriteMode: teamAiWorkspace ? 'disabled' : 'enabled',
         // Cross-review: Chat's MCP toggle previously did its own
         // `apiPost('/api/mcp/set')` AFTER the helper, leaving the helper's
         // `pushMcpToSidecar` plumbing dead-code. Wire it through so the
@@ -3363,6 +3368,13 @@ export default function Chat({
         console.error('[chat] tab config dual-write failed:', result.errors);
         toastRef.current.warning(t('shell.toasts.configPartiallySaved'));
       }
+      if (teamAiWorkspace && !result.snapshotWriteFailed && !skipSnapshotWrite
+        && currentProject.agentId && sessionId && !isPendingSessionId(sessionId)) {
+        const warn = () => toastRef.current.warning(t('shell.toasts.teamAiPeerProfileFailed'));
+        void syncTeamAiPeerProfile(currentProject.agentId, sessionId)
+          .then((synced) => { if (synced.peerProfile === 'failed') warn(); })
+          .catch(warn);
+      }
       if (!result.snapshotWriteFailed && nextEffort !== undefined) {
         setReasoningEffort(nextEffort);
         if (effortReset) toastRef.current.info(t('input.reasoningModelReset'));
@@ -3376,6 +3388,8 @@ export default function Chat({
       skipSnapshotWrite,
       currentProject?.id,
       currentProject?.agentId,
+      currentProject?.purpose,
+      sessionId,
       isExternalRuntime,
       currentRuntime,
       currentAgent?.runtimeConfig,
@@ -3785,6 +3799,8 @@ export default function Chat({
           currentAgent?.providerId ?? currentProject.providerId,
         fields: { builtinModel: fallback },
         snapshotWriteMode: 'disabled',
+        // Team AI defaults change only from Agent settings.
+        defaultsWriteMode: currentProject.purpose === 'team-ai' ? 'disabled' : 'enabled',
         patchProject,
         patchAgentConfig,
         patchAgentProjectConfig,
@@ -5119,7 +5135,8 @@ export default function Chat({
       forkTabOpened = true;
       if (targetEffort !== reasoningEffort)
         toastRef.current.info(t('input.reasoningModelReset'));
-      if (currentProject) {
+      // Team AI defaults are edited only in Agent settings.
+      if (currentProject && currentProject.purpose !== 'team-ai') {
         const defaultWriteResult = await persistInputOptionChange({
           workspaceId: currentProject.id,
           agentId: currentProject.agentId,
@@ -5169,6 +5186,13 @@ export default function Chat({
       }
       if (boundChannel) {
         await transferBindingToForkedSession(boundChannel, openedSessionId);
+        // The new Session now serves this Team AI peer, so its choice becomes the peer profile.
+        if (currentProject?.purpose === 'team-ai' && currentProject.agentId && openedSessionId) {
+          const synced = await syncTeamAiPeerProfile(currentProject.agentId, openedSessionId).catch(() => null);
+          if (synced?.peerProfile !== 'saved' && synced?.peerProfile !== null) {
+            toastRef.current.warning(t('shell.toasts.teamAiPeerProfileFailed'));
+          }
+        }
       }
     } catch (err) {
       console.error('[chat] Failed to create cross-provider session:', err);

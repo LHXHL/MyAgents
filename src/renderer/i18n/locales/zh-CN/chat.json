@@ -1060,6 +1060,7 @@
       "syncFailed": "同步失败",
       "syncFailedRetry": "同步失败，请重试",
       "configPartiallySaved": "配置未能完全保存，重启后可能恢复旧值",
+      "teamAiPeerProfileFailed": "当前会话已修改，但这个私聊/群聊的专属设置未能保存",
       "extensionsDeferred": "扩展变更将在当前回合结束后应用",
       "extensionsUnsupported": "部分所选扩展能力暂不受 Managed Codex 支持",
       "searchUnsupported": "当前环境不支持页内搜索（缺少 CSS Highlight API）",

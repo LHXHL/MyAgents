@@ -153,6 +153,8 @@ pub struct SessionRouter {
     http_client: Client,
     /// Agent ID (if this router belongs to an Agent channel). None for legacy IM bots.
     agent_id: Option<String>,
+    /// Owning Agent Channel ID; locates Channel-owned config such as Team AI peer profiles.
+    channel_id: Option<String>,
 }
 
 /// Private peer target selected for heartbeat/cron delivery.
@@ -185,6 +187,7 @@ impl SessionRouter {
             default_workspace,
             http_client: create_sidecar_http_client(),
             agent_id: None,
+            channel_id: None,
         }
     }
 
@@ -196,7 +199,19 @@ impl SessionRouter {
             default_workspace,
             http_client: create_sidecar_http_client(),
             agent_id: Some(agent_id),
+            channel_id: None,
         }
+    }
+
+    /// Attach the Agent Channel this router serves.
+    pub fn with_channel_id(mut self, channel_id: String) -> Self {
+        self.channel_id = Some(channel_id);
+        self
+    }
+
+    /// `(agentId, channelId)` for an Agent Channel router.
+    pub fn channel_owner(&self) -> Option<(&str, &str)> {
+        Some((self.agent_id.as_deref()?, self.channel_id.as_deref()?))
     }
 
     /// Generate session key from IM message.

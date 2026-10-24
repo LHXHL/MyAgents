@@ -244,7 +244,7 @@ export function classifySidecarRequest(request: Request): SidecarCapability | nu
 
   // Team management catalogues and birth planning read persisted authority.
   // Writes still belong to the addressed Session, never to the Global host.
-  if (method === 'GET' && (pathname === '/api/im/session-model-options' || pathname === '/api/im/session-tools')) return 'common';
+  if (method === 'GET' && (pathname === '/api/im/session-model-options' || pathname === '/api/im/session-tools' || pathname === '/api/im/peer-profile')) return 'common';
   if (method === 'POST' && pathname === '/api/im/session-runtime') return 'global';
 
   const sessionsCapability = classifySessionsRoute(pathname, method);

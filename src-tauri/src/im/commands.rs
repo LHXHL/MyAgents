@@ -2100,8 +2100,18 @@ pub(crate) async fn reload_agent_config_from_disk<R: Runtime>(
     drop(_lifecycle_guards);
     // Platform delivery owns no lifecycle, peer, Router or ManagedAgents lock.
     for (adapter, router) in notifications {
+        // Team AI peers with their own profile do not follow Agent defaults.
+        let owner = router
+            .lock()
+            .await
+            .channel_owner()
+            .map(|(agent, channel)| (agent.to_string(), channel.to_string()));
+        let profiled = owner
+            .map(|(agent, channel)| super::team_ai::profiled_peer_keys(&agent, &channel))
+            .unwrap_or_default();
         let peers = super::model_commands::private_notice_peers(
             router.lock().await.peer_sessions_iter().cloned(),
+            &profiled,
         );
         let manager = sidecar_manager.clone();
         let notice_agent_id = agent_id.clone();

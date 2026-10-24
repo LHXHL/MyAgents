@@ -71,6 +71,7 @@ describe('Sidecar production composition', () => {
     ['POST', '/api/im/model-selection', 'session'],
     ['GET', '/api/im/session-model-options', 'common'],
     ['GET', '/api/im/session-tools', 'common'],
+    ['GET', '/api/im/peer-profile', 'common'],
     ['POST', '/api/im/session-runtime', 'global'],
     ['POST', '/api/im/session-tools', 'session'],
     ['POST', '/api/im/session-effort', 'session'],

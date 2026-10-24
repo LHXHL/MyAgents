@@ -1,5 +1,6 @@
 import { getSessionEngine } from '../session-engine';
-import { updateSessionMetadata } from '../SessionStore';
+import { getSessionMetadata, updateSessionMetadata } from '../SessionStore';
+import { peerProfileFromSession } from '../utils/peer-profile';
 import { modelContext, imSnapshotObservation, sessionEffortChoices } from './im-model-selection';
 import { getAllMcpServers, getEnabledMcpServerIds, resolveWorkspaceConfig } from '../utils/admin-config';
 import { buildSessionSnapshotPatchUpdates } from '../utils/session-snapshot-patch';
@@ -14,6 +15,12 @@ const json = (body: unknown, status = 200) => new Response(JSON.stringify(body),
 
 /** This surface edits only Product Session state. Agent defaults have no writer here. */
 export async function handleTeamSessionConfigRoute(path: string, request: Request): Promise<Response | null> {
+  if (path === '/api/im/peer-profile' && request.method === 'GET') {
+    // Read-only projection for the Rust peer-profile owner; Rust decides whether to store it.
+    const metadata = getSessionMetadata(new URL(request.url).searchParams.get('sessionId') ?? '');
+    if (!metadata?.configSnapshotAt) return json({ success: false, error: 'Session configuration is not owned yet' }, 409);
+    return json({ success: true, profile: peerProfileFromSession(metadata) });
+  }
   if (path !== '/api/im/session-tools' && path !== '/api/im/session-runtime' && path !== '/api/im/session-effort') return null;
   try {
     const url = new URL(request.url);
