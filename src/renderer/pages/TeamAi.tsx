@@ -9,7 +9,7 @@ import { startAndEnableAgentChannel } from '@/config/services/agentConfigService
 import type { TeamAction, TeamActionResult, TeamChannel, TeamSessionState } from '@/../shared/teamAi';
 import { teamAction, teamChannels, teamStates } from '@/features/team-ai/client';
 import type { TeamAiBinding } from '@/features/team-ai/tabModule';
-import { buildPeerRows, matchesPeerQuery, observationTargets, peerRowKey, unobserved, type PeerRow } from '@/features/team-ai/model';
+import { buildPeerRows, observationTargets, peerRowKey, unobserved, type PeerRow } from '@/features/team-ai/model';
 import { PeerList } from '@/features/team-ai/PeerList';
 import {
   PeerDetail,
@@ -27,7 +27,6 @@ import WorkspaceIcon from '@/components/launcher/WorkspaceIcon';
 import { DropdownMenu } from '@/components/ui/DropdownMenu';
 import { Popover } from '@/components/ui/Popover';
 import { AtIcon, CheckIcon, ChevronDownIcon, CloseIcon, FolderIcon, FolderOpenIcon, MessageIcon, PlusIcon, SettingsIcon } from '@/components/icons';
-import { ChannelPlatformIcon, getChannelPlatformLabel } from '@/components/AgentSettings/channelPlatform';
 import type { InitialChannelView } from '@/components/AgentSettings/sections/AgentChannelsSection';
 import { useWorkspaceFileService } from '@/hooks/useWorkspaceFileService';
 
@@ -88,7 +87,6 @@ export default function TeamAi({
   const [states, setStates] = useState<TeamSessionState[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [query, setQuery] = useState('');
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [showDetail, setShowDetail] = useState(false);
   const [pending, setPending] = useState<TeamPending | null>(null);
@@ -150,7 +148,6 @@ export default function TeamAi({
   useEffect(() => () => clearTimeout(noteTimer.current), []);
 
   const rows = useMemo(() => buildPeerRows(channels, sessions, states), [channels, sessions, states]);
-  const visibleRows = useMemo(() => rows.filter(row => matchesPeerQuery(row, query)), [rows, query]);
   const selected = rows.find(row => peerRowKey(row.channel.channelId, row.peer.sessionKey) === selectedKey);
 
   const showNote = useCallback((key: string, next: TeamNote) => {
@@ -182,7 +179,6 @@ export default function TeamAi({
     setChannels([]);
     setSessions([]);
     setStates([]);
-    setQuery('');
     onSelectProject(id);
   };
 
@@ -243,20 +239,7 @@ export default function TeamAi({
           onCreate={onCreate}
           onJoin={() => setJoining(true)}
         />
-        {/* Connected Bots: each opens its own Channel settings. */}
-        <div className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
-          {channels.map(channel => (
-            <button
-              key={channel.channelId}
-              className="flex h-7 min-w-0 shrink-0 items-center gap-1.5 rounded-full px-2 text-xs text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
-              title={t('teamAi.channelSettings', { name: channel.name || getChannelPlatformLabel(channel.platform) })}
-              onClick={() => setPanel({ initialChannel: { view: 'detail', channelId: channel.channelId } })}
-            >
-              <ChannelPlatformIcon type={channel.platform} className="h-4 w-4" />
-              <span className="max-w-[120px] truncate">{channel.name || getChannelPlatformLabel(channel.platform)}</span>
-            </button>
-          ))}
-        </div>
+        <div className="flex-1" />
         <button className={ghostButton} onClick={() => setPanel({})}>
           <SettingsIcon className="h-4 w-4" />
           <span className="hidden @[560px]/team-ai:inline">{t('teamAi.agentSettings')}</span>
@@ -302,10 +285,10 @@ export default function TeamAi({
               </div>
             ) : (
               <PeerList
-                rows={visibleRows}
+                rows={rows}
                 channels={channels}
-                query={query}
-                onQuery={setQuery}
+                onOpenChannel={channelId => setPanel({ initialChannel: { view: 'detail', channelId } })}
+                onAddChannel={() => setPanel({ initialChannel: { view: 'add' } })}
                 selectedKey={selectedKey}
                 onSelect={row => {
                   setSelectedKey(peerRowKey(row.channel.channelId, row.peer.sessionKey));

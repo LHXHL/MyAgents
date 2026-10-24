@@ -332,8 +332,7 @@ pub async fn cmd_team_ai_channels(
                         "hasProfile":team_ai && channel.peer_profiles.contains_key(&peer.session_key),
                         "name":active.and_then(|p| p.source_display_name.clone()).or(peer.source_display_name)
                             .or_else(|| configured_peer_name(channel, &peer.source_type, &peer.source_id)),
-                        "sessionId":active.map(|p| p.session_id.clone()),"sessionIds":peer.session_ids,
-                        "lastActive":active.map(|p| p.last_active.clone())})
+                        "sessionId":active.map(|p| p.session_id.clone()),"sessionIds":peer.session_ids})
                 }).collect::<Vec<_>>());
             }
         }

@@ -1430,12 +1430,8 @@
     "leaveTitle": "Remove {{name}} from Team AI?",
     "leaveMessage": "Only the usage tag is removed. The workspace, bots, sessions and history stay unchanged.",
     "leaveConfirm": "Remove",
-    "search": "Search groups or people",
-    "noResults": "No matching conversations",
     "private": "Private chat",
     "group": "Group chat",
-    "botNoPeers": "{{name}} has no conversations yet",
-    "loadFailed": "Couldn't load {{name}}",
     "loading": "Loading conversations",
     "noChannelTitle": "{{name}} isn't connected to a chatbot yet",
     "noChannelBody": "Once connected, colleagues can use it in group and private chats.",
@@ -1539,6 +1535,10 @@
       "failed": "Settings saved, but they could not be applied to the current session."
     },
     "openFolder": "Open folder",
-    "channelSettings": "Open “{{name}}” channel settings"
+    "channelSettings": "Open “{{name}}” channel settings",
+    "connectedChannels": "Connected channels",
+    "peerList": "Conversations",
+    "loadFailedRetry": "Couldn’t load · Retry",
+    "noPeers": "No conversations yet. They appear here after a Bot receives its first message."
   }
 }

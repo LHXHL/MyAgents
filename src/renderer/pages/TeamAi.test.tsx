@@ -22,8 +22,8 @@ const now = Date.now();
 const iso = (minutesAgo: number) => new Date(now - minutesAgo * 60_000).toISOString();
 const metadata: SessionMetadata = { id: 'session-a', agentDir: '/workspace', title: 'Budget analysis', createdAt: iso(90), lastActiveAt: iso(5), runtime: 'builtin', model: 'model-a', configSnapshotAt: 'observed', mcpEnabledServers: ['mcp-a'] };
 const earlier: SessionMetadata = { ...metadata, id: 'session-b', title: 'Earlier analysis', lastActiveAt: iso(3000) };
-const peer: TeamPeer = { sessionKey: 'agent:agent:feishu:group:room', sourceId: 'room', sourceType: 'group', name: 'Planning room', sessionId: 'session-a', sessionIds: ['session-a', 'session-b', 'session-gone'], lastActive: iso(5), hasProfile: false };
-const privatePeer: TeamPeer = { sessionKey: 'agent:agent:feishu:private:u1', sourceId: 'u1', sourceType: 'private', name: 'Li', sessionId: null, sessionIds: [], lastActive: iso(60), hasProfile: false };
+const peer: TeamPeer = { sessionKey: 'agent:agent:feishu:group:room', sourceId: 'room', sourceType: 'group', name: 'Planning room', sessionId: 'session-a', sessionIds: ['session-a', 'session-b', 'session-gone'], hasProfile: false };
+const privatePeer: TeamPeer = { sessionKey: 'agent:agent:feishu:private:u1', sourceId: 'u1', sourceType: 'private', name: 'Li', sessionId: null, sessionIds: [], hasProfile: false };
 const channel: TeamChannel = { channelId: 'bot-a', platform: 'feishu', name: 'Department Bot', online: true, enabled: true, status: 'online', peers: [privatePeer, peer] };
 const selectionA = { kind: 'product-provider', providerId: 'provider-a', model: 'model-a' } as const;
 const selectionC = { kind: 'product-provider', providerId: 'provider-a', model: 'model-c' } as const;
@@ -79,7 +79,9 @@ describe('Team AI list', () => {
     render(<TeamAi {...props()} />);
     const planning = await screen.findByRole('option', { name: /Planning room/ });
     expect(within(planning).getByLabelText('teamAi.status.error')).toBeInTheDocument();
-    expect(within(planning).getByText('teamAi.disabled')).toBeInTheDocument();
+    // Bot status is stated once, on the Bot, not repeated on each conversation.
+    expect(within(screen.getByRole('region', { name: 'teamAi.connectedChannels' })).getByText('teamAi.disabled')).toBeInTheDocument();
+    expect(within(planning).queryByText('teamAi.disabled')).toBeNull();
     fireEvent.click(planning);
     expect(await screen.findByText('teamAi.channelOff')).toBeInTheDocument();
     await openConfig();
@@ -93,14 +95,19 @@ describe('Team AI list', () => {
   it('distinguishes a failed Channel read from a Bot without conversations', async () => {
     mocks.channels.mockResolvedValue({ channels: [{ ...channel, peers: [], loadError: 'State file unreadable' }, { ...channel, channelId: 'bot-b', name: 'Quiet Bot', peers: [] }] });
     render(<TeamAi {...props()} />);
-    expect(await screen.findByRole('alert')).toHaveTextContent('teamAi.loadFailed');
-    expect(screen.getByText('teamAi.botNoPeers')).toBeInTheDocument();
+    const bots = await screen.findByRole('region', { name: 'teamAi.connectedChannels' });
+    expect(within(bots).getByText('teamAi.loadFailedRetry')).toBeInTheDocument();
+    expect(within(bots).getByText('Quiet Bot')).toBeInTheDocument();
+    expect(screen.getByText('teamAi.noPeers')).toBeInTheDocument();
+    const reads = mocks.channels.mock.calls.length;
+    fireEvent.click(within(bots).getByText('teamAi.loadFailedRetry'));
+    await waitFor(() => expect(mocks.channels.mock.calls.length).toBeGreaterThan(reads));
   });
 
   it('keeps same-platform Bots with identical peer keys separately targeted', async () => {
-    mocks.channels.mockResolvedValue({ channels: [channel, { ...channel, channelId: 'bot-b', name: 'Second Bot', peers: [{ ...peer, lastActive: iso(1), sessionId: 'session-b', sessionIds: ['session-a', 'session-b'] }] }] });
+    mocks.channels.mockResolvedValue({ channels: [channel, { ...channel, channelId: 'bot-b', name: 'Second Bot', peers: [{ ...peer, sessionId: 'session-b', sessionIds: ['session-a', 'session-b'] }] }] });
     render(<TeamAi {...props()} />);
-    fireEvent.click((await screen.findAllByRole('option', { name: /Planning room/ }))[0]);
+    fireEvent.click(await screen.findByRole('option', { name: /Planning room.*Second Bot/ }));
     fireEvent.contextMenu(await screen.findByRole('button', { name: /Budget analysis/ }), { clientX: 40, clientY: 70 });
     fireEvent.click(await screen.findByText('teamAi.setCurrentMenu'));
     await waitFor(() => expect(mocks.action).toHaveBeenCalledWith('agent', 'bot-b', expect.objectContaining({ sessionId: 'session-b' }), { kind: 'setPrimary', sessionId: 'session-a' }));
@@ -274,11 +281,31 @@ describe('Team AI sessions', () => {
   });
 });
 
-describe('Team AI header', () => {
-  it('shows each connected Bot and opens its own Channel settings', async () => {
+describe('Team AI header and connected Channels', () => {
+  it('lists connected Bots above the conversation list, without a search box, each opening its own settings', async () => {
     render(<TeamAi {...props()} />);
-    fireEvent.click(await screen.findByTitle('teamAi.channelSettings'));
+    const bots = await screen.findByRole('region', { name: 'teamAi.connectedChannels' });
+    expect(screen.queryByRole('textbox')).toBeNull();
+    fireEvent.click(within(bots).getByTitle('teamAi.channelSettings'));
     expect(await screen.findByTestId('workspace-config-panel')).toHaveAttribute('data-initial-channel', JSON.stringify({ view: 'detail', channelId: 'bot-a' }));
+  });
+
+  it('adds a Bot from the connected Channels heading', async () => {
+    render(<TeamAi {...props()} />);
+    const bots = await screen.findByRole('region', { name: 'teamAi.connectedChannels' });
+    fireEvent.click(within(bots).getByRole('button', { name: 'teamAi.connectBot' }));
+    expect(await screen.findByTestId('workspace-config-panel')).toHaveAttribute('data-initial-channel', JSON.stringify({ view: 'add' }));
+  });
+
+  it('times each conversation by its current Session, exactly as the detail shows it', async () => {
+    // An earlier Session finished more recently; the list still follows the current one.
+    mocks.sessions.mockResolvedValue([{ ...metadata, lastActiveAt: iso(90) }, { ...earlier, lastActiveAt: iso(2) }]);
+    render(<TeamAi {...props()} />);
+    const option = await screen.findByRole('option', { name: /Planning room/ });
+    const label = within(option).getByText(/ago|前/);
+    fireEvent.click(option);
+    const current = await screen.findByRole('button', { name: /Budget analysis/ });
+    expect(within(current).getByText(label.textContent!)).toBeInTheDocument();
   });
 
   it('opens the workspace folder in the file manager and connects a Bot through the add-Channel page', async () => {
@@ -288,7 +315,8 @@ describe('Team AI header', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'teamAi.openFolder' }));
     expect(mocks.openPath).toHaveBeenCalledWith({ fullPath: '/workspace', workspace: '/workspace' });
     fireEvent.click(screen.getByTitle('teamAi.agentMenu'));
-    fireEvent.click(await screen.findByRole('button', { name: 'teamAi.connectBot' }));
+    const menuItem = (await screen.findAllByRole('button', { name: 'teamAi.connectBot' })).find(button => !button.closest('[aria-label="teamAi.connectedChannels"]'))!;
+    fireEvent.click(menuItem);
     expect(await screen.findByTestId('workspace-config-panel')).toHaveAttribute('data-initial-channel', JSON.stringify({ view: 'add' }));
   });
 });

@@ -9,7 +9,6 @@ export interface TeamPeer {
   name: string | null;
   sessionId: string | null;
   sessionIds: string[];
-  lastActive: string | null;
   /** The peer owns a profile: new Sessions use it instead of the Agent defaults. */
   hasProfile: boolean;
 }

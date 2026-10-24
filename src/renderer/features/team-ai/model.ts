@@ -52,8 +52,21 @@ export function peerStats(peer: TeamPeer, sessions: SessionMetadata[], now = Dat
   return {
     recentSessions: mine.filter(session => now - timeOf(session.lastActiveAt) <= WEEK_MS).length,
     turns: mine.reduce((sum, session) => sum + (session.stats?.turnCount ?? 0), 0),
-    lastActiveMs: Math.max(timeOf(peer.lastActive), ...mine.map(session => timeOf(session.lastActiveAt))),
+    lastActiveMs: peerLastActiveMs(peer, sessions),
   };
+}
+
+/**
+ * When this conversation last had AI activity: its current Session's persisted
+ * `lastActiveAt` (exactly what the detail shows), else its newest earlier Session.
+ * The Router's in-memory `last_active` is not used: it restarts at Channel start
+ * and tracks message receipt, not the conversation.
+ */
+export function peerLastActiveMs(peer: TeamPeer, sessions: SessionMetadata[]): number {
+  const byId = new Map(sessions.map(session => [session.id, session]));
+  const current = peer.sessionId ? byId.get(peer.sessionId) : undefined;
+  if (current) return timeOf(current.lastActiveAt);
+  return Math.max(0, ...peer.sessionIds.map(id => timeOf(byId.get(id)?.lastActiveAt)));
 }
 
 /** Why a Channel cannot accept changes, or null when it is online. */
@@ -91,16 +104,10 @@ export function buildPeerRows(channels: TeamChannel[], sessions: SessionMetadata
         peer,
         current,
         activity: sessionActivity(state),
-        lastActiveMs: Math.max(timeOf(peer.lastActive), timeOf(current?.lastActiveAt)),
+        lastActiveMs: peerLastActiveMs(peer, sessions),
       };
     }))
     .sort((a, b) => b.lastActiveMs - a.lastActiveMs);
-}
-
-export function matchesPeerQuery(row: PeerRow, query: string): boolean {
-  const q = query.trim().toLowerCase();
-  if (!q) return true;
-  return [row.peer.name, row.peer.sourceId, row.channel.name].some(value => value?.toLowerCase().includes(q));
 }
 
 /** A peer's earlier Sessions (newest first) and how many are no longer readable. */

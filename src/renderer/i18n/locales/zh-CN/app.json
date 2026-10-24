@@ -1429,12 +1429,8 @@
     "leaveTitle": "将 {{name}} 移出 Team AI？",
     "leaveMessage": "只移除用途分类。工作区、Bot、会话和历史都保持不变。",
     "leaveConfirm": "移出",
-    "search": "搜索群聊或成员",
-    "noResults": "没有匹配的会话",
     "private": "私聊",
     "group": "群聊",
-    "botNoPeers": "{{name}} 还没有会话",
-    "loadFailed": "{{name}} 读取失败",
     "loading": "正在读取会话",
     "noChannelTitle": "{{name}} 还没有连接聊天机器人",
     "noChannelBody": "连接后，同事就能在群聊或私聊中使用它。",
@@ -1538,6 +1534,10 @@
       "failed": "专属设置已保存，但未能应用到当前会话。"
     },
     "openFolder": "打开文件夹",
-    "channelSettings": "打开「{{name}}」渠道设置"
+    "channelSettings": "打开「{{name}}」渠道设置",
+    "connectedChannels": "已连接 Channel",
+    "peerList": "会话列表",
+    "loadFailedRetry": "读取失败 · 重试",
+    "noPeers": "还没有会话。Bot 收到第一条消息后会出现在这里。"
   }
 }

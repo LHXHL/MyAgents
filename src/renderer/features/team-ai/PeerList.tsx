@@ -1,6 +1,6 @@
 import { useTranslation } from 'react-i18next';
-import { AlertIcon, SearchIcon, TeamIcon } from '@/components/icons';
-import { ChannelPlatformIcon } from '@/components/AgentSettings/channelPlatform';
+import { AlertIcon, PlusIcon, TeamIcon } from '@/components/icons';
+import { ChannelPlatformIcon, getChannelPlatformLabel } from '@/components/AgentSettings/channelPlatform';
 import { formatPastRelativeTime } from '@/i18n/format';
 import type { TeamChannel, TeamPeer } from '@/../shared/teamAi';
 import { channelOffline, hasPeerName, isBusyActivity, peerLabel, peerRowKey, type PeerRow } from './model';
@@ -58,39 +58,58 @@ export function OfflineTag({ channel }: { channel: TeamChannel }) {
   return <span className={`inline-flex h-[18px] shrink-0 items-center rounded-full px-1.5 text-xs ${tone}`}>{t(`teamAi.${off}`)}</span>;
 }
 
-export function PeerList({ rows, channels, query, onQuery, selectedKey, onSelect, onRetry }: {
+export function PeerList({ rows, channels, selectedKey, onSelect, onRetry, onOpenChannel, onAddChannel }: {
   rows: PeerRow[];
   channels: TeamChannel[];
-  query: string;
-  onQuery: (value: string) => void;
   selectedKey: string | null;
   onSelect: (row: PeerRow) => void;
   onRetry: () => void;
+  onOpenChannel: (channelId: string) => void;
+  onAddChannel: () => void;
 }) {
   const { t } = useTranslation('app');
-  const failed = channels.filter(channel => channel.loadError);
-  const quiet = channels.filter(channel => !channel.loadError && channel.peers.length === 0);
   const select = (index: number) => {
     const row = rows[Math.max(0, Math.min(rows.length - 1, index))];
     if (!row) return;
     onSelect(row);
     document.querySelector<HTMLElement>(`[data-peer-row="${CSS.escape(peerRowKey(row.channel.channelId, row.peer.sessionKey))}"]`)?.focus();
   };
+  const heading = 'flex h-8 items-center gap-2 px-3 text-xs font-medium text-[var(--ink-muted)]';
   return (
     <nav className="flex min-h-0 flex-1 flex-col" aria-label={t('tabs.teamAi')}>
-      <div className="px-3 pt-3 pb-2">
-        <label className="flex h-8 items-center gap-2 rounded-[var(--radius-md)] bg-[var(--paper-inset)] px-2.5 text-sm text-[var(--ink-muted)] focus-within:outline-2 focus-within:outline-[var(--accent)]">
-          <SearchIcon className="h-4 w-4 shrink-0" />
-          <input
-            value={query}
-            onChange={event => onQuery(event.target.value)}
-            placeholder={t('teamAi.search')}
-            aria-label={t('teamAi.search')}
-            className="min-w-0 flex-1 bg-transparent text-[var(--ink)] outline-none placeholder:text-[var(--ink-subtle)]"
-          />
-        </label>
+      {/* Connected Bots: transport, access and status live in each Bot's own settings. */}
+      <section className="shrink-0 border-b border-[var(--line)] px-2 pt-2 pb-2" aria-label={t('teamAi.connectedChannels')}>
+        <div className={heading}>
+          <span className="flex-1">{t('teamAi.connectedChannels')}</span>
+          <button
+            className="flex h-6 w-6 items-center justify-center rounded-[var(--radius-sm)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
+            title={t('teamAi.connectBot')}
+            aria-label={t('teamAi.connectBot')}
+            onClick={onAddChannel}
+          >
+            <PlusIcon className="h-3.5 w-3.5" />
+          </button>
+        </div>
+        {channels.map(channel => (
+          <button
+            key={channel.channelId}
+            className="flex h-8 w-full items-center gap-2 rounded-[var(--radius-md)] px-3 text-left text-sm hover:bg-[var(--hover-bg)] focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
+            title={t('teamAi.channelSettings', { name: channel.name || getChannelPlatformLabel(channel.platform) })}
+            onClick={() => (channel.loadError ? onRetry() : onOpenChannel(channel.channelId))}
+          >
+            <ChannelPlatformIcon type={channel.platform} className="h-4 w-4" />
+            <span className="min-w-0 flex-1 truncate">{channel.name || getChannelPlatformLabel(channel.platform)}</span>
+            {channel.loadError
+              ? <span className="shrink-0 text-xs text-[var(--error)]" title={channel.loadError}>{t('teamAi.loadFailedRetry')}</span>
+              : <OfflineTag channel={channel} />}
+          </button>
+        ))}
+      </section>
+      <div className={`${heading} mt-2 px-5`}>
+        <span>{t('teamAi.peerList')}</span>
+        {rows.length > 0 && <span className="font-normal text-[var(--ink-subtle)]">{rows.length}</span>}
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3" role="listbox" aria-label={t('teamAi.selectPeer')}>
+      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3" role="listbox" aria-label={t('teamAi.peerList')}>
         {rows.map((row, index) => {
           const key = peerRowKey(row.channel.channelId, row.peer.sessionKey);
           const selected = key === selectedKey;
@@ -121,8 +140,7 @@ export function PeerList({ rows, channels, query, onQuery, selectedKey, onSelect
                 <span className="mt-0.5 flex min-w-0 items-center gap-1 text-xs text-[var(--ink-muted)]">
                   <span className="shrink-0">{t(`teamAi.${row.peer.sourceType}`)}</span>
                   <span aria-hidden="true">·</span>
-                  <span className="truncate">{row.channel.name || row.channel.platform}</span>
-                  <OfflineTag channel={row.channel} />
+                  <span className="truncate">{row.channel.name || getChannelPlatformLabel(row.channel.platform)}</span>
                 </span>
               </span>
               <span className="flex shrink-0 items-center gap-1.5 text-xs text-[var(--ink-muted)]">
@@ -132,16 +150,7 @@ export function PeerList({ rows, channels, query, onQuery, selectedKey, onSelect
             </div>
           );
         })}
-        {rows.length === 0 && query.trim() && <p className="px-3 py-6 text-center text-sm text-[var(--ink-muted)]">{t('teamAi.noResults')}</p>}
-        {failed.map(channel => (
-          <div key={channel.channelId} className="mx-1 mt-2 flex items-center gap-2 rounded-[var(--radius-md)] bg-[var(--error-bg)] px-2.5 py-2 text-xs text-[var(--error)]" role="alert">
-            <span className="min-w-0 flex-1 truncate" title={channel.loadError ?? undefined}>{t('teamAi.loadFailed', { name: channel.name || channel.platform })}</span>
-            <button className="shrink-0 font-medium underline-offset-2 hover:underline" onClick={onRetry}>{t('teamAi.retry')}</button>
-          </div>
-        ))}
-        {!query.trim() && quiet.map(channel => (
-          <p key={channel.channelId} className="truncate px-3 pt-3 text-xs text-[var(--ink-subtle)]">{t('teamAi.botNoPeers', { name: channel.name || channel.platform })}</p>
-        ))}
+        {rows.length === 0 && <p className="px-3 py-6 text-center text-sm text-[var(--ink-muted)]">{t('teamAi.noPeers')}</p>}
       </div>
     </nav>
   );

@@ -89,7 +89,7 @@ Team AI 复用 Project/Agent/Channel/Session，不拥有执行器或独立存储
 
 Router 的 `peer_history` 记录可证明的 peer→Session ID 集合，与 current bindings 一起写入同一 health 快照 `peerSessionHistory`。它是可重建的运行投影，不保存 peer 配置（见下文 peer 专属配置），不向 Session origin 双写绑定。轮换/移除前记住原关联，未提交的候选绑定不进入历史；缺字段的旧数据只从已有当前绑定恢复，不猜测旧会话。Session 删除不重建该 Session，页面标记失效引用。
 
-有界状态观察通过 exact-generation dispatch lease；浏览不 ensure，也不注册 Tab owner。无活跃进程时实时状态为空，页面显示“未运行”，不是未知或异常；没有观察结果或观察失败才显示“状态未知”。列表状态每批最多 64 个，当前 Session 优先。管理页只展示统计、配置与会话列表，不读取对话正文，也不提供停止执行（打开 Chat Tab 即可在同一 Session 停止）；关闭页面不释放渠道执行 owner。peer 名称缺失时依次回退到 Channel 准入配置中的 `userDisplayNames` / `groupPermissions[].groupName`，仍缺失才显示 ID。
+有界状态观察通过 exact-generation dispatch lease；浏览不 ensure，也不注册 Tab owner。无活跃进程时实时状态为空，页面显示“未运行”，不是未知或异常；没有观察结果或观察失败才显示“状态未知”。列表状态每批最多 64 个，当前 Session 优先。会话的最近活动时间取 Session 元数据 `lastActiveAt`；Router 的 `last_active` 是进程内 `Instant`，渠道启动恢复绑定时重置，只服务 heartbeat 等运行时选择，不作为展示时间。管理页只展示统计、配置与会话列表，不读取对话正文，也不提供停止执行（打开 Chat Tab 即可在同一 Session 停止）；关闭页面不释放渠道执行 owner。peer 名称缺失时依次回退到 Channel 准入配置中的 `userDisplayNames` / `groupPermissions[].groupName`，仍缺失才显示 ID。
 
 操作（新建、设为当前、修改/恢复 peer 配置）沿用 Channel model-work gate、per-peer fence 和 expectedSessionId，从不调用 Agent defaults writer。新建经 peer 出生入口（有 peer 专属配置用它，否则用 Agent 最新模板）完整出生，再通过既有 handover 接管明确 peer；历史菜单仅允许已有归属的 Session。Global 只读提供 GET `/api/im/peer-profile`、POST `/api/im/peer-config`（配置视图与可选目录）和 POST `/api/im/peer-config/compose`（组合下一份完整配置）；Session 配置 POST（`session-model-selection`/`session-effort`/`session-tools`）仍属于目标 Session。
 
