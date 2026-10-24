@@ -27,6 +27,9 @@ import WorkspaceIcon from '@/components/launcher/WorkspaceIcon';
 import { DropdownMenu } from '@/components/ui/DropdownMenu';
 import { Popover } from '@/components/ui/Popover';
 import { AtIcon, CheckIcon, ChevronDownIcon, CloseIcon, FolderIcon, FolderOpenIcon, MessageIcon, PlusIcon, SettingsIcon } from '@/components/icons';
+import { ChannelPlatformIcon, getChannelPlatformLabel } from '@/components/AgentSettings/channelPlatform';
+import type { InitialChannelView } from '@/components/AgentSettings/sections/AgentChannelsSection';
+import { useWorkspaceFileService } from '@/hooks/useWorkspaceFileService';
 
 const WorkspaceConfigPanel = lazy(() => import('@/components/WorkspaceConfigPanel'));
 const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
@@ -60,7 +63,6 @@ export default function TeamAi({
   isActive,
   onCreate,
   onOpenSession,
-  onOpenWorkspace,
   projectId,
   onSelectProject,
 }: Omit<TeamAiBinding, 'onSelectProject'> & {
@@ -93,7 +95,8 @@ export default function TeamAi({
   const [note, setNote] = useState<{ key: string; note: TeamNote } | null>(null);
   const [confirmation, setConfirmation] = useState<ConfirmRequest | null>(null);
   const [joining, setJoining] = useState(false);
-  const [panel, setPanel] = useState<{ channelId?: string } | null>(null);
+  const [panel, setPanel] = useState<{ initialChannel?: InitialChannelView } | null>(null);
+  const { openPathExternal } = useWorkspaceFileService(null);
   const generation = useRef(0);
   const noteTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
@@ -240,18 +243,31 @@ export default function TeamAi({
           onCreate={onCreate}
           onJoin={() => setJoining(true)}
         />
-        <div className="flex-1" />
-        <button className={ghostButton} onClick={() => onOpenWorkspace(project)}>
-          <FolderOpenIcon className="h-4 w-4" />
-          <span className="hidden @[560px]/team-ai:inline">{t('teamAi.openWorkspace')}</span>
+        {/* Connected Bots: each opens its own Channel settings. */}
+        <div className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
+          {channels.map(channel => (
+            <button
+              key={channel.channelId}
+              className="flex h-7 min-w-0 shrink-0 items-center gap-1.5 rounded-full px-2 text-xs text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
+              title={t('teamAi.channelSettings', { name: channel.name || getChannelPlatformLabel(channel.platform) })}
+              onClick={() => setPanel({ initialChannel: { view: 'detail', channelId: channel.channelId } })}
+            >
+              <ChannelPlatformIcon type={channel.platform} className="h-4 w-4" />
+              <span className="max-w-[120px] truncate">{channel.name || getChannelPlatformLabel(channel.platform)}</span>
+            </button>
+          ))}
+        </div>
+        <button className={ghostButton} onClick={() => setPanel({})}>
+          <SettingsIcon className="h-4 w-4" />
+          <span className="hidden @[560px]/team-ai:inline">{t('teamAi.agentSettings')}</span>
         </button>
         <DropdownMenu
           size="md"
           title={t('teamAi.agentMenu')}
           sections={[
             { items: [
-              { icon: <SettingsIcon className="h-4 w-4" />, label: t('teamAi.agentSettings'), onClick: () => setPanel({}) },
-              { icon: <PlusIcon className="h-4 w-4" />, label: t('teamAi.connectBot'), onClick: () => setPanel({}) },
+              { icon: <FolderOpenIcon className="h-4 w-4" />, label: t('teamAi.openFolder'), onClick: () => { void openPathExternal({ fullPath: project.path, workspace: project.path }).catch(failure => setError(errorText(failure))); } },
+              { icon: <PlusIcon className="h-4 w-4" />, label: t('teamAi.connectBot'), onClick: () => setPanel({ initialChannel: { view: 'add' } }) },
             ] },
             { items: [{ icon: <CloseIcon className="h-4 w-4" />, label: t('teamAi.leave'), onClick: leave }] },
           ]}
@@ -272,7 +288,7 @@ export default function TeamAi({
           </span>
           <h2 className="text-lg font-semibold">{t('teamAi.noChannelTitle', { name: project.displayName || project.name })}</h2>
           <p className="mt-2 max-w-sm text-sm text-[var(--ink-muted)]">{t('teamAi.noChannelBody')}</p>
-          <button className={`${primaryButton} mt-5`} onClick={() => setPanel({})}>
+          <button className={`${primaryButton} mt-5`} onClick={() => setPanel({ initialChannel: { view: 'add' } })}>
             <PlusIcon className="h-4 w-4" />
             {t('teamAi.connectBot')}
           </button>
@@ -312,7 +328,7 @@ export default function TeamAi({
                 run={(action, done) => run(selected, action, done)}
                 confirm={setConfirmation}
                 onOpen={session => onOpenSession(session, project)}
-                onAccess={() => setPanel({ channelId: selected.channel.channelId })}
+                onAccess={() => setPanel({ initialChannel: { view: 'detail', channelId: selected.channel.channelId } })}
                 onEnable={() => {
                   void startAndEnableAgentChannel(agentId, selected.channel.channelId)
                     .catch(failure => setError(errorText(failure)))
@@ -349,7 +365,7 @@ export default function TeamAi({
           <WorkspaceConfigPanel
             agentDir={project.path}
             initialTab="general"
-            initialChannelId={panel.channelId}
+            initialChannel={panel.initialChannel}
             onClose={() => {
               setPanel(null);
               void refresh();

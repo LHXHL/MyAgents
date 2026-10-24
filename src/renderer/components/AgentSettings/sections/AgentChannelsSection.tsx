@@ -26,9 +26,11 @@ interface AgentChannelsSectionProps {
    * cancel/complete/close to the Channels section, never the platform picker. */
   initialAddPlatform?: ChannelType;
   onInitialAddPlatformConsumed?: () => void;
-  /** Open this Channel's detail directly (e.g. Team AI "准入"). */
-  initialChannelId?: string;
+  /** Open a Channel's detail or the "add Channel" picker directly (Team AI deep links). */
+  initialChannel?: InitialChannelView;
 }
+
+export type InitialChannelView = { view: 'add' } | { view: 'detail'; channelId: string };
 
 function getChannelStatus(status: AgentStatusData | undefined, channelId: string): ChannelStatusData | undefined {
   return status?.channels.find(ch => ch.channelId === channelId);
@@ -93,15 +95,16 @@ export default function AgentChannelsSection({
   onAgentChanged,
   initialAddPlatform,
   onInitialAddPlatformConsumed,
-  initialChannelId,
+  initialChannel,
 }: AgentChannelsSectionProps) {
   const { t } = useTranslation('settings');
   const toast = useToast();
   const [loading, setLoading] = useState<string | null>(null);
   const [overlay, setOverlay] = useState<OverlayState>(() => (
     initialAddPlatform ? { view: 'add', platform: initialAddPlatform }
-      : initialChannelId && agent.channels?.some(channel => channel.id === initialChannelId)
-        ? { view: 'detail', channelId: initialChannelId } : null
+      : initialChannel?.view === 'add' ? { view: 'add' }
+      : initialChannel && agent.channels?.some(channel => channel.id === initialChannel.channelId)
+        ? { view: 'detail', channelId: initialChannel.channelId } : null
   ));
   const directEntryRef = useRef(Boolean(initialAddPlatform));
   const isMountedRef = useRef(true);

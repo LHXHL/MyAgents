@@ -1423,7 +1423,6 @@
       "step3Body": "Every group and private chat shows up here and can be adjusted anytime"
     },
     "switchAgent": "Switch Team AI",
-    "openWorkspace": "Open workspace",
     "agentMenu": "More actions",
     "agentSettings": "Agent settings",
     "connectBot": "Connect a chatbot",
@@ -1490,9 +1489,6 @@
     "new": "New session",
     "open": "Open chat",
     "deletedCount": "{{count}} more sessions were deleted",
-    "finishing": "Finishing",
-    "finishingHint": "The previous task is still finishing",
-    "setCurrent": "Make current",
     "setCurrentMenu": "Make current session",
     "switching": "Switching…",
     "creating": "Creating…",
@@ -1541,6 +1537,8 @@
       "deferred": "; the current session picks it up next turn",
       "skipped": "; the current session is unchanged, new sessions use it",
       "failed": "Settings saved, but they could not be applied to the current session."
-    }
+    },
+    "openFolder": "Open folder",
+    "channelSettings": "Open “{{name}}” channel settings"
   }
 }

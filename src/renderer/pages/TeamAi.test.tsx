@@ -5,12 +5,14 @@ import type { Project } from '@/config/types';
 import type { SessionMetadata } from '@/api/sessionClient';
 import type { TeamChannel, TeamPeer, TeamPeerConfig } from '@/../shared/teamAi';
 import { i18n } from '@/i18n';
-const mocks = vi.hoisted(() => ({ projects: [] as Project[], patch: vi.fn(), channels: vi.fn(), sessions: vi.fn(), action: vi.fn(), states: vi.fn(), enable: vi.fn(), peerConfig: vi.fn(), translate: vi.fn<(key: string, options?: Record<string, unknown>) => string | undefined>() }));
+const mocks = vi.hoisted(() => ({ projects: [] as Project[], patch: vi.fn(), channels: vi.fn(), sessions: vi.fn(), action: vi.fn(), states: vi.fn(), enable: vi.fn(), peerConfig: vi.fn(), openPath: vi.fn(), translate: vi.fn<(key: string, options?: Record<string, unknown>) => string | undefined>() }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string, options?: Record<string, unknown>) => mocks.translate(key, options) ?? key }) }));
 vi.mock('@/config/useConfigData', () => ({ useConfigData: () => ({ projects: mocks.projects, config: {} }) }));
 vi.mock('@/config/useConfigActions', () => ({ useConfigActions: () => ({ patchProject: mocks.patch }) }));
 vi.mock('@/config/services/agentConfigService', () => ({ startAndEnableAgentChannel: mocks.enable }));
 vi.mock('@/utils/tauriListen', () => ({ listenWithCleanup: vi.fn(async () => ({})) }));
+vi.mock('@/hooks/useWorkspaceFileService', () => ({ useWorkspaceFileService: () => ({ openPathExternal: mocks.openPath }) }));
+vi.mock('@/components/WorkspaceConfigPanel', () => ({ default: ({ initialChannel }: { initialChannel?: unknown }) => <div data-testid="workspace-config-panel" data-initial-channel={JSON.stringify(initialChannel)} /> }));
 vi.mock('@/api/sessionClient', () => ({ getSessions: mocks.sessions }));
 vi.mock('@/features/team-ai/client', () => ({ teamChannels: mocks.channels, teamAction: mocks.action, teamStates: mocks.states, teamPeerConfig: mocks.peerConfig }));
 import TeamAi from './TeamAi';
@@ -54,6 +56,7 @@ beforeEach(() => {
   mocks.sessions.mockResolvedValue([metadata, earlier]);
   mocks.enable.mockResolvedValue(undefined);
   mocks.peerConfig.mockResolvedValue(view());
+  mocks.openPath.mockResolvedValue(undefined);
   mocks.action.mockResolvedValue({ success: true });
 });
 
@@ -220,7 +223,9 @@ describe('Team AI peer detail', () => {
 });
 
 describe('Team AI sessions', () => {
-  it('lists current and earlier Sessions together, tags the current one, and opens any of them', async () => {
+  const dot = (row: HTMLElement) => row.querySelector('[data-tab-activity-indicator="generating"]');
+
+  it('lists current and earlier Sessions together: current tag first, green dot only while running, no status text', async () => {
     mocks.states.mockResolvedValue({ states: [
       { channelId: 'bot-a', sessionKey: peer.sessionKey, sessionId: 'session-a', state: null },
       { channelId: 'bot-a', sessionKey: peer.sessionKey, sessionId: 'session-b', state: 'running' },
@@ -229,23 +234,17 @@ describe('Team AI sessions', () => {
     render(<TeamAi {...page} />);
     await selectPeer();
     const current = await screen.findByRole('button', { name: /Budget analysis/ });
-    expect(within(current).getByText('teamAi.currentTag')).toBeInTheDocument();
-    expect(within(current).getByText('teamAi.status.dormant')).toBeInTheDocument();
+    const tag = within(current).getByText('teamAi.currentTag');
+    expect(tag.compareDocumentPosition(within(current).getByText('Budget analysis')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(dot(current)).toBeNull();
+    expect(within(current).queryByText(/teamAi.status/)).toBeNull();
     const history = screen.getByRole('button', { name: /Earlier analysis/ });
-    expect(within(history).getByText('teamAi.finishing')).toBeInTheDocument();
+    expect(dot(history)).not.toBeNull();
     expect(screen.getByText('teamAi.deletedCount')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /teamAi.stop/ })).toBeNull();
     fireEvent.click(history);
     expect(page.onOpenSession).toHaveBeenCalledWith(earlier, project);
     fireEvent.click(current);
     expect(page.onOpenSession).toHaveBeenCalledWith(metadata, project);
-  });
-
-  it('shows a Session without an observation as unknown, never as not running', async () => {
-    render(<TeamAi {...props()} />);
-    await selectPeer();
-    const current = await screen.findByRole('button', { name: /Budget analysis/ });
-    expect(within(current).getByText('teamAi.status.unknown')).toBeInTheDocument();
   });
 
   it('shows session action failures next to the list, even with the config collapsed', async () => {
@@ -257,21 +256,40 @@ describe('Team AI sessions', () => {
     expect(screen.getByRole('button', { name: /teamAi.config.title/ })).toHaveAttribute('aria-expanded', 'false');
   });
 
-  it('sets an earlier Session as current only for the peer that owns it', async () => {
+  it('sets an earlier Session as current from its floating menu, only for the peer that owns it', async () => {
     render(<TeamAi {...props()} />);
     await selectPeer();
     const history = await screen.findByRole('button', { name: /Earlier analysis/ });
-    fireEvent.click(within(history).getByRole('button', { name: 'teamAi.setCurrent' }));
+    fireEvent.click(within(history.parentElement!).getByTitle('teamAi.peerMenu'));
+    fireEvent.click(await screen.findByRole('button', { name: 'teamAi.setCurrentMenu' }));
     await waitFor(() => expect(mocks.action).toHaveBeenCalledWith('agent', 'bot-a', peer, { kind: 'setPrimary', sessionId: 'session-b' }));
   });
 
-  it.each([['zh-CN', '正在启动'], ['en-US', 'Starting']])('uses real %s translations for the live state', async (locale, label) => {
+  it.each([['zh-CN', '正在启动'], ['en-US', 'Starting']])('labels the list activity with real %s translations', async (locale, label) => {
     await i18n.changeLanguage(locale);
     mocks.translate.mockImplementation((key, options) => String(i18n.t(key, { ...options, ns: 'app' })));
     mocks.states.mockResolvedValue({ states: [{ channelId: 'bot-a', sessionKey: peer.sessionKey, sessionId: 'session-a', state: 'starting' }] });
     render(<TeamAi {...props()} />);
-    await selectPeer();
-    expect(await screen.findByText(label)).toBeInTheDocument();
+    expect(await screen.findByTitle(label)).toBeInTheDocument();
+  });
+});
+
+describe('Team AI header', () => {
+  it('shows each connected Bot and opens its own Channel settings', async () => {
+    render(<TeamAi {...props()} />);
+    fireEvent.click(await screen.findByTitle('teamAi.channelSettings'));
+    expect(await screen.findByTestId('workspace-config-panel')).toHaveAttribute('data-initial-channel', JSON.stringify({ view: 'detail', channelId: 'bot-a' }));
+  });
+
+  it('opens the workspace folder in the file manager and connects a Bot through the add-Channel page', async () => {
+    render(<TeamAi {...props()} />);
+    await screen.findAllByRole('option');
+    fireEvent.click(screen.getByTitle('teamAi.agentMenu'));
+    fireEvent.click(await screen.findByRole('button', { name: 'teamAi.openFolder' }));
+    expect(mocks.openPath).toHaveBeenCalledWith({ fullPath: '/workspace', workspace: '/workspace' });
+    fireEvent.click(screen.getByTitle('teamAi.agentMenu'));
+    fireEvent.click(await screen.findByRole('button', { name: 'teamAi.connectBot' }));
+    expect(await screen.findByTestId('workspace-config-panel')).toHaveAttribute('data-initial-channel', JSON.stringify({ view: 'add' }));
   });
 });
 

@@ -1422,7 +1422,6 @@
       "step3Body": "每个群和私聊都会出现在这里，可以随时调整"
     },
     "switchAgent": "切换 Team AI",
-    "openWorkspace": "打开工作区",
     "agentMenu": "更多操作",
     "agentSettings": "Agent 设置",
     "connectBot": "连接聊天机器人",
@@ -1489,9 +1488,6 @@
     "new": "新建会话",
     "open": "打开对话",
     "deletedCount": "另有 {{count}} 个会话已删除",
-    "finishing": "收尾中",
-    "finishingHint": "原任务仍在完成中",
-    "setCurrent": "设为当前",
     "setCurrentMenu": "设为当前会话",
     "switching": "切换中…",
     "creating": "正在新建…",
@@ -1540,6 +1536,8 @@
       "deferred": "，当前会话下一轮生效",
       "skipped": "，当前会话不变，新建会话后生效",
       "failed": "专属设置已保存，但未能应用到当前会话。"
-    }
+    },
+    "openFolder": "打开文件夹",
+    "channelSettings": "打开「{{name}}」渠道设置"
   }
 }

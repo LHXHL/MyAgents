@@ -122,7 +122,7 @@ function bindings(overrides: Partial<BuiltinTabBindings> = {}): BuiltinTabBindin
     },
     space: { onRouteConsumed: vi.fn() },
     agentnetwork: null,
-    teamai: { onSelectProject: vi.fn(), onCreate: vi.fn(), onOpenSession: vi.fn(), onOpenWorkspace: vi.fn() },
+    teamai: { onSelectProject: vi.fn(), onCreate: vi.fn(), onOpenSession: vi.fn() },
     record: {
       onRecordingSnapshotChange: vi.fn(),
       onTitleChange: vi.fn(),

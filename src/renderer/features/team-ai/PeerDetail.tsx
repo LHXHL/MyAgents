@@ -26,7 +26,8 @@ import type { TeamAction, TeamPeerConfig, TeamPeerProfile, TeamSessionState } fr
 import type { RuntimeType } from '@/../shared/types/runtime';
 import { teamPeerConfig } from './client';
 import { channelOffline, isBusyActivity, peerHistory, peerLabel, peerStats, sessionActivity, type PeerRow } from './model';
-import { ActivityMark, PeerAvatar } from './PeerList';
+import { PeerAvatar } from './PeerList';
+import TabActivityIndicator from '@/components/TabActivityIndicator';
 
 export const ghostButton =
   'compact-action gap-1.5 px-2.5 text-sm text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-40';
@@ -441,51 +442,32 @@ function SessionList({ row, sessions, states, disabled, pending, note, run, onOp
         const isCurrent = session.id === peer.sessionId;
         const state = isCurrent ? activity : sessionActivity(states.find(s => s.channelId === row.channel.channelId && s.sessionKey === peer.sessionKey && s.sessionId === session.id));
         const switching = pending?.kind === 'setPrimary' && pending.sessionId === session.id;
+        // Same row anatomy as the sidebar history: activity dot, title, date; actions float over the date.
         return (
           <div
             key={session.id}
-            role="button"
-            tabIndex={0}
-            title={t('teamAi.open')}
-            onClick={() => onOpen(session)}
-            onKeyDown={event => {
-              if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) {
-                event.preventDefault();
-                onOpen(session);
-              }
-            }}
+            className={`group/session relative flex h-[38px] items-center rounded-[var(--radius-md)] hover:bg-[var(--hover-bg)] ${switching ? 'opacity-60' : ''}`}
             onContextMenu={event => { event.preventDefault(); setMenu({ x: event.clientX, y: event.clientY, session }); }}
-            className={`group/session flex h-[38px] cursor-pointer items-center gap-3 rounded-[var(--radius-md)] px-2.5 outline-none hover:bg-[var(--hover-bg)] focus-visible:outline-2 focus-visible:outline-[var(--accent)] ${switching ? 'opacity-60' : ''}`}
           >
-            <span className={`min-w-0 flex-1 truncate text-sm ${isCurrent ? 'font-semibold' : ''}`}>{getSessionDisplayText(session)}</span>
-            {isCurrent && <span className={`${tag} bg-[var(--ink)] text-[var(--paper)]`}>{t('teamAi.currentTag')}</span>}
-            {isCurrent ? (
-              <span className={`flex shrink-0 items-center gap-1.5 text-xs ${isBusyActivity(state) ? 'text-[var(--success)]' : state === 'error' ? 'text-[var(--error)]' : 'text-[var(--ink-muted)]'}`}>
-                <ActivityMark activity={state} />
-                {t(`teamAi.status.${state}`)}
+            <button
+              type="button"
+              title={t('teamAi.open')}
+              onClick={() => onOpen(session)}
+              className="flex h-full w-full min-w-0 items-center gap-2 rounded-[var(--radius-md)] px-2.5 text-left focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
+            >
+              <TabActivityIndicator isGenerating={isBusyActivity(state)} />
+              {isCurrent && <span className={`${tag} bg-[var(--ink)] text-[var(--paper)]`}>{t('teamAi.currentTag')}</span>}
+              <span className={`min-w-0 flex-1 truncate text-sm ${isCurrent ? 'font-medium' : ''}`}>{getSessionDisplayText(session)}</span>
+              <span className="ml-auto shrink-0 text-xs tabular-nums text-[var(--ink-muted)] transition-opacity group-focus-within/session:opacity-0 group-hover/session:opacity-0">
+                {switching ? t('teamAi.switching') : session.lastActiveAt ? formatPastRelativeTime(Date.parse(session.lastActiveAt)) : ''}
               </span>
-            ) : isBusyActivity(state) && (
-              <span className="flex shrink-0 items-center gap-1.5 text-xs text-[var(--success)]" title={t('teamAi.finishingHint')}>
-                <ActivityMark activity="running" />
-                {t('teamAi.finishing')}
-              </span>
-            )}
-            {switching ? (
-              <span className="shrink-0 text-xs text-[var(--ink-muted)]">{t('teamAi.switching')}</span>
-            ) : (
-              <>
-                <span className="shrink-0 text-xs text-[var(--ink-muted)] group-focus-within/session:hidden group-hover/session:hidden">
-                  {session.lastActiveAt ? formatPastRelativeTime(Date.parse(session.lastActiveAt)) : ''}
-                </span>
-                <span className="hidden shrink-0 items-center gap-0.5 group-focus-within/session:flex group-hover/session:flex" onClick={event => event.stopPropagation()}>
-                  {!isCurrent && <button className={`${ghostButton} h-7 min-w-0 text-xs`} disabled={disabled} onClick={() => setCurrent(session)}>{t('teamAi.setCurrent')}</button>}
-                  <DropdownMenu
-                    title={t('teamAi.peerMenu')}
-                    sections={[{ items: actions(session).filter((item): item is Exclude<ContextMenuItem, { separator: true }> => !item.separator) }]}
-                  />
-                </span>
-              </>
-            )}
+            </button>
+            <div className="pointer-events-none absolute inset-y-0 right-1 flex items-center opacity-0 transition-opacity group-focus-within/session:pointer-events-auto group-focus-within/session:opacity-100 group-hover/session:pointer-events-auto group-hover/session:opacity-100">
+              <DropdownMenu
+                title={t('teamAi.peerMenu')}
+                sections={[{ items: actions(session).filter((item): item is Exclude<ContextMenuItem, { separator: true }> => !item.separator) }]}
+              />
+            </div>
           </div>
         );
       })}
