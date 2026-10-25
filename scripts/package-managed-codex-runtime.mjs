@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import AdmZip from 'adm-zip';
+import { BUILD_DOWNLOAD_ATTEMPTS, BUILD_DOWNLOAD_TIMEOUT_MS } from './build-resource-download.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   chmodSync,
@@ -200,6 +201,8 @@ function npmDistMetadata(spec) {
       spec,
       'dist',
       '--json',
+      `--fetch-timeout=${BUILD_DOWNLOAD_TIMEOUT_MS}`,
+      `--fetch-retries=${BUILD_DOWNLOAD_ATTEMPTS - 1}`,
       `--registry=${OFFICIAL_NPM_REGISTRY}`,
     ]);
     return JSON.parse(raw);
@@ -220,6 +223,7 @@ function downloadTarball(url, outPath, spec) {
     spec,
     '--ignore-scripts',
     '--json',
+    `--fetch-timeout=${BUILD_DOWNLOAD_TIMEOUT_MS}`,
     '--pack-destination',
     dirname(outPath),
   ];
@@ -236,11 +240,11 @@ function downloadTarball(url, outPath, spec) {
   } else {
     console.log(`[managed-codex] npm cache miss; download via ${registry}`);
     try {
-      packedOutput = run('npm', [...packArgs, `--registry=${registry}`]);
+      packedOutput = run('npm', [...packArgs, `--fetch-retries=${registry === OFFICIAL_NPM_REGISTRY ? BUILD_DOWNLOAD_ATTEMPTS - 1 : 0}`, `--registry=${registry}`]);
     } catch (mirrorError) {
       if (registry === OFFICIAL_NPM_REGISTRY) throw mirrorError;
       console.warn(`[managed-codex] mirror download failed; retry official npm registry`);
-      packedOutput = run('npm', [...packArgs, `--registry=${OFFICIAL_NPM_REGISTRY}`]);
+      packedOutput = run('npm', [...packArgs, `--fetch-retries=${BUILD_DOWNLOAD_ATTEMPTS - 2}`, `--registry=${OFFICIAL_NPM_REGISTRY}`]);
     }
   }
   const packed = JSON.parse(packedOutput);

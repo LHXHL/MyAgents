@@ -2,9 +2,12 @@ import assert from 'node:assert/strict';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
+import { BUILD_DOWNLOAD_ATTEMPTS, BUILD_DOWNLOAD_TIMEOUT_MS } from './build-resource-download.mjs';
 import { createRequire } from 'node:module';
 import test from 'node:test';
-import { prepareNpmRuntime, runtimeLock } from './npm-runtime-cache.mjs';
+import { installRuntime, prepareNpmRuntime, runtimeLock } from './npm-runtime-cache.mjs';
 import { validateRuntimeBinary, validateTsxRuntime } from './npm-runtime-validation.mjs';
 
 const put = (path, value) => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, value); };
@@ -175,4 +178,19 @@ test('tsx host validation loads from a filesystem path with spaces and URL fragm
   put(join(root, 'node_modules/tsx/dist/esm/index.mjs'), '// Isolate Node --import path handling from tsx behavior.');
   json(join(root, 'package.json'), { name: 'myagents-tsx-runtime' });
   validateTsxRuntime(root, process.platform, process.arch);
+});
+
+test('temporary npm runtime installs keep the download policy outside the project prefix', t => {
+  let calls = 0;
+  const stub = t.mock.method(childProcess, 'execFileSync', (_command, args, options) => {
+    calls++;
+    assert.equal(options.cwd, 'isolated-runtime-prefix');
+    assert.ok(args.includes(`--fetch-timeout=${BUILD_DOWNLOAD_TIMEOUT_MS}`));
+    assert.ok(args.includes(`--fetch-retries=${BUILD_DOWNLOAD_ATTEMPTS - 1}`));
+  });
+  syncBuiltinESMExports();
+  try {
+    installRuntime('isolated-runtime-prefix', 'darwin', 'arm64');
+    assert.equal(calls, 1);
+  } finally { stub.mock.restore(); syncBuiltinESMExports(); }
 });

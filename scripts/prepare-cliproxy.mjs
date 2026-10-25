@@ -26,7 +26,7 @@ export function bundledArtifact(manifest, source, pkg, platform) {
   return artifact;
 }
 
-export async function fetchArtifact(artifact, fetchImpl = fetch) {
+export async function fetchArtifact(artifact, fetchImpl) {
   const bytes = await downloadBuildResource(artifact.url, { maxBytes: artifact.size, fetchImpl });
   if (bytes.length !== artifact.size || createHash('sha256').update(bytes).digest('hex') !== artifact.sha256) {
     throw new Error('CLIProxy artifact integrity mismatch');
@@ -43,7 +43,7 @@ export async function prepareCliproxy({
   platform = `${process.platform}-${process.arch}`,
   repoRoot = repo,
   distributionDir = process.env.MYAGENTS_CLIPROXY_DISTRIBUTION_DIR,
-  fetchImpl = fetch,
+  fetchImpl,
 } = {}) {
   // CLIProxy has no Linux distribution; the Rust target gate agrees.
   if (['linux-x64', 'linux-arm64'].includes(platform)) return;

@@ -113,10 +113,8 @@ import {
   MANAGED_BROWSER_MCP_ID,
 } from '../shared/browserTools';
 
-// Long-running sidecar operations need their own budget. Anchored to the
-// sidecar's internal `FETCH_TIMEOUT_MS` (300s for tarball download) plus a
-// 30s buffer so the inner timeout always wins. Used by skill install routes.
-const SKILL_INSTALL_LOOPBACK_TIMEOUT_MS = 330_000;
+import { SKILL_INSTALL_TIMEOUT_MS } from '../shared/skillDownloadPolicy';
+
 // A graceful Channel shutdown can spend up to ~20s draining one runtime, and
 // Agent disable/archive may stop several sequentially. Do not let the generic
 // 10s loopback budget turn a successful destructive lifecycle into an unknown
@@ -7402,7 +7400,7 @@ export async function handleCcPluginInstall(payload: {
     '/api/cc-plugin/install',
     'POST',
     { sourceUrl },
-    { timeoutMs: SKILL_INSTALL_LOOPBACK_TIMEOUT_MS },
+    { timeoutMs: SKILL_INSTALL_TIMEOUT_MS },
   );
   if (json.success) {
     return {
@@ -7434,9 +7432,8 @@ export async function handleCcPluginUninstall(payload: {
     '/api/cc-plugin/uninstall',
     'POST',
     { id, purgeData: !!payload.purgeData },
-    // Bumped to skill-tier so directory removal on slow disks (e.g. spinning
-    // rust with large node_modules data dirs) doesn't abort half-way.
-    { timeoutMs: SKILL_INSTALL_LOOPBACK_TIMEOUT_MS },
+    // Directory removal has its own existing disk-operation budget.
+    { timeoutMs: 330_000 },
   );
   if (json.success) {
     return { success: true, data: json.removed, hint: 'Plugin removed.' };
@@ -7584,7 +7581,7 @@ export async function handleSkillAdd(payload: {
       scope,
       previewOnly: true,
     },
-    { timeoutMs: SKILL_INSTALL_LOOPBACK_TIMEOUT_MS },
+    { timeoutMs: SKILL_INSTALL_TIMEOUT_MS },
   );
   if (!probe.json.success) {
     return {
@@ -7627,7 +7624,7 @@ export async function handleSkillAdd(payload: {
           folderNames: [preview.skill.suggestedFolderName],
         },
       },
-      { timeoutMs: SKILL_INSTALL_LOOPBACK_TIMEOUT_MS },
+      { timeoutMs: SKILL_INSTALL_TIMEOUT_MS },
     );
     if (!commit.json.success) {
       return {
@@ -7707,7 +7704,7 @@ export async function handleSkillAdd(payload: {
           overwrite: payload.force ? conflicts : [],
         },
       },
-      { timeoutMs: SKILL_INSTALL_LOOPBACK_TIMEOUT_MS },
+      { timeoutMs: SKILL_INSTALL_TIMEOUT_MS },
     );
     if (!commit.json.success) {
       return {
@@ -7776,7 +7773,7 @@ export async function handleSkillAdd(payload: {
           overwrite: payload.force ? conflicts : [],
         },
       },
-      { timeoutMs: SKILL_INSTALL_LOOPBACK_TIMEOUT_MS },
+      { timeoutMs: SKILL_INSTALL_TIMEOUT_MS },
     );
     if (!commit.json.success) {
       return {
@@ -7825,7 +7822,7 @@ export async function handleSkillAdd(payload: {
           overwrite: [preview.skill.suggestedFolderName],
         },
       },
-      { timeoutMs: SKILL_INSTALL_LOOPBACK_TIMEOUT_MS },
+      { timeoutMs: SKILL_INSTALL_TIMEOUT_MS },
     );
     if (!commit.json.success) {
       return {

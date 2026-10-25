@@ -15,7 +15,9 @@
  * the `/chat/stream` handler). There is therefore nothing to integration-test here.
  */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import type { Dispatcher } from 'undici';
+import { getGeneralRequestDispatcher } from '../proxy-state';
 
 import {
   anySignal,
@@ -23,7 +25,32 @@ import {
   withAbortSignal,
   raceWithAbortSignal,
   withBoundedTimeout,
+  cancellableFetch,
+  fetchWithGeneralProxy,
+  _setGeneralFetchTransportForTests,
 } from '../utils/cancellation';
+
+it('keeps long owner budgets above Undici timers without changing the shared dispatcher', async () => {
+  const dispatcher = getGeneralRequestDispatcher();
+  const dispatch = vi.spyOn(dispatcher, 'dispatch').mockReturnValue(true);
+  const used: Dispatcher[] = [];
+  _setGeneralFetchTransportForTests(async (_url, init) => {
+    used.push(init!.dispatcher!);
+    return new Response('{}');
+  });
+  try {
+    await cancellableFetch('http://127.0.0.1/skill', undefined, { timeoutMs: 1_230_000 });
+    used[0].dispatch({ origin: 'http://127.0.0.1', path: '/skill', method: 'POST' }, {});
+    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({
+      headersTimeout: 1_230_000, bodyTimeout: 1_230_000,
+    }), {});
+    await fetchWithGeneralProxy('http://127.0.0.1/ordinary');
+    expect(used[1]).toBe(dispatcher);
+  } finally {
+    dispatch.mockRestore();
+    _setGeneralFetchTransportForTests();
+  }
+});
 
 describe('withAbortSignal', () => {
   it('aborts inner op when outer signal fires; outer signal preserved', async () => {

@@ -148,6 +148,10 @@ test('built CLI keeps internal surfaces and the public external contract', async
       { args: ['task', 'list'], path: '/api/admin/task/list' },
       { args: ['goal', 'list'], path: '/api/admin/goal/get' },
       { args: ['space', 'list'], path: '/api/admin/space/list' },
+      // Long download calls use the pinned fetch/dispatcher pair, not Node's
+      // potentially older built-in dispatcher protocol.
+      { args: ['cc-plugin', 'install', 'owner/repo'], path: '/api/admin/cc-plugin/install' },
+      { args: ['skill', 'add', 'https://example.invalid/skill.zip'], path: '/api/admin/skill/add' },
     ]) {
       const before = requests.length;
       await execFileAsync(process.execPath, [outfile, ...contract.args, '--json'], {

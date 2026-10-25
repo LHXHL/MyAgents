@@ -236,8 +236,6 @@ try {
     # Setup and release builds share the same pinned runtime preparation.
     & "$ProjectDir\scripts\download_nodejs.ps1"
     Use-BundledNodeBuildTools -ProjectDir $ProjectDir
-    & node "$ProjectDir\scripts\integrated-runtimes\prepare-dsh-runtime.mjs" --source release --target win32-x64
-    if ($LASTEXITCODE -ne 0) { throw "MyAgents-dsh Release 准备失败" }
 
     $gitInstallerPath = "src-tauri\nsis\Git-Installer.exe"
     Write-Host "  检查 Git installer... " -NoNewline
@@ -296,6 +294,9 @@ try {
     }
     Write-Host "  OK - Node.js 项目依赖已就绪" -ForegroundColor Green
     Write-Host ""
+
+    & node "$ProjectDir\scripts\integrated-runtimes\prepare-dsh-runtime.mjs" --source release --target win32-x64
+    if ($LASTEXITCODE -ne 0) { throw "MyAgents-dsh Release 准备失败" }
 
     # ========================================
     # 验证 CSP 配置（不再覆盖）

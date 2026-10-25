@@ -106,7 +106,7 @@ test('missing Intel package is acquired with target/version context and native n
   assert.match(r.stdout, /下载.*首次.*较慢/);
   const npm = f.calls().filter(c => c.tool === 'npm');
   assert.equal(npm.length, 1);
-  for (const flag of ['--loglevel=http', '--force', '--ignore-scripts', '--cpu=x64', `${packageName('x64')}@${version}`]) assert.ok(npm[0].args.includes(flag), flag);
+  for (const flag of ['--fetch-timeout=1800000', '--fetch-retries=4', '--loglevel=http', '--force', '--ignore-scripts', '--cpu=x64', `${packageName('x64')}@${version}`]) assert.ok(npm[0].args.includes(flag), flag);
   assert.match(r.stderr, /npm http fetch GET 200/);
   assert.deepEqual(readdirSync(f.root).filter(name => name.startsWith('.tmp-claude-sdk')), []);
 });

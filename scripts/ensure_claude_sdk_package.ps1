@@ -201,7 +201,7 @@ function Repair-SdkPackage {
     New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
 
     try {
-        & npm install --prefix "$tmpDir" --force --prefer-online --no-save --package-lock=false `
+        & npm install --fetch-timeout=1800000 --fetch-retries=4 --prefix "$tmpDir" --force --prefer-online --no-save --package-lock=false `
             --no-audit --no-fund --ignore-scripts `
             --os=win32 --cpu="$PackageArch" `
             "$pkgName@$SdkVersion"

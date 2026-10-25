@@ -20,6 +20,7 @@ import { isIP, type LookupFunction } from 'node:net';
 import AdmZip from 'adm-zip';
 import {
   Agent,
+  getGlobalDispatcher,
   fetch as undiciFetch,
   type Dispatcher,
   type RequestInit as UndiciRequestInit,
@@ -27,6 +28,7 @@ import {
 
 import { buildGithubZipCandidates, SkillUrlError, type RemoteSkillSource } from './url-resolver';
 import { getGeneralRequestDispatcher } from '../proxy-state';
+import { SKILL_DOWNLOAD_TIMEOUT_MS } from '../../shared/skillDownloadPolicy';
 
 // ---------------------------------------------------------------------------
 // Limits (tuned for "pit of success" — refuse anything suspicious by default)
@@ -37,10 +39,7 @@ export const SKILL_PACKAGE_LIMITS = Object.freeze({
   maxFiles: 2000,
   maxFileBytes: 5 * 1024 * 1024,
 });
-// 5 min — covers slow CN proxies + ~40-file subdirectory repos which can take
-// 30s+ even with `git clone`. Previous value (60s) was the hard cap users hit
-// repeatedly (#193). Caller-side budgets (sidecarSelf, Rust proxy) must be ≥ this.
-const FETCH_TIMEOUT_MS = 300_000;
+const FETCH_TIMEOUT_MS = SKILL_DOWNLOAD_TIMEOUT_MS;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -263,7 +262,14 @@ async function downloadZip(
             'User-Agent': 'MyAgents-Skill-Installer/1.0',
             'Accept': 'application/zip, application/octet-stream',
           },
-          ...(hopDispatcher ? { dispatcher: hopDispatcher } : {}),
+          // Override Undici's five-minute header/body defaults for this
+          // request only. The existing dispatcher still owns proxy/DNS policy.
+          dispatcher: (hopDispatcher ?? getGlobalDispatcher()).compose((dispatch) =>
+            (options, handler) => dispatch({
+              ...options,
+              headersTimeout: FETCH_TIMEOUT_MS,
+              bodyTimeout: FETCH_TIMEOUT_MS,
+            }, handler)),
         } as UndiciRequestInit) as unknown as Response;
       } catch (err) {
         if (ownsHopDispatcher) await closeDispatcher(hopDispatcher);

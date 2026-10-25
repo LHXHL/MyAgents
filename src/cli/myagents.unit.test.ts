@@ -199,10 +199,10 @@ describe('public external CLI declaration', () => {
     expect(cliRequestTimeoutMs('session/get')).toBeGreaterThan(18_000);
     expect(cliRequestTimeoutMs('mcp/test')).toBeGreaterThan(15_000);
     expect(cliRequestTimeoutMs('model/verify')).toBeGreaterThan(45_000);
-    expect(cliRequestTimeoutMs('skill/add')).toBeGreaterThan(2 * 330_000);
-    for (const route of ['cc-plugin/install', 'cc-plugin/uninstall']) {
-      expect(cliRequestTimeoutMs(route)).toBeGreaterThan(330_000);
-    }
+    // Each probe/install can try main then master; each ZIP transfer gets ten minutes.
+    expect(cliRequestTimeoutMs('skill/add')).toBeGreaterThan(2 * (2 * 600_000 + 30_000));
+    expect(cliRequestTimeoutMs('cc-plugin/install')).toBeGreaterThan(2 * 600_000 + 30_000);
+    expect(cliRequestTimeoutMs('cc-plugin/uninstall')).toBeGreaterThan(330_000);
     expect(cliRequestTimeoutMs('agent/archive')).toBeGreaterThan(2 * 300_000);
     for (const route of ['agent/unarchive', 'agent/resolve-conflict', 'agent/channel/remove']) {
       expect(cliRequestTimeoutMs(route)).toBeGreaterThan(300_000);

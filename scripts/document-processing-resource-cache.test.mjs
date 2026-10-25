@@ -10,6 +10,8 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import test from "node:test";
+import { createServer } from "node:http";
+import { once } from "node:events";
 import {
   acquireLockedResource,
   computeBuildFingerprint,
@@ -351,29 +353,33 @@ test('locked resource transport is bounded by default and validates before publi
   const root = scratch();
   const bytes = Buffer.from('locked resource');
   const fixture = join(root, 'source'); writeFileSync(fixture, bytes);
-  const entry = { size: bytes.length, sha256: sha256File(fixture), url: 'https://example.invalid/resource' };
+  const server = createServer((_req, res) => res.end(bytes));
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const entry = { size: bytes.length, sha256: sha256File(fixture), url: `http://127.0.0.1:${server.address().port}/resource` };
   const timeouts = [];
   t.mock.method(AbortSignal, 'timeout', ms => { timeouts.push(ms); return new AbortController().signal; });
-  t.mock.method(globalThis, 'fetch', async () => new Response(bytes));
   const options = { cacheRoot: root, entry, cacheName: 'test.bin' };
   const cached = await acquireLockedResource(options);
   assert.deepEqual(timeouts, [30 * 60 * 1000]);
   assert.deepEqual(readFileSync(cached), bytes);
-  t.mock.method(globalThis, 'fetch', async () => { throw new Error('cache must be offline'); });
+  server.closeAllConnections(); server.close();
   assert.equal(await acquireLockedResource({ ...options, offline: true }), cached);
   writeFileSync(cached, 'corrupt');
   await assert.rejects(acquireLockedResource({ ...options, fetchBytes: async () => Buffer.from('bad') }), /digest mismatch/);
   assert.equal(validateLockedFile(cached, entry), false);
 });
 
-test('curl fallback receives enough process time for every bounded retry', async t => {
+test('Node plus curl share five attempts and curl has enough time for its remaining four', async t => {
   const { default: childProcess } = await import('node:child_process');
   const { syncBuiltinESMExports } = await import('node:module');
   const root = scratch(); const bytes = Buffer.from('curl resource');
   const fixture = join(root, 'source'); writeFileSync(fixture, bytes);
-  const entry = { size: bytes.length, sha256: sha256File(fixture), url: 'https://example.invalid/resource' };
-  t.mock.method(globalThis, 'fetch', async () => { throw new TypeError('fetch failed'); });
-  t.mock.method(globalThis, 'setTimeout', callback => { callback(); return 0; });
+  let nodeCalls = 0;
+  const server = createServer((_req, res) => { nodeCalls++; res.writeHead(503); res.end('busy'); });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const entry = { size: bytes.length, sha256: sha256File(fixture), url: `http://127.0.0.1:${server.address().port}/resource` };
   let calls = 0;
   const stub = t.mock.method(childProcess, 'execFileSync', (binary, args, options) => {
     calls++;
@@ -388,5 +394,6 @@ test('curl fallback receives enough process time for every bounded retry', async
     const path = await acquireLockedResource({ cacheRoot: root, entry, cacheName: 'test.bin', downloadTimeoutMs: 300_000 });
     assert.deepEqual(readFileSync(path), bytes);
     assert.equal(calls, 1);
+    assert.equal(nodeCalls, 1);
   } finally { stub.mock.restore(); syncBuiltinESMExports(); }
 });

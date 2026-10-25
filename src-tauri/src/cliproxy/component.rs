@@ -417,7 +417,7 @@ impl ComponentStore {
         Ok(())
     }
     pub async fn fetch_manifest(&self) -> Result<SignedManifest> {
-        let client = external_client(Duration::from_secs(20))?;
+        let client = external_client(crate::resource_download::RESOURCE_DOWNLOAD_TIMEOUT)?;
         let json = crate::resource_download::fetch_limited_bytes(
             &client,
             MANIFEST_URL,
@@ -476,11 +476,11 @@ impl ComponentStore {
                 fs::copy(self.bundled.join("artifact.zip"), &archive).map_err(|_| Error::new("bundled_missing", "内置模型组件不完整"))?;
             } else {
                 self.set_update("downloading", Some(component.version.clone()), None);
-                let client = external_client(Duration::from_secs(15 * 60))?;
+                let client = external_client(crate::resource_download::RESOURCE_DOWNLOAD_TIMEOUT)?;
                 let downloaded = tokio::select! {
                     _ = cancelled.changed() => { self.clear_attempt(installed).await?; return Err(Error::cancelled()); },
                     result = crate::resource_download::download_to_file_with_hash(&client, &artifact.url, &archive,
-                    artifact.size, Some(artifact.size), Duration::from_secs(15 * 60), |done, total| {
+                    artifact.size, Some(artifact.size), crate::resource_download::RESOURCE_DOWNLOAD_TIMEOUT, |done, total| {
                         if let Ok(mut update) = self.update.lock() { update.downloaded_bytes = Some(done); update.total_bytes = total; }
                     }) => result,
                 };

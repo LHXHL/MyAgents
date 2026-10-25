@@ -40,11 +40,8 @@ fn next_transport_generation() -> u64 {
 // - 120s (2 minutes) allows for slow API responses
 // - Covers model generation time for complex requests
 //
-// HTTP_PROXY_LONG_TIMEOUT: For endpoints that legitimately need longer
-// - Skill install-from-url downloads GitHub tarballs over slow/proxied networks
-//   (sidecar `FETCH_TIMEOUT_MS` is 300s; we add a 60s buffer so the inner
-//   timeout wins). Keep this list small — bumping the default is worse than
-//   carving out specific known-long paths.
+// Skill/Plugin downloads allow two GitHub branch candidates plus unpacking.
+// Keep normal control requests on their existing short budget.
 //
 // TODO v0.2.0: Make these configurable via Settings
 const SSE_READ_TIMEOUT_SECS: u64 = 60;
@@ -56,7 +53,8 @@ const SSE_RETRY_MAX_DELAY_MS: u64 = 5_000;
 const SSE_EVENT_MAX_BYTES: usize = 8 * 1024 * 1024;
 const SSE_EVENT_SEPARATOR_MAX_BYTES: usize = 4;
 const HTTP_PROXY_TIMEOUT_SECS: u64 = 120;
-const HTTP_PROXY_LONG_TIMEOUT_SECS: u64 = 360;
+const HTTP_PROXY_LONG_TIMEOUT_SECS: u64 =
+    2 * crate::resource_download::SKILL_DOWNLOAD_TIMEOUT.as_secs() + 30;
 const CONTROL_DISPATCH_RETRY_DELAYS_MS: &[u64] = &[
     50, 100, 200, 400, 800, 1_500, 2_000, 3_000, 5_000, 5_000, 5_000, 5_000, 5_000,
 ];
@@ -64,7 +62,8 @@ const CONTROL_DISPATCH_RETRY_DELAYS_MS: &[u64] = &[
 /// Endpoints that need the long-timeout budget. Keep this list short — most
 /// sidecar work should finish in seconds, not minutes.
 fn proxy_timeout_for(url_path: &str) -> u64 {
-    if url_path.ends_with("/api/skill/install-from-url") {
+    if ["/api/skill/install-from-url", "/api/cc-plugin/inspect", "/api/cc-plugin/install"]
+        .iter().any(|path| url_path.ends_with(path)) {
         HTTP_PROXY_LONG_TIMEOUT_SECS
     } else {
         HTTP_PROXY_TIMEOUT_SECS
@@ -1322,6 +1321,15 @@ async fn execute_http_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skill_download_routes_allow_both_branch_candidates() {
+        for path in ["/api/skill/install-from-url", "/api/cc-plugin/inspect", "/api/cc-plugin/install"] {
+            assert_eq!(proxy_timeout_for(path), 2 * 600 + 30);
+        }
+        assert_eq!(proxy_timeout_for("/api/cc-plugin/uninstall"), 120);
+        assert_eq!(proxy_timeout_for("/api/sessions"), 120);
+    }
     #[tokio::test]
     async fn renderer_replacement_retires_tabs_but_keeps_companion_transport() {
         let state = SseProxyState::default();

@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { Agent, fetch as undiciFetch, type RequestInit as UndiciRequestInit } from 'undici';
 import { channelMessageSchema } from '../shared/channelMessage';
 /**
  * myagents — Self-Configuration CLI for MyAgents
@@ -27,6 +28,11 @@ import {
 import { networkAddress } from '../shared/agentNetworkRouting';
 import { REMOTE_DEADLINES } from '@myagents/agent-network-protocol';
 import { INTERNAL_CLI_FLAGS } from './internalCliFlags';
+import { SKILL_INSTALL_TIMEOUT_MS } from '../shared/skillDownloadPolicy';
+
+// Long loopback operations are bounded by callApi's AbortSignal, including
+// their response body. Do not let Undici's default five-minute timer win first.
+const longRequestDispatcher = new Agent({ headersTimeout: 0, bodyTimeout: 0 });
 
 // ---------------------------------------------------------------------------
 // Port discovery
@@ -622,7 +628,8 @@ export async function callApi(
   try {
     // A business request is sent exactly once. Retrying after a transport
     // failure could duplicate mutations whose response was lost after commit.
-    const resp = await fetch(`${BASE}/${route}`, {
+    const timeoutMs = cliRequestTimeoutMs(route, body);
+    const requestInit: RequestInit & { dispatcher?: Agent } = {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -636,8 +643,13 @@ export async function callApi(
         }),
       },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(cliRequestTimeoutMs(route, body)),
-    });
+      signal: AbortSignal.timeout(timeoutMs),
+      ...(timeoutMs > 300_000 ? { dispatcher: longRequestDispatcher } : {}),
+    };
+    // Keep the fetch/dispatcher protocol on the same pinned library version.
+    const resp = timeoutMs > 300_000
+      ? await undiciFetch(`${BASE}/${route}`, requestInit as UndiciRequestInit)
+      : await fetch(`${BASE}/${route}`, requestInit);
     // Non-JSON error bodies (e.g. axum 4xx returns plain text like
     // "Failed to deserialize query string: missing field `doc`") would
     // crash `resp.json()` with a SyntaxError — translate to an
@@ -775,8 +787,9 @@ export function cliRequestTimeoutMs(route: string, body: Record<string, unknown>
   if (route === 'model/verify') return 60_000;
   // Existing download/lifecycle owners already permit these longer operations.
   // skill/add and agent/archive each perform two sequential bounded requests.
-  if (route === 'skill/add') return 675_000;
-  if (route === 'cc-plugin/install' || route === 'cc-plugin/uninstall') return 345_000;
+  if (route === 'skill/add') return 2 * SKILL_INSTALL_TIMEOUT_MS + 15_000;
+  if (route === 'cc-plugin/install') return SKILL_INSTALL_TIMEOUT_MS + 15_000;
+  if (route === 'cc-plugin/uninstall') return 345_000;
   if (route === 'agent/archive') return 615_000;
   if (route === 'agent/unarchive' || route === 'agent/resolve-conflict'
     || route === 'agent/channel/remove') return 315_000;

@@ -6,6 +6,10 @@ use std::io::Write;
 use std::path::Path;
 use std::time::Duration;
 
+// Per-transfer budgets; retry/fallback policy remains with each resource owner.
+pub(crate) const RESOURCE_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+pub(crate) const SKILL_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
 #[derive(Debug)]
 pub(crate) enum DownloadError {
     Http(u16),

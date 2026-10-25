@@ -5,19 +5,21 @@
 use std::{
   f64,
   ffi::CStr,
-  os::raw::c_void,
+  os::{raw::c_void, unix::ffi::OsStrExt},
+  path::PathBuf,
   sync::{Arc, Weak},
 };
 
 use objc2::{
   msg_send,
+  ClassType,
   rc::Retained,
   runtime::{AnyClass as Class, AnyObject as Object, ClassBuilder as ClassDecl, Sel},
 };
 use objc2_app_kit::{
-  self as appkit, NSApplicationPresentationOptions, NSPasteboard, NSView, NSWindow,
+  NSApplicationPresentationOptions, NSPasteboard, NSView, NSWindow,
 };
-use objc2_foundation::{ns_string, NSArray, NSAutoreleasePool, NSString, NSUInteger};
+use objc2_foundation::{ns_string, NSArray, NSAutoreleasePool, NSUInteger, NSURL};
 use once_cell::sync::Lazy;
 
 use crate::{
@@ -413,27 +415,56 @@ extern "C" fn window_did_resign_key(this: &Object, _: Sel, _: id) {
   trace!("Completed `windowDidResignKey:`");
 }
 
+// AppKit converts supported pasteboard representations into URLs, including legacy file lists.
+// Empty or non-file drags are rejected without unwrapping an absent property list.
+fn dragged_file_paths(pasteboard: &NSPasteboard) -> Vec<PathBuf> {
+  // SAFETY: NSURL implements NSPasteboardReading; no untyped options are supplied.
+  let urls = unsafe {
+    pasteboard.readObjectsForClasses_options(&NSArray::from_slice(&[NSURL::class()]), None)
+  };
+  urls
+    .into_iter()
+    .flat_map(|urls| urls.into_iter())
+    .filter_map(|object| {
+      let url = object.downcast::<NSURL>().ok()?;
+      if !url.isFileURL() {
+        return None;
+      }
+      // File-reference URLs can lose their path while a drag is in flight. Use
+      // the fallible API: fileSystemRepresentation may return NULL in that case.
+      let mut buffer = [0 as libc::c_char; libc::PATH_MAX as usize];
+      // SAFETY: the writable buffer has exactly the supplied capacity.
+      if !unsafe {
+        url.getFileSystemRepresentation_maxLength(
+          std::ptr::NonNull::from(&mut buffer[0]),
+          buffer.len(),
+        )
+      } {
+        return None;
+      }
+      // SAFETY: a successful conversion writes a NUL-terminated path.
+      let path = unsafe { CStr::from_ptr(buffer.as_ptr()) };
+      if path.to_bytes().is_empty() {
+        return None;
+      }
+      Some(PathBuf::from(std::ffi::OsStr::from_bytes(path.to_bytes())))
+    })
+    .collect()
+}
+
 /// Invoked when the dragged image enters destination bounds or frame
 extern "C" fn dragging_entered(this: &Object, _: Sel, sender: id) -> BOOL {
   trace!("Triggered `draggingEntered:`");
 
-  use std::path::PathBuf;
-
   let pb: Retained<NSPasteboard> = unsafe { msg_send![sender, draggingPasteboard] };
-  let filenames =
-    unsafe { NSPasteboard::propertyListForType(&pb, appkit::NSFilenamesPboardType) }.unwrap();
-
-  for file in unsafe { Retained::cast_unchecked::<NSArray>(filenames) } {
-    let file = unsafe { Retained::cast_unchecked::<NSString>(file) };
-
-    unsafe {
-      let f = NSString::UTF8String(&file);
-      let path = CStr::from_ptr(f).to_string_lossy().into_owned();
-
-      with_state(this, |state| {
-        state.emit_event(WindowEvent::HoveredFile(PathBuf::from(path)));
-      });
-    }
+  let paths = dragged_file_paths(&pb);
+  if paths.is_empty() {
+    return NO;
+  }
+  for path in paths {
+    with_state(this, |state| {
+      state.emit_event(WindowEvent::HoveredFile(path));
+    });
   }
 
   trace!("Completed `draggingEntered:`");
@@ -451,23 +482,15 @@ extern "C" fn prepare_for_drag_operation(_: &Object, _: Sel, _: id) -> BOOL {
 extern "C" fn perform_drag_operation(this: &Object, _: Sel, sender: id) -> BOOL {
   trace!("Triggered `performDragOperation:`");
 
-  use std::path::PathBuf;
-
   let pb: Retained<NSPasteboard> = unsafe { msg_send![sender, draggingPasteboard] };
-  let filenames =
-    unsafe { NSPasteboard::propertyListForType(&pb, appkit::NSFilenamesPboardType) }.unwrap();
-
-  for file in unsafe { Retained::cast_unchecked::<NSArray>(filenames) } {
-    let file = unsafe { Retained::cast_unchecked::<NSString>(file) };
-
-    unsafe {
-      let f = NSString::UTF8String(&file);
-      let path = CStr::from_ptr(f).to_string_lossy().into_owned();
-
-      with_state(this, |state| {
-        state.emit_event(WindowEvent::DroppedFile(PathBuf::from(path)));
-      });
-    }
+  let paths = dragged_file_paths(&pb);
+  if paths.is_empty() {
+    return NO;
+  }
+  for path in paths {
+    with_state(this, |state| {
+      state.emit_event(WindowEvent::DroppedFile(path));
+    });
   }
 
   trace!("Completed `performDragOperation:`");
@@ -675,4 +698,90 @@ extern "C" fn effective_appearance_did_changed_on_main_thread(this: &Object, _: 
     }
   });
   trace!("Completed `effectiveAppearDidChange:`");
+}
+
+#[cfg(test)]
+mod file_drop_tests {
+  use super::*;
+  use objc2::runtime::ProtocolObject;
+  use objc2_app_kit::NSPasteboardWriting;
+  use objc2_foundation::NSString;
+
+  // A private pasteboard keeps these tests independent of the user's clipboard.
+  struct TestPasteboard(Retained<NSPasteboard>);
+  impl Drop for TestPasteboard {
+    fn drop(&mut self) {
+      self.0.clearContents();
+    }
+  }
+
+  #[test]
+  fn multiple_file_urls_preserve_unicode_spaces_and_percent_signs() {
+    let board = TestPasteboard(NSPasteboard::pasteboardWithUniqueName());
+    let paths = ["/tmp/中文 文件%.txt", "/tmp/another-file.txt"];
+    let urls: Vec<_> = paths
+      .iter()
+      .map(|path| NSURL::fileURLWithPath(&NSString::from_str(path)))
+      .collect();
+    let objects: Vec<&ProtocolObject<dyn NSPasteboardWriting>> = urls
+      .iter()
+      .map(|url| ProtocolObject::from_ref(&**url))
+      .collect();
+    assert!(board.0.writeObjects(&NSArray::from_slice(&objects)));
+    assert_eq!(dragged_file_paths(&board.0), paths.map(PathBuf::from));
+  }
+
+  #[test]
+  fn empty_and_non_file_pasteboards_are_rejected() {
+    let board = TestPasteboard(NSPasteboard::pasteboardWithUniqueName());
+    assert!(dragged_file_paths(&board.0).is_empty());
+    let url = NSURL::URLWithString(ns_string!("https://example.invalid/file.txt")).unwrap();
+    let object: &ProtocolObject<dyn NSPasteboardWriting> = ProtocolObject::from_ref(&*url);
+    assert!(board.0.writeObjects(&NSArray::from_slice(&[object])));
+    assert!(dragged_file_paths(&board.0).is_empty());
+  }
+
+  #[test]
+  fn legacy_file_list_is_converted_by_appkit() {
+    let board = TestPasteboard(NSPasteboard::pasteboardWithUniqueName());
+    let files = NSArray::from_slice(&[ns_string!("/tmp/旧文件.txt"), ns_string!("/tmp/second.txt")]);
+    // This literal deliberately models the obsolete sender format, not a production API.
+    let kind = ns_string!("NSFilenamesPboardType");
+    unsafe {
+      board.0.declareTypes_owner(&NSArray::from_slice(&[kind]), None);
+      assert!(board.0.setPropertyList_forType(&files, kind));
+    }
+    assert_eq!(
+      dragged_file_paths(&board.0),
+      vec![PathBuf::from("/tmp/旧文件.txt"), PathBuf::from("/tmp/second.txt")]
+    );
+  }
+
+  #[test]
+  fn file_urls_without_paths_are_rejected() {
+    for value in ["file:", "file://localhost", "file:///.file/id=999999999.999999999"] {
+      let board = TestPasteboard(NSPasteboard::pasteboardWithUniqueName());
+      let url = NSURL::URLWithString(&NSString::from_str(value)).unwrap();
+      let object: &ProtocolObject<dyn NSPasteboardWriting> = ProtocolObject::from_ref(&*url);
+      assert!(board.0.writeObjects(&NSArray::from_slice(&[object])));
+      assert!(dragged_file_paths(&board.0).is_empty(), "{value}");
+    }
+  }
+
+  #[test]
+  fn file_reference_deleted_during_drag_is_rejected() {
+    let board = TestPasteboard(NSPasteboard::pasteboardWithUniqueName());
+    let path = std::env::temp_dir().join(format!(
+      "myagents-drag-{}-{}",
+      std::process::id(),
+      std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+    ));
+    std::fs::write(&path, b"drag fixture").unwrap();
+    let url = NSURL::fileURLWithPath(&NSString::from_str(path.to_str().unwrap()));
+    let reference = url.fileReferenceURL().unwrap();
+    let object: &ProtocolObject<dyn NSPasteboardWriting> = ProtocolObject::from_ref(&*reference);
+    assert!(board.0.writeObjects(&NSArray::from_slice(&[object])));
+    std::fs::remove_file(&path).unwrap();
+    assert!(dragged_file_paths(&board.0).is_empty());
+  }
 }

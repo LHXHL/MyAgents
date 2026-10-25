@@ -1987,6 +1987,7 @@ async fn authorized_multipart_method_data_request_with_credential(
 async fn authorized_raw_request(
     session: &AuthenticatedSpaceSession,
     path: &str,
+    timeout: Duration,
 ) -> Result<reqwest::Response, SpaceCommandError> {
     authorized_raw_request_with_credential(
         &session.base_url,
@@ -1994,6 +1995,7 @@ async fn authorized_raw_request(
         session.session_token(),
         None,
         Some(session),
+        Some(timeout),
     )
     .await
 }
@@ -2004,6 +2006,7 @@ async fn authorized_raw_request_with_credential(
     token: &str,
     space_id: Option<&str>,
     user_session: Option<&AuthenticatedSpaceSession>,
+    timeout: Option<Duration>,
 ) -> Result<reqwest::Response, SpaceCommandError> {
     if crate::space_cloud_mock::is_enabled() {
         return Err(SpaceCommandError::local(
@@ -2020,6 +2023,9 @@ async fn authorized_raw_request_with_credential(
             .header(AUTHORIZATION, format!("Bearer {}", token)),
         &capability,
     );
+    if let Some(timeout) = timeout {
+        request = request.timeout(timeout);
+    }
     if let Some(space_id) = space_id {
         request = request.header(SPACE_CONTEXT_HEADER, space_id);
     }
@@ -2054,7 +2060,12 @@ async fn authorized_bytes_request(
             format!("Mock Space bytes route not implemented: {path}"),
         ));
     }
-    let response = authorized_raw_request(session, path).await?;
+    let response = authorized_raw_request(
+        session,
+        path,
+        crate::resource_download::SKILL_DOWNLOAD_TIMEOUT,
+    )
+    .await?;
     response
         .bytes()
         .await

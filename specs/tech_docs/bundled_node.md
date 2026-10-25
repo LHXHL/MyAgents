@@ -11,7 +11,7 @@ Node 下载脚本从 nodejs.org 取得官方 target artifact，并维护两层�
 - `src-tauri/resources/nodejs-cache/<platform>-<arch>-v<version>/`：按平台、架构和版本隔离的本地 cache；
 - `src-tauri/resources/nodejs/`：当前 Tauri target 的 staging projection。
 
-macOS/Linux 构建脚本在每个 target build 前从正确 cache 重建 staging，并验证版本、平台与架构。`resources/nodejs/` 不是跨 target 的权威缓存；双架构或交叉构建不能复用上一个 target 遗留的 staging。
+macOS/Linux 构建脚本在每个 target build 前从正确 cache 重建 staging，并验证版本、平台与架构。版本诊断读取已验证的 metadata，不要求 host 能运行目标二进制。`resources/nodejs/` 不是跨 target 的权威缓存；双架构或交叉构建不能复用上一个 target 遗留的 staging。
 
 Windows setup、dev build 和 release build 共用 `scripts/download_nodejs.ps1`，直接核验 staging 中 Node 的版本/平台/架构与 npm/npx 版本；不匹配则重新下载官方 ZIP 并用 robocopy 复制深层依赖。
 

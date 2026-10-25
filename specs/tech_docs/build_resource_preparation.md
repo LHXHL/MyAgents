@@ -111,13 +111,13 @@ Rust 源码变化由 Cargo dep-info 跟踪，资源/config 由现有 build.rs �
 
 ## 下载时限、重试与原始缓存
 
-构建资源的 HTTP 字节获取共用 `build-resource-download.mjs`，版本选择、SHA/签名校验、缓存提交仍由原资源 owner 负责。Cuse、CLIProxy 每次请求（含响应体）至少 300 秒；默认三次尝试，仅临时网络故障和 408/429/500/502/503/504 退避重试。永久 HTTP、超限或校验失败不以重复请求掩盖。错误包括请求 URL、已尝试次数与单次时限。
+构建资源的 HTTP 字节获取共用 `build-resource-download.mjs`，版本选择、SHA/签名校验、缓存提交仍由原资源 owner 负责。DSH、Cuse、CLIProxy 默认每次请求（含响应体）30 分钟，最多 5 次尝试（首次请求加 4 次重试），仅临时网络故障和 408/429/500/502/503/504 退避重试。下载时按请求覆盖 Undici 的响应头与正文计时，避免其默认五分钟先于总期限中断；每次资源下载拥有独立的 `EnvHttpProxyAgent`，与 curl/npm 一样读取标准 HTTP_PROXY、HTTPS_PROXY、NO_PROXY 环境配置，完成或失败后关闭连接池，不依赖 Node 与 npm Undici 的全局 dispatcher 兼容性。实际下载需先安装项目 npm 依赖，前置检查与缓存命中不加载 transport 依赖；独立 Rust CI 也先安装锁定依赖再准备资源。永久 HTTP、超限或校验失败不以重复请求掩盖。错误包括请求 URL、已尝试次数与单次时限。
 
-文档/语音锁定大资源默认每次 30 分钟，显式更长时限仍保留；先走同一 Node transport，耗尽临时网络重试后保留原有 curl 代理兼容回退。curl 每次 transfer 有界，进程预算覆盖全部四次 transfer 与重试间隔。完整性失败不触发 curl 回退，只有校验成功的文件能进入内容寻址缓存。原有离线命中、旧 cache 迁移与 fingerprint 规则继续有效。
+文档/语音锁定大资源默认每次 30 分钟，显式更长时限仍保留；先尝试一次 Node transport，临时网络失败后沿原有 curl 代理兼容回退再尝试最多四次，总计不超过五次。curl 每次传输沿用该资源的时限，父进程预算覆盖剩余传输与重试间隔。完整性失败不触发 curl 回退，只有校验成功的文件能进入内容寻址缓存。原有离线命中、旧 cache 迁移与 fingerprint 规则继续有效。
 
 Cuse 的原始 ZIP 使用同一 `acquireLockedResource` helper，缓存到 `resources/cuse-cache`；解包到 `bundled-skills/cuse` 后的平台签名只改变构建副本。当前 release metadata 仍每次检查，不把旧缓存当成最新发布。CLIProxy 继续按仓库签名快照选择版本，其已有 ZIP 缓存不变。Node、tsx、sharp 已有的 target/version cache 和复制流程不另建一套。
 
-尚无 Node 的引导阶段使用平台自带下载器：Unix Node curl 为 300 秒/次、最多三次尝试；Windows Node/rustup/Git 共用 PowerShell 5.1 兼容的 `download-build-file.ps1`，300 秒/次、最多三次临时故障重试，私有 partial 下载完成后才替换目标，失败清理 partial。Windows Git installer 不再仅判断文件存在，历史半包和新下载均须通过 Authenticode 完整性校验。npm、Cargo、Git 自身获取依赖仍由各包管理工具负责；发布上传与 App 运行时下载不属于此策略。
+尚无 Node 的引导阶段使用平台自带下载器：Unix Node curl 为 30 分钟/次、最多 5 次尝试；Windows Node/rustup/Git 共用 PowerShell 5.1 兼容的 `download-build-file.ps1`，30 分钟/次、最多 5 次尝试，仅重试临时故障，私有 partial 下载完成后才替换目标，失败清理 partial。Windows Git installer 不再仅判断文件存在，历史半包和新下载均须通过 Authenticode 完整性校验。npm 资源下载由项目 `.npmrc` 统一为 30 分钟、四次重试；在临时目录安装 SDK、tsx/sharp 的 helper 显式传入相同参数，避免丢失项目配置。Managed Codex 的 npm 打包下载先试一次镜像，回退官方源最多四次；直接使用官方源时最多五次。Cargo 使用项目 `.cargo/config.toml` 的原生 HTTP timeout 和 retry 配置（1800 秒、四次重试）；这些参数遵循包管理器自身的请求语义，不是整条编译命令的时限。Git 源码拉取、rustup 和系统包管理器仍由工具自身管理，不能把整项编译或工具安装当成单个文件下载。发布上传与 App 运行时下载不属于此策略。
 
 ## 修改时的验证与文档维护
 
@@ -133,3 +133,9 @@ Cuse 的原始 ZIP 使用同一 `acquireLockedResource` helper，缓存到 `reso
 ### AgentNet 固定协议产物
 
 协议源码归 MyAgents-Agenthub；客户端 `vendor/agent-network-protocol/manifest.json` 与固定 `.tgz` 是构建输入。npm 依赖/锁文件和 Rust build.rs 均校验此输入；安装后、typecheck、Web 和 Node bundle 构建复用 `verify-agent-network-protocol.mjs`，Rust 构建独立校验并只展开包内 Schema/fixtures 到 OUT_DIR。没有联网下载、sibling checkout、可编辑 Schema 副本或额外持久缓存。产物升级沿 [Agent 网络](agent_network.md#公共协议与仓库分发) 的单一源码更新流程，损坏则修复产物/引用；只删除自身旧 OUT_DIR 投影，避免已移除的 Schema 靠上一次构建继续通过。
+
+## macOS 构建提示
+
+目标 Node 的版本显示来自已经通过缓存准入和 staging 校验的 metadata，不能通过在 host 上运行跨架构二进制判断版本。`codesign: replacing existing signature` 表示构建副本正在重新签名，不是构建失败。
+
+Tauri CLI 会提示 `com.myagents.app` 以 `.app` 结尾。该值是已发布应用的安装身份，并参与数据路径、通知与系统权限识别；保留该提示，不为消除提示改动 identifier 或过滤构建日志。原生依赖的 macOS API 维护记录见 `vendor/tao/MYAGENTS_PATCH.md` 和 `vendor/tauri-runtime-wry/MYAGENTS_PATCH.md`。

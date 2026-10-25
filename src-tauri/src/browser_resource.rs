@@ -38,8 +38,8 @@ const MAX_ARCHIVE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_UNPACKED_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_ARCHIVE_ENTRIES: usize = 6000;
 const AUTOMATIC_RETRY_LIMIT: u8 = 2;
-const DOWNLOAD_REQUEST_TIMEOUT: Duration = Duration::from_secs(10 * 60);
-const DOWNLOAD_READ_TIMEOUT: Duration = Duration::from_secs(30);
+const DOWNLOAD_REQUEST_TIMEOUT: Duration = crate::resource_download::RESOURCE_DOWNLOAD_TIMEOUT;
+const DOWNLOAD_READ_TIMEOUT: Duration = DOWNLOAD_REQUEST_TIMEOUT;
 
 static STATUS: OnceLock<Mutex<BrowserResourceStatus>> = OnceLock::new();
 static STATUS_REVISION: AtomicU64 = AtomicU64::new(1);
@@ -1352,8 +1352,8 @@ mod tests {
         assert!(!REQUIRED_PLAYWRIGHT_MCP_VERSION.is_empty());
         assert!(!REQUIRED_PLAYWRIGHT_CORE_VERSION.is_empty());
         assert!(required_artifact().is_some());
-        assert_eq!(DOWNLOAD_REQUEST_TIMEOUT, Duration::from_secs(10 * 60));
-        assert_eq!(DOWNLOAD_READ_TIMEOUT, Duration::from_secs(30));
+        assert_eq!(DOWNLOAD_REQUEST_TIMEOUT, Duration::from_secs(30 * 60));
+        assert_eq!(DOWNLOAD_READ_TIMEOUT, DOWNLOAD_REQUEST_TIMEOUT);
     }
 
     #[test]

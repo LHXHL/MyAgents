@@ -22,7 +22,7 @@ import {
   sep,
 } from "node:path";
 
-import { downloadBuildResource } from "./build-resource-download.mjs";
+import { BUILD_DOWNLOAD_ATTEMPTS, BUILD_DOWNLOAD_TIMEOUT_MS, downloadBuildResource } from "./build-resource-download.mjs";
 
 const PREPARE_LOCK_NAME = ".prepare.lock";
 const DEFAULT_LOCK_TIMEOUT_MS = 2 * 60 * 60 * 1000;
@@ -81,7 +81,7 @@ export async function acquireLockedResource({
   entry,
   cacheName,
   offline = false,
-  downloadTimeoutMs = 30 * 60 * 1000,
+  downloadTimeoutMs = BUILD_DOWNLOAD_TIMEOUT_MS,
   fetchBytes,
   stats,
 }) {
@@ -120,7 +120,7 @@ export async function acquireLockedResource({
   let lastError;
   try {
     const bytes = await (fetchBytes ?? ((url, maxBytes) => downloadBuildResource(url, {
-      maxBytes, timeoutMs: downloadTimeoutMs, redirect: "follow",
+      maxBytes, timeoutMs: downloadTimeoutMs, attempts: 1, redirect: "follow",
     })))(entry.url, entry.size);
     writeFileSync(temporary, bytes, { mode: 0o600 });
     if (!validateLockedFile(temporary, entry)) {
@@ -147,7 +147,7 @@ export async function acquireLockedResource({
           "--fail",
           "--location",
           "--retry",
-          "3",
+          String(BUILD_DOWNLOAD_ATTEMPTS - 2),
           "--retry-delay",
           "1",
           ...curlTimeoutArgs,
@@ -157,8 +157,9 @@ export async function acquireLockedResource({
         ],
         {
           stdio: "inherit",
-          // curl --retry 3 permits four transfers, each with its own deadline.
-          timeout: downloadTimeoutMs * 4 + 3_000 + 5_000,
+          // One Node attempt already ran; curl uses the remaining attempts.
+          timeout: downloadTimeoutMs * (BUILD_DOWNLOAD_ATTEMPTS - 1)
+            + (BUILD_DOWNLOAD_ATTEMPTS - 2) * 1000 + 5000,
           killSignal: "SIGKILL",
         },
       );

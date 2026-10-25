@@ -147,7 +147,7 @@ repair_package() {
 
     # --force permits an Intel package on an ARM host; --ignore-scripts avoids
     # executing the target binary during cross-architecture preparation.
-    if ! npm install --prefix "$tmp_dir" --force --prefer-online --no-save --package-lock=false \
+    if ! npm install --fetch-timeout=1800000 --fetch-retries=4 --prefix "$tmp_dir" --force --prefer-online --no-save --package-lock=false \
         --no-audit --no-fund --ignore-scripts --loglevel=http \
         --os=darwin --cpu="$arch" \
         "${pkg_name}@${SDK_VERSION}"; then
