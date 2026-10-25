@@ -112,4 +112,4 @@ DOM composition 事件仅证明调度和 view identity，不能代替真实输�
 
 表格模型利用 CM Text 的行索引和语法树按需解析 `rows.at(index)`，渲染/编辑热路径中仅结构性列操作才遍历全部行；投影以 immutable Text 身份失效，不在每次输入时把整表拷成字符串。定义索引包含匿名子树以复用稳定分组；可见行出现额外 GFM cell 时提示源码出口。
 
-多格 TSV 粘贴在一串临时 `EditorState` 上组合父 `ChangeSet`。这些 state 没有 View 推进后台解析，不能把预算内的 `syntaxTree(state)` 当作完整表格；每步结构/单元格变更后，仅同步补全到映射后的当前表格末尾，并使用 `ensureSyntaxTree` 返回的树推导下一步坐标。它不会同步更新 state 的旧树快照。正常输入与渲染仍保持预算解析，最后只向父历史提交一次。
+多单元格 TSV 粘贴通过一系列临时 `EditorState` 组合父文档的 `ChangeSet`。临时状态没有 View 推进后台解析，限时解析得到的 `syntaxTree(state)` 可能不完整。每步结构或单元格变更后，必须补全到映射后的当前表格末尾，再用 `ensureSyntaxTree` 返回的树计算下一步坐标；该函数不会同步替换状态中原有的树快照。正常输入与渲染仍按解析时间预算执行，最终只向父文档提交一次事务。

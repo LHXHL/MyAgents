@@ -654,4 +654,8 @@ Session scope 的 `myagents im channels` 返回该 Agent 的连接能力与精�
 全部 Runtime 的 CLI 共用 `handleImSendMessage`/`sendChannelMessage` 和 Rust caller/target/file 校验；不经 shell 调另一个入口。当前实际会话仍直接发送；其他会话要求 target.id、text、context，由 Rust 解析原入站身份并交给目标绑定 Session。跨会话结果 action=handoff，accepted 仅为 Inbox 队列 ACK，不能当作模型消费或平台发送回执；不自动回传目标整轮回答。直接发送的 sent/failed/unknown/partial 保持平台接受语义，不是已读；未知或部分结果不自动重试整批。系统 prompt 使用统一发送描述，详细参数继续由 `im readme` / leaf help 提供。
 
 
-Task 通知的来源不是 CLI JSON 权限：Node admin admission 移除调用者的 notificationContext，仅对当前内部轮次从 SessionEngine 冻结 Channel snapshot / Task owner 生成；Rust 校验 generation、scope 与活动 execution identity。公开 CLI、Global Sidecar 无活动上下文时不能借用旁边正在运行的 Session。目标参数和 notification patch 经 TaskApplication/TaskStore；`task notification` 只改变某条投递记录，重试和明确重发均不重新执行业务。
+## Task 通知
+
+通知的来源上下文由宿主提供，不能通过 CLI JSON 声明身份。Node Admin API 丢弃调用者传入的 `notificationContext`，仅从当前内部 SessionEngine 轮次读取 Channel 快照或 Task 执行身份；Rust 校验 Sidecar 代次、所属范围和活动执行记录。公开 CLI、无活动上下文的 Global Sidecar 不能借用其他 Session 的来源。
+
+通知目标及局部更新统一交给 TaskApplication/TaskStore。普通 Agent 和 Team AI 从 Channel 创建 Task 时都默认通知原聊天；当前 Task 内创建后续 Task 则继承本次执行已确定的策略，显式参数优先。无来源的创建默认关闭 IM。目标类型、兼容和异常处理见 [Task 通知策略与投递记录](task_center.md#task-通知策略与投递记录)；具体参数以 `task create-direct --help`、`task update --help` 为准。`task notification` 只管理某条投递记录，重试或重新发送均不重新执行业务。

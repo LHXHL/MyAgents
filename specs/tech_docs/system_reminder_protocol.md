@@ -72,9 +72,9 @@ Space IssueDelivery 在这层通用 envelope 内还有独立的 Registered Agent
 
 Task（含 Cron 兼容入口）的当前结果通知通过既有 Inbox 的本地 `task.result` 事件进入目标
 Session；`renderSessionEventPrompt` 使用 `myagents-session-event` envelope 携带 Task、delivery
-及结果关联。Task 通知由 TaskStore 管理，转述采用 caller-owned 输出，不再进入 Heartbeat
-pending/wake 通路。普通 Heartbeat 保持原协议；`cron-event-relay` 仅保留旧 heartbeat 请求
-中 cron event payload 的兼容格式，不是当前 Task 通知入口。
+及结果关联。Task 通知由 [TaskStore](task_center.md#task-通知策略与投递记录) 管理，转述输出交给通知调用方处理，
+不再经过 Heartbeat 待发队列或唤醒流程。普通 Heartbeat 保持原协议；`cron-event-relay`
+仅兼容旧 Heartbeat 请求中的 Cron 事件，不是当前 Task 通知入口。
 
 ## 前端展示规则
 

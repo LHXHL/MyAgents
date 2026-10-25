@@ -254,12 +254,23 @@ recurring/scheduled mode when omitted, rather than leaving accepted schedule fie
 
 ### Task 通知策略与投递记录
 
-`task::notification` 是策略规范化和 Task 行内通知记录的 owner。`TaskApplication` 创建时按显式目标 → 当前执行冻结的父 Task 策略 → 宿主轮次 ConversationRef → off 解析；desktop/events 独立继承。普通 Agent 与 Team AI 同规则，GUI/无上下文 CLI 不猜来源。Management API 校验 Sidecar generation 与父 Task/queue/Session 身份，Node 只接纳内部调用的 SessionEngine 冻结轮次投影，移除调用者伪造上下文。
+Rust `task::notification` 统一处理通知策略与 Task 内的投递记录。`TaskApplication` 创建时按以下优先级确定 IM 目标：显式参数 → 当前执行中已确定的父 Task 策略（包括关闭）→ 经宿主验证的发起聊天 → 关闭。桌面开关和通知事件分别继承。普通 Agent 与 Team AI 规则一致；GUI 和没有有效宿主上下文的 CLI 不推测来源。
 
-版本 1 的 `notification.im` 是 off / conversation(channelId,sessionKey) / recent-private(channel|agent) 互斥联合。current 只作输入便利值。旧 botChannelId 唯一归属 Agent 时保留 Agent 自动范围，独立 Bot 保留连接范围；botThread 不激活为精确地址，缺失/歧义保留可见诊断。未知版本使 TaskStore 只读，避免有损重写。新 Cron GUI/DTO 直传 canonical notification，旧 delivery/notifyEnabled 只在兼容边界转换，局部更改不覆盖其余字段。
+Node 只从内部调用当前轮次的 SessionEngine 快照生成来源上下文，丢弃调用者自报的 `notificationContext`；Management API 再校验 Sidecar 代次、父 Task、队列项与执行 Session。CLI 接入边界见 [CLI 架构](cli_architecture.md#task-通知)。
 
-一次执行的 execution + 终态在原 TaskStore 事务中合并为一条 `notificationDeliveries` 记录，冻结当时策略/结果；桌面独立尽力发送，不重放。IM 作业可从 TaskStore 重建，不拥有业务调度。最多 32 条 pending、32 条 retained terminal，单份结果/准备文本限 64 KiB；超限产生可见失败，保留执行 Session，不挤掉待发、不重跑业务。
+版本 1 的 `notification.im` 使用以下互斥目标，`current` 仅为输入简写，保存前必须解析：
 
-记录使用一个 deliveryId 和每次 attemptId；attemptId 同时是转述 queueId。状态为 waiting/preparing/prepared/sending/sent/suppressed/failed/unknown/partial/cancelled。平台调用前先提交准备文本；恢复 preparing/sending 为 unknown，明确 retry 不接受 unknown/partial，显式 resend 才允许重复风险。迟到回执必须匹配当前 attempt 和目标 Session。删除在原事务取消未发送记录，Stop/Rerun/归档不冒充投递撤销；已经交给平台的发送不可收回。
+| 目标 | 含义 |
+|---|---|
+| `off` | 关闭 IM 通知 |
+| `conversation(channelId, sessionKey)` | 指定连接内的群聊或私聊；转述时使用其当前绑定 Session |
+| `recent-private(scope=channel)` | 仅在指定 Channel 内选择最近私聊 |
+| `recent-private(scope=agent)` | 在指定 Agent 的多个 Channel 中选择最近私聊 |
 
-`notification_worker` 解析并冻结聊天，复用 ChannelOwner peer fence 与 Inbox prepare/owner 生命周期；TaskResultEvent 经 SessionEngine.runInjectedTurn caller-owned 转述，真实 terminal 回写 TaskStore。转述无业务 Task turnOwner，analytics origin 为 automation/task_notification，抑制通用完成 toast；不会增加执行次数/启动 Goal/replyBack。排队确认与准备完成分开，排队后换绑在 beforeDispatch 拒绝并重新解析同一聊天，开始后不换收件人。B 已是目标当前 Session 时复用输出；纯状态仅记录事件并确定性发送。目标 auto/tool_only 控制整个自动回报链。平台发送复用 IM channel_send 的分段和 receipt，unknown/partial 不自动重发。
+旧 `botChannelId` 唯一归属 Agent 时保留跨 Channel 自动选择语义；独立 Bot 保留连接范围。旧 `botThread` 不作为精确聊天地址启用，目标缺失或归属有歧义时留下可见诊断。未知通知版本使 TaskStore 只读，防止有损重写。Cron GUI/DTO 传递统一通知结构，旧 `delivery`/`notifyEnabled` 仅在兼容入口转换；局部更新不得覆盖未指定字段。
+
+命中通知订阅的执行事件及其终态，在提交结果的同一 TaskStore 事务中合并通知意图，固定当时的策略与结果。需要 IM 投递或报告策略错误的意图写入 `notificationDeliveries`；仅桌面通知的意图不保存到该列表。IM 通知作业可据此恢复，业务任务不因投递失败重新运行。记录数量及结果、准备文本大小有明确上限，具体值见 `task/notification.rs`；超限报告失败并保留执行 Session，不挤掉待发通知。桌面通知独立尽力发送，不持久重放。
+
+每条记录有稳定的 `deliveryId`，每次尝试有独立的 `attemptId`，后者同时作为转述队列的 `queueId`。平台调用前必须保存准备文本；迟到回执必须匹配当前尝试与目标 Session。状态包括等待、准备、发送以及成功、静默、失败、结果未知、部分发送和取消，准确枚举见共享 Task 类型。重启后无法确认完成的准备或发送转为 `unknown`；`unknown`/`partial` 不自动重试，用户明确 `resend` 才承担重复风险。删除 Task 时在同一事务取消未发送记录；停止、重跑和归档不等于取消通知，已交给平台的消息无法收回。
+
+`notification_worker` 解析并固定聊天地址，复用 ChannelOwner、Inbox 和 SessionEngine。目标 Session 通过 `runInjectedTurn` 转述，输出由通知调用方接管，不再走普通 IM 自动回复；转述完成后回写 TaskStore。它不增加任务执行次数、不启动 Goal、不创建 `replyBack`，也不重复触发普通桌面完成通知。排队成功不代表转述或平台发送完成；排队期间换绑由 `beforeDispatch` 拒绝旧队列项，再解析同一个聊天。执行 Session 已是目标当前 Session 时复用其输出；纯状态通知只记录事件并生成固定文本，不调用模型。目标的 `auto`/`tool_only` 发送模式决定是否自动回报，平台发送及分段回执仍由 [IM owner](im_integration_architecture.md#task-通知的稳定地址与发送-owner) 负责。

@@ -77,10 +77,10 @@ myagents-releases/
 2. 检查依赖（Rust 通过 `rustup` 使用仓库 `rust-toolchain.toml` 固定版本、Node.js、codesign；任一 macOS 架构的原生推理资源冷构建额外检查 Git、Python ≥ 3.10、CMake ≥ 3.28 与 Apple Clang）
 3. 配置生产环境 CSP
 4. TypeScript 类型检查
-5. 通过 `build:assets` 一次构建前端、Sidecar、Bridge 与 CLI，双架构共用该结果；后续 Tauri 调用关闭本次业务构建钩子
-6. 通过共享 SDK 准备脚本校验所选架构的原生包，缺失或损坏时用 npm 补装（首次下载可能较慢，显示目标、版本和 npm 下载日志）
-7. 按目标复制并签名原生资源，构建 Tauri 应用 (Release + 签名 + 公证)
-8. 恢复开发配置
+5. 通过共享 SDK 准备脚本校验所选架构的原生包，缺失或损坏时用 npm 补装（首次下载可能较慢，显示目标、版本和 npm 下载日志）
+6. 对每个目标架构准备 Node 和 DSH 资源，再执行 `build:assets`，使业务 bundle 绑定该目标的 DSH 身份；后续 Tauri 调用关闭重复的业务构建钩子
+7. 按目标准备、复制并签名其余原生资源，构建 Tauri 应用（Release、签名、公证）
+8. 恢复主机架构的 Node、DSH 和业务 bundle，再恢复开发配置；已打包产物不受影响
 
 **产物检查**：
 构建完成后会显示每个架构的文件状态：

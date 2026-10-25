@@ -20,7 +20,7 @@ Renderer → Tauri 的普通命令属于控制面。Worker 使用私有 stdin/st
 
 ### 随包原生资源校验
 
-prepared build cache 是当前构建独占的不可变产物，要求 native / legal 文件集合与 manifest 完全一致。已安装 App 则允许覆盖升级：Windows 安装器会保留新版不再发布的旧许可证（例如已移除依赖的 HDBSCAN / KDTREE notices）。Worker 按当前 manifest 校验每个声明文件的普通文件路径、大小、SHA-256，以及必需许可证集合；不枚举或加载未被清单引用的旧许可证。旧 notices 不得让当前资源失效，也不需要运行时删除或迁移。原生二进制、共享 ORT identity、ABI / build identity 和受限 DLL 加载仍沿原有严格校验路径。
+构建缓存是不可变产物，要求原生文件和许可证文件的集合与 manifest 完全一致。已安装 App 则允许覆盖升级：Windows 安装器可能保留新版不再发布的许可证文件，例如已移除依赖的 HDBSCAN / KDTREE 声明。Worker 按当前 manifest 校验每个声明文件的路径、普通文件类型、大小、SHA-256，以及必需许可证集合；未被清单引用的旧许可证不参与资源有效性判断，也不需要运行时删除或迁移。原生二进制、共享 ONNX Runtime 身份、ABI、构建身份及 DLL 加载仍执行原有严格校验。
 
 ## 产品控制面与投影
 

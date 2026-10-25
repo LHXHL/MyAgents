@@ -50,7 +50,18 @@ Task 的具体状态转换由产品约束；不要用直接改文件跳过状态
 
 Task 默认属于当前工作区，不会因为由私聊发起就自动固定到该私聊 Session。需要延续当前上下文时，Agent 显式选择 `single-session` 并绑定当前 Session；选择 `new-session` 或省略 runMode 时，每次 AI 执行使用新 Session。固定 Session 绑定的是具体 Session ID，私聊 `/new` 不会自动迁移该 Task。
 
-执行结果保存在绑定 Session 或各次执行 Session/Task 运行历史中，不会自动复制到 Task 评论。通过 Channel 对话创建时，普通 Agent 与 Team AI 默认回原 Channel + sessionKey；回报交给该聊天当前绑定的 Session 转述，换绑不停止原任务。Task 执行中创建后续 Task 默认继承本次执行的通知策略。GUI 和无上下文 CLI 默认关闭 IM。可明确关闭、指定聊天、固定 Channel 最近私聊或选择 Agent 跨平台最近私聊。桌面开关独立，普通 Task 默认开启，显示受系统权限影响。详情可查看投递状态及重试/重发/取消；这些操作不重跑任务，unknown/partial 重发可能重复。Task 回报不再依赖 Heartbeat 巡检。
+执行结果保存在绑定 Session 或各次执行 Session/Task 运行历史中，不会自动复制到 Task 评论。
+
+### 结果通知
+
+通知目标与执行 Session 分开配置。默认规则如下：
+
+- 从 Channel 聊天创建时，普通 Agent 和 Team AI 都默认通知原 Channel + sessionKey。结果交给该聊天当前绑定的 Session 转述；换绑不会停止原任务，也不要求保留创建任务时的 Session。
+- 当前 Task 执行中创建后续 Task，默认继承本次执行的通知策略，包括关闭通知。
+- GUI 和没有来源上下文的 CLI 默认关闭 IM 通知。桌面通知单独控制，普通 Task 默认开启，实际显示受系统权限影响。
+- 显式参数优先于上述默认值。可关闭 IM、指定群聊或私聊、固定 Channel 的最近私聊，或选择 Agent 跨 Channel 的最近私聊。固定 Channel 不会改投其他平台；一条通知确定收件聊天后，离线时等待，不换人发送。
+
+任务详情显示通知策略和可展开的投递记录。等待或失败时可重试；结果未知或部分发送时，重新发送前会提示可能重复。取消只能阻止尚未发送的内容，无法收回平台已接受的消息。这些操作不重新执行任务，进入队列也不代表平台已经收到。Task 结果通知不经过 Heartbeat 巡检。
 
 ### 智能创建、评论与通知
 

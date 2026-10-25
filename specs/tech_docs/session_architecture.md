@@ -354,4 +354,6 @@ Inbox 的可选 `send.request.channelHandoff` 是宿主数据，目标 admission
 
 ### Task 结果事件
 
-`task.result` 是本地 Inbox typed event，携带 Task/delivery/attempt、执行 Session 和固定 ConversationRef，禁止 replyBack/network return。Rust TaskStore 拥有意图和回执；Inbox 的接纳只代表已排队。`admitTaskNotification` 通过现有 runInjectedTurn 与准确 queue terminal 准备结果；目标模型/MCP/权限仍来自该 Session，caller-owned 输出不走普通 IM 镜像，automation/task_notification origin 不生成第二次桌面完成通知。纯状态用原 transcript 持久化/回放能力写入 Task 引用，不触发模型。执行队列繁忙时不提前改动正在运行轮次的场景；现有 beforeDispatch 在实际 promotion 阶段应用场景并验证通知资格。
+`task.result` 是本地 Inbox 类型化事件，携带 Task、delivery、attempt、执行 Session 和固定的 `ConversationRef`，不使用 `replyBack` 或网络返回路径。投递记录由 [TaskStore](task_center.md#task-通知策略与投递记录) 管理，Inbox 接纳只表示已排队。
+
+`admitTaskNotification` 复用 `runInjectedTurn` 和对应队列项的真实终态准备通知文本；模型、MCP 与权限仍来自目标 Session，输出交给通知调用方处理，不走普通 IM 自动回复。`automation/task_notification` 来源不触发第二次桌面完成通知。纯状态事件只使用既有 transcript 持久化和回放能力记录 Task 引用，不调用模型。队列繁忙时不改动正在执行轮次的场景，直到 `beforeDispatch` 实际开始处理该项时才应用场景并再次验证通知资格。
