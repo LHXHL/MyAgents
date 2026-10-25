@@ -289,41 +289,10 @@ fn verify_legal_inventory(
         return Err(NativeBundleError::ManifestInvalid);
     }
 
-    let legal_root = root.join("legal");
-    ensure_plain_directory(&legal_root)?;
-    let mut actual = HashSet::new();
-    collect_plain_files(root, &legal_root, &mut actual)?;
-    if actual != declared {
-        return Err(NativeBundleError::ManifestInvalid);
-    }
-    Ok(())
-}
-
-fn collect_plain_files(
-    bundle_root: &Path,
-    current: &Path,
-    result: &mut HashSet<String>,
-) -> Result<(), NativeBundleError> {
-    for entry in fs::read_dir(current).map_err(|_| NativeBundleError::FileMissing)? {
-        let entry = entry.map_err(|_| NativeBundleError::FileMismatch)?;
-        let path = entry.path();
-        let metadata = fs::symlink_metadata(&path).map_err(|_| NativeBundleError::FileMismatch)?;
-        if metadata.file_type().is_symlink() {
-            return Err(NativeBundleError::UnsafePath);
-        }
-        if metadata.is_dir() {
-            collect_plain_files(bundle_root, &path, result)?;
-        } else if metadata.is_file() {
-            let relative = path
-                .strip_prefix(bundle_root)
-                .map_err(|_| NativeBundleError::UnsafePath)?
-                .to_string_lossy()
-                .replace('\\', "/");
-            result.insert(relative);
-        } else {
-            return Err(NativeBundleError::FileMismatch);
-        }
-    }
+    // Windows overlay upgrades retain notices removed from newer manifests.
+    // Every current notice is verified above; unreferenced legal files are
+    // never loaded. Exact directory inventories belong to the prepared build
+    // cache, not the installed App. See recording_and_speech_recognition.md.
     Ok(())
 }
 
@@ -771,7 +740,25 @@ mod tests {
     }
 
     #[test]
-    fn rejects_missing_or_unlisted_legal_files() {
+    fn accepts_retired_legal_files_left_by_overlay_upgrades() {
+        let root = tempfile::tempdir().unwrap();
+        let (manifest, runtime, worker) = write_manifest(root.path());
+        // These were shipped before the HDBSCAN/KDTREE removal. Windows
+        // overwrite upgrades replace current files but retain retired notices.
+        for relative in [
+            "legal/HDBSCAN-LICENSE-APACHE",
+            "legal/HDBSCAN-LICENSE-MIT",
+            "legal/KDTREE-LICENSE-APACHE",
+            "legal/KDTREE-LICENSE-MIT",
+            "legal/another-retired-package/LICENSE",
+        ] {
+            write_file(root.path(), relative, b"retired notice");
+        }
+        assert!(verify_native_bundle(&manifest, &runtime, &worker).is_ok());
+    }
+
+    #[test]
+    fn rejects_missing_or_tampered_declared_legal_files() {
         let root = tempfile::tempdir().unwrap();
         let (manifest, runtime, worker) = write_manifest(root.path());
         fs::remove_file(root.path().join("legal/LIBOPUS-LICENSE")).unwrap();
@@ -782,10 +769,30 @@ mod tests {
 
         let root = tempfile::tempdir().unwrap();
         let (manifest, runtime, worker) = write_manifest(root.path());
-        fs::write(root.path().join("legal/undeclared"), b"drift").unwrap();
+        let path = root.path().join("legal/LIBOPUS-LICENSE");
+        let mut bytes = fs::read(&path).unwrap();
+        bytes[0] ^= 1;
+        fs::write(path, bytes).unwrap();
         assert_eq!(
             verify_native_bundle(&manifest, &runtime, &worker),
-            Err(NativeBundleError::ManifestInvalid)
+            Err(NativeBundleError::FileMismatch)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlinked_declared_legal_files() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let (manifest, runtime, worker) = write_manifest(root.path());
+        let path = root.path().join("legal/LIBOPUS-LICENSE");
+        let target = outside.path().join("license");
+        fs::copy(&path, &target).unwrap();
+        fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(target, path).unwrap();
+        assert_eq!(
+            verify_native_bundle(&manifest, &runtime, &worker),
+            Err(NativeBundleError::FileMismatch)
         );
     }
 
