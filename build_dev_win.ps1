@@ -160,13 +160,6 @@ foreach ($dir in $dirsToClean) {
 # Prepare the same pinned Node/npm pair as setup and release builds.
 & "$PROJECT_DIR\scripts\download_nodejs.ps1"
 Use-BundledNodeBuildTools -ProjectDir $PROJECT_DIR
-if ($DshSource -eq "local") {
-    if (-not $DshHandoff) { throw "-DshSource local requires -DshHandoff <absolute directory>" }
-    & node "$PROJECT_DIR\scripts\integrated-runtimes\prepare-dsh-runtime.mjs" --source local --handoff $DshHandoff --target win32-x64
-} else {
-    & node "$PROJECT_DIR\scripts\integrated-runtimes\prepare-dsh-runtime.mjs" --source release --target win32-x64
-}
-if ($LASTEXITCODE -ne 0) { throw "MyAgents-dsh 构建资源准备失败" }
 
 # 创建占位符资源目录（满足 Tauri bundle 阶段的资源校验）。
 # server-dist.js / plugin-bridge-dist.mjs / cli/myagents.cjs 在下面的
@@ -215,6 +208,14 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 Write-ColorOutput "✓ Node.js 项目依赖已就绪" "Green"
+if ($DshSource -eq "local") {
+    if (-not $DshHandoff) { throw "-DshSource local requires -DshHandoff <absolute directory>" }
+    & node "$PROJECT_DIR\scripts\integrated-runtimes\prepare-dsh-runtime.mjs" --source local --handoff $DshHandoff --target win32-x64
+} else {
+    & node "$PROJECT_DIR\scripts\integrated-runtimes\prepare-dsh-runtime.mjs" --source release --target win32-x64
+}
+if ($LASTEXITCODE -ne 0) { throw "MyAgents-dsh 构建资源准备失败" }
+
 Write-ColorOutput "[准备] 校验并暂存 Claude Agent SDK native binary (win32-x64)..." "Blue"
 & "$PROJECT_DIR\scripts\ensure_claude_sdk_package.ps1" -Arch x64 -Stage
 Write-ColorOutput "✓ Claude Agent SDK native binary 已就绪" "Green"

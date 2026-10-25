@@ -527,7 +527,7 @@ async fn check_and_download_silently(app: &AppHandle) -> Result<Option<String>, 
         ),
     );
 
-    let update = match updater.check().await {
+    let mut update = match updater.check().await {
         Ok(Some(update)) => update,
         Ok(None) => {
             logger::info(
@@ -550,6 +550,9 @@ async fn check_and_download_silently(app: &AppHandle) -> Result<Option<String>, 
             return Err(format!("Update check failed: {}", e));
         }
     };
+
+    // The updater builder timeout only covers the check, not the returned download.
+    update.timeout = Some(crate::resource_download::RESOURCE_DOWNLOAD_TIMEOUT);
 
     // Invariant: LATEST_UPDATE cache must only hold an Update whose `version`
     // matches what's currently on disk in pending_update.bin/json. Otherwise a

@@ -977,7 +977,7 @@ fn speech_model_http_client_builder() -> reqwest::ClientBuilder {
         .user_agent(format!("MyAgents/{}", env!("CARGO_PKG_VERSION")))
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(30))
-        .timeout(Duration::from_secs(30 * 60))
+        .timeout(crate::resource_download::RESOURCE_DOWNLOAD_TIMEOUT)
 }
 
 async fn fetch_limited_bytes(

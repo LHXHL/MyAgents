@@ -99,7 +99,7 @@ test('all resource consumers use the pinned official pair, without npm overrides
   assert.doesNotMatch(readFileSync(join(repo, 'scripts/download_nodejs.sh'), 'utf8'), /upgrade_npm|npm\/latest/);
 });
 
-test('Windows setup and builds initialize MSVC before native preflight and activate bundled Node before npm install', () => {
+test('Windows setup and builds check prerequisites and install dependencies before preparing Node-based resources', () => {
   for (const name of ['setup_windows.ps1', 'build_windows.ps1', 'build_dev_win.ps1']) {
     const source = readFileSync(join(repo, name), 'utf8');
     const helper = source.indexOf('windows-build-environment.ps1');
@@ -108,12 +108,15 @@ test('Windows setup and builds initialize MSVC before native preflight and activ
     const download = source.indexOf('download_nodejs.ps1');
     const activate = source.indexOf('Use-BundledNodeBuildTools');
     const install = source.indexOf('& npm install');
+    const prepareResource = source.indexOf(name === 'setup_windows.ps1' ? 'prepare-cliproxy.mjs' : 'prepare-dsh-runtime.mjs');
     assert.ok(helper >= 0 && helper < msvc && msvc < preflight, `${name}: MSVC must be ready before preflight`);
+    assert.ok(preflight < activate, `${name}: native prerequisites must be checked before dependency installation`);
     assert.ok(download >= 0 && download < activate && activate < install, `${name}: bundled Node must be active before npm install`);
+    assert.ok(install < prepareResource, `${name}: project dependencies must be installed before resource downloads use Undici`);
   }
 });
 
-for (const scenario of ['empty', 'valid-cache', 'wrong-npm', 'missing-npx', 'old-node', 'wrong-arch', 'stale-staging', 'bad-download']) {
+for (const scenario of ['empty', 'valid-cache', 'wrong-npm', 'missing-npx', 'old-node', 'wrong-arch', 'stale-staging', 'cross-target', 'bad-download']) {
   test(`Unix resource preparation: ${scenario}`, { skip: process.platform === 'win32' }, (t) => {
     const root = fixture(t);
     const cache = join(root, `src-tauri/resources/nodejs-cache/darwin-arm64-v${versions.node}`);
@@ -130,6 +133,9 @@ for (const scenario of ['empty', 'valid-cache', 'wrong-npm', 'missing-npx', 'old
       put(join(tree, '.myagents-nodejs-arch'), scenario === 'wrong-arch' ? 'x64' : 'arm64');
       if (scenario === 'missing-npx') rmSync(join(tree, 'lib/node_modules/npm/bin/npx-cli.js'));
     }
+    if (scenario === 'cross-target') {
+      put(join(cache, 'bin/node'), `#!/bin/sh\necho TARGET_BINARY_EXECUTED >&2\nexit 126\n`, true);
+    }
     // No network or real runtime required: run the whole preparation pipeline
     // against a local archive, with file(1) identifying the synthetic target.
     put(join(root, 'tools/file'), '#!/bin/sh\necho "Mach-O 64-bit executable arm64"\n', true);
@@ -144,11 +150,13 @@ for (const scenario of ['empty', 'valid-cache', 'wrong-npm', 'missing-npx', 'old
       return;
     }
     assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, new RegExp(`Bundled node version: v${versions.node}`));
+    assert.doesNotMatch(result.stdout + result.stderr, /unknown|TARGET_BINARY_EXECUTED/);
     assert.equal(JSON.parse(readFileSync(join(staging, 'lib/node_modules/npm/package.json'))).version, versions.npm);
     assert.equal(existsSync(join(staging, 'lib/node_modules/npm/bin/npx-cli.js')), true);
-    assert.equal(existsSync(join(root, 'downloads')), scenario !== 'valid-cache');
-    if (scenario !== 'valid-cache') {
-      assert.match(readFileSync(join(root, 'downloads'), 'utf8'), /--max-time 300 --retry 2 --retry-delay 1 --retry-connrefused/);
+    assert.equal(existsSync(join(root, 'downloads')), !['valid-cache', 'cross-target'].includes(scenario));
+    if (!['valid-cache', 'cross-target'].includes(scenario)) {
+      assert.match(readFileSync(join(root, 'downloads'), 'utf8'), /--connect-timeout 1800 --max-time 1800 --retry 4 --retry-delay 1 --retry-connrefused/);
       assert.match(readFileSync(join(root, 'downloads'), 'utf8'), new RegExp(`https://nodejs.org/dist/v${versions.node}/node-v${versions.node}-darwin-arm64.tar.xz`));
     }
   });
@@ -227,7 +235,7 @@ $global:Calls = 0
 function Start-Sleep { param($Seconds) }
 function Invoke-WebRequest {
   param($Uri, $OutFile, [switch]$UseBasicParsing, $TimeoutSec)
-  if ($TimeoutSec -lt 300) { throw 'short timeout' }
+  if ($TimeoutSec -ne 1800) { throw 'short timeout' }
   if (-not $OutFile.EndsWith('.partial')) { throw 'must isolate partial files' }
   $global:Calls++
   Set-Content -LiteralPath $OutFile 'partial'
@@ -242,7 +250,7 @@ try {
   Get-BuildDownload -Uri 'https://example.invalid/installer' -OutFile ${psQuote(output)} -Validate { param($Path) '${scenario}' -ne 'invalid-payload' }
 } catch { $Failed = $true }
 if ($Failed -ne $${['permanent', 'invalid-payload', 'exhausted'].includes(scenario)}) { throw 'unexpected result' }
-if ($global:Calls -ne ${scenario === 'exhausted' ? 3 : ['transient', 'timeout'].includes(scenario) ? 2 : 1}) { throw 'unexpected attempt count' }
+if ($global:Calls -ne ${scenario === 'exhausted' ? 5 : ['transient', 'timeout'].includes(scenario) ? 2 : 1}) { throw 'unexpected attempt count' }
 $Expected = '${['permanent', 'invalid-payload', 'exhausted'].includes(scenario) ? 'previous' : 'complete'}'
 if ((Get-Content -Raw ${psQuote(output)}).Trim() -ne $Expected) { throw 'wrong published bytes' }
 if (Get-ChildItem ${psQuote(root)} -Filter '*.partial') { throw 'partial file leaked' }

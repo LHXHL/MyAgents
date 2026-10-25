@@ -303,7 +303,7 @@ download_macos() {
     trap "rm -rf '$tmp_dir'" RETURN
 
     # Download
-    curl -fsSL --connect-timeout 300 --max-time 300 --retry 2 --retry-delay 1 --retry-connrefused "$url" -o "${tmp_dir}/${tarball}"
+    curl -fsSL --connect-timeout 1800 --max-time 1800 --retry 4 --retry-delay 1 --retry-connrefused "$url" -o "${tmp_dir}/${tarball}"
 
     # Extract — strip the top-level directory
     log_info "Extracting..."
@@ -361,7 +361,7 @@ download_linux() {
     tmp_dir=$(mktemp -d)
     trap "rm -rf '$tmp_dir'" RETURN
 
-    curl -fsSL --connect-timeout 300 --max-time 300 --retry 2 --retry-delay 1 --retry-connrefused "$url" -o "${tmp_dir}/${tarball}"
+    curl -fsSL --connect-timeout 1800 --max-time 1800 --retry 4 --retry-delay 1 --retry-connrefused "$url" -o "${tmp_dir}/${tarball}"
 
     log_info "Extracting..."
     tar xf "${tmp_dir}/${tarball}" -C "$tmp_dir"
@@ -403,7 +403,7 @@ download_windows() {
     tmp_dir=$(mktemp -d)
     trap "rm -rf '$tmp_dir'" RETURN
 
-    curl -fsSL --connect-timeout 300 --max-time 300 --retry 2 --retry-delay 1 --retry-connrefused "$url" -o "${tmp_dir}/${zipfile}"
+    curl -fsSL --connect-timeout 1800 --max-time 1800 --retry 4 --retry-delay 1 --retry-connrefused "$url" -o "${tmp_dir}/${zipfile}"
 
     log_info "Extracting..."
     unzip -q "${tmp_dir}/${zipfile}" -d "$tmp_dir"
@@ -509,7 +509,8 @@ echo ""
 
 # Show contents
 if [[ -f "${RESOURCES_DIR}/bin/node" ]]; then
-    local_ver=$("${RESOURCES_DIR}/bin/node" --version 2>/dev/null || echo "unknown")
+    # stage_nodejs already verified this target; a cross-target binary need not run on the host.
+    local_ver="v$(cat "${RESOURCES_DIR}/.myagents-nodejs-version")"
     log_info "Bundled node version: ${local_ver}"
     log_info "Contents:"
     du -sh "${RESOURCES_DIR}" 2>/dev/null | awk '{print "  Total: " $1}'

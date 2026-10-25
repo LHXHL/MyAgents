@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, posix, relative, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { BUILD_DOWNLOAD_ATTEMPTS, BUILD_DOWNLOAD_TIMEOUT_MS } from './build-resource-download.mjs';
 import { withResourcePrepareLock } from './document-processing-resource-cache.mjs';
 
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -91,7 +92,7 @@ function publish(source, destination) {
 export function installRuntime(root, os, cpu) {
   // npm.cmd requires a shell on Windows; every argument here is fixed/validated.
   execFileSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', [
-    'ci', '--no-audit', '--no-fund', '--ignore-scripts', '--force',
+    'ci', `--fetch-timeout=${BUILD_DOWNLOAD_TIMEOUT_MS}`, `--fetch-retries=${BUILD_DOWNLOAD_ATTEMPTS - 1}`, '--no-audit', '--no-fund', '--ignore-scripts', '--force',
     `--os=${os}`, `--cpu=${cpu}`, ...(os === 'linux' ? ['--libc=glibc'] : []),
   ], { cwd: root, stdio: 'inherit', shell: process.platform === 'win32' });
 }

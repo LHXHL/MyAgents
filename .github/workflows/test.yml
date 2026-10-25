@@ -122,7 +122,12 @@ jobs:
           node --test scripts/windows-node-runtime-install.test.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Prepare signed CLIProxy build inputs
-        run: node scripts/prepare-cliproxy.mjs win32-x64
+        run: |
+          npm ci --ignore-scripts
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/prepare-cliproxy.mjs win32-x64
+      - name: Verify Windows bootstrap download retry and publication
+        run: node --test scripts/node-runtime.test.mjs
       - name: Verify selective Sherpa source extraction on Windows
         run: node --test scripts/sherpa-source-extraction.test.mjs
       - uses: dtolnay/rust-toolchain@1.92.0
@@ -215,7 +220,9 @@ jobs:
         with:
           workspaces: src-tauri
       - name: Prepare signed CLIProxy build inputs
-        run: node scripts/prepare-cliproxy.mjs
+        run: |
+          npm ci --ignore-scripts
+          node scripts/prepare-cliproxy.mjs
       - name: Prepare non-executed Tauri resource paths
         run: |
           mkdir -p src-tauri/resources/{claude-agent-sdk,sharp-runtime,tsx-runtime,nodejs,speech-inference,cli,document-processing,integrated-runtimes/dsh}
@@ -224,6 +231,8 @@ jobs:
             touch "src-tauri/resources/$directory/.ci-placeholder"
           done
           touch src-tauri/resources/server-dist.js src-tauri/resources/plugin-bridge-dist.mjs
+      - name: Test native file-drop pasteboard compatibility
+        run: cargo test --manifest-path vendor/tao/Cargo.toml --locked --lib file_drop_tests --target-dir src-tauri/target
       - name: Test native component lifecycle without provider credentials
         run: |
           host=$(rustc -vV | sed -n 's/^host: //p')

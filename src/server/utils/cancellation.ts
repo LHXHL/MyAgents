@@ -296,7 +296,10 @@ export async function cancellableFetch(
   const timeoutMs = opts?.timeoutMs ?? 30_000;
   return withAbortSignal(
     opts?.parentSignal,
-    (signal) => fetchWithGeneralProxy(url, { ...(init ?? {}), signal }),
+    (signal) => fetchWithGeneralProxy(url, { ...(init ?? {}), signal },
+      // Undici's default five-minute header timeout must not truncate a
+      // deliberately longer owner budget (for example a Skill install).
+      timeoutMs > 300_000 ? timeoutMs : undefined),
     { timeoutMs },
   );
 }
@@ -305,11 +308,17 @@ export async function cancellableFetch(
 export async function fetchWithGeneralProxy(
   url: string,
   init?: RequestInit,
+  transportTimeoutMs?: number,
 ): Promise<Response> {
   const dispatcher = getGeneralRequestDispatcher();
   const response = await generalFetchTransport(url, {
     ...(init ?? {}),
-    dispatcher,
+    dispatcher: transportTimeoutMs === undefined ? dispatcher : dispatcher.compose((dispatch) =>
+      (options, handler) => dispatch({
+        ...options,
+        headersTimeout: transportTimeoutMs,
+        bodyTimeout: transportTimeoutMs,
+      }, handler)),
   } as Parameters<typeof undiciFetch>[1]);
   return response as unknown as Response;
 }

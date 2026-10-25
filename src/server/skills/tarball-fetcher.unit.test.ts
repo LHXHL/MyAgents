@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import AdmZip from 'adm-zip';
+import type { Dispatcher } from 'undici';
+import { SKILL_DOWNLOAD_TIMEOUT_MS } from '../../shared/skillDownloadPolicy';
 
 const networkMocks = vi.hoisted(() => ({
   fetch: vi.fn(),
@@ -32,6 +34,8 @@ describe('skill tarball SSRF guard', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
     _resetProxyStateForTests(null, {});
   });
 
@@ -70,6 +74,7 @@ describe('skill tarball SSRF guard', () => {
       scope: { mode: 'custom', generalRequests: false, providerIds: ['provider-a'] },
     }, { HTTPS_PROXY: 'http://127.0.0.1:18080' });
     const inheritedDispatcher = getGeneralRequestDispatcher();
+    const dispatch = vi.spyOn(inheritedDispatcher, 'dispatch').mockReturnValue(true);
     networkMocks.fetch.mockResolvedValue(new Response('', { status: 404 }));
 
     await expect(fetchSkillZip({
@@ -80,8 +85,13 @@ describe('skill tarball SSRF guard', () => {
       ref: 'main',
     })).rejects.toMatchObject({ statusCode: 404 });
 
-    const init = networkMocks.fetch.mock.calls[0]?.[1] as { dispatcher?: unknown };
-    expect(init.dispatcher).toBe(inheritedDispatcher);
+    const init = networkMocks.fetch.mock.calls[0]?.[1] as { dispatcher: Dispatcher };
+    const handler = {};
+    init.dispatcher.dispatch({ origin: 'https://codeload.github.com', path: '/', method: 'GET' }, handler);
+    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({
+      headersTimeout: 600_000,
+      bodyTimeout: 600_000,
+    }), handler);
   });
 
   it('keeps arbitrary raw ZIP downloads on their pinned direct dispatcher', async () => {
@@ -104,6 +114,30 @@ describe('skill tarball SSRF guard', () => {
     const init = networkMocks.fetch.mock.calls[0]?.[1] as { dispatcher?: unknown };
     expect(init.dispatcher).toBeDefined();
     expect(init.dispatcher).not.toBe(generalDispatcher);
+  });
+
+  it('allows a slow response body past five minutes and aborts at ten without retry', async () => {
+    vi.useFakeTimers();
+    let signal: AbortSignal | undefined;
+    networkMocks.fetch.mockImplementation(async (_url, init) => {
+      signal = init.signal;
+      return {
+        status: 200,
+        ok: true,
+        headers: new Headers(),
+        arrayBuffer: () => new Promise((_, reject) => {
+          signal!.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+        }),
+      };
+    });
+    const outcome = fetchSkillZip({
+      kind: 'github', displayName: 'owner/repo', owner: 'owner', repo: 'repo', ref: 'main',
+    }).catch(error => error);
+    await vi.advanceTimersByTimeAsync(300_001);
+    expect(signal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(SKILL_DOWNLOAD_TIMEOUT_MS - 300_001);
+    expect(await outcome).toMatchObject({ statusCode: 504 });
+    expect(networkMocks.fetch).toHaveBeenCalledTimes(1);
   });
 });
 

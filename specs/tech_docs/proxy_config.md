@@ -141,6 +141,16 @@ Integrated DSH 不使用 external CLI 的 `envPolicy`；Agent 从外部 Runtime 
 
 应用自有浏览器资源下载只访问签名版本锁中的 exact HTTPS URL，禁止 redirect，并始终执行 size、SHA-256 与安全解压校验。只有 transport failure 才允许对同一锁定 URL 做一次受限直连重试；确定性 HTTP 错误不伪装成代理故障。
 
+## 资源下载时限
+
+网络选路与下载时限分别由代理 owner 和资源 owner 管理。应用内 Managed Codex、Chromium、CLIProxy、语音模型和更新包的单次下载时限为 30 分钟，Rust 共用 `resource_download::RESOURCE_DOWNLOAD_TIMEOUT`；连接建立仍保留各入口的短时限，已有重试、直连回退、取消和完整性校验不变。Chromium 的正文空闲时限也为 30 分钟。更新检查仍为 15 秒，返回的 `Update.timeout` 单独设置下载预算。
+
+GitHub/raw ZIP Skill 与共用下载器的 Claude Plugin，每个候选 ZIP（含重定向及正文）为 10 分钟；Space Skill ZIP 也为 10 分钟，继续通过 Space 原有鉴权 client，仅覆盖该下载请求的 timeout。其他 Space API 与附件不扩大时限。
+
+Skill 安装的外层等待必须覆盖顺序执行：GitHub 默认分支可在 404 后从 main 转向 master，因此单次安装/探测允许两份下载预算和 30 秒处理时间；CLI `skill add` 还需容纳先探测、再提交两次请求。Node 的下载、Admin 自调用和 CLI 同时调整 Undici 的响应头/正文计时，避免默认 5 分钟先于业务期限中断；不修改共享连接池的全局默认值。Managed Codex 的持久下载状态保留时间覆盖清单与归档各自的网络路径回退，不能用旧的 30 分钟过期值把仍在执行的下载显示为空闲。
+
+setup/build 的 30 分钟、最多五次尝试属于独立构建策略，见[构建资源准备](build_resource_preparation.md#下载时限重试与原始缓存)；应用内并未统一增加重试次数。
+
 ## 验证
 
 测试应覆盖：

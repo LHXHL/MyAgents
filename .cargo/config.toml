@@ -1,0 +1,6 @@
+# Build dependencies use Cargo's native transport policy.
+[http]
+timeout = 1800
+
+[net]
+retry = 4

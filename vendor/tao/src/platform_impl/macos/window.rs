@@ -42,7 +42,7 @@ use crate::{
 };
 use core_graphics::{
   base::CGFloat,
-  display::{CGDisplay, CGDisplayMode},
+  display::CGDisplay,
   geometry::CGPoint,
 };
 use objc2::{
@@ -52,13 +52,13 @@ use objc2::{
 };
 use objc2_app_kit::{
   self as appkit, NSApp, NSApplicationPresentationOptions, NSBackingStoreType, NSColor, NSEvent,
-  NSEventModifierFlags, NSEventSubtype, NSEventType, NSRequestUserAttentionType, NSScreen, NSView,
-  NSWindow, NSWindowButton, NSWindowCollectionBehavior, NSWindowFullScreenButton,
+  NSEventModifierFlags, NSEventSubtype, NSEventType, NSPasteboard, NSPasteboardReading, NSRequestUserAttentionType, NSScreen, NSView,
+  NSWindow, NSWindowButton, NSWindowCollectionBehavior,
   NSWindowOrderingMode, NSWindowSharingType, NSWindowStyleMask,
 };
 use objc2_foundation::{
   ns_string, MainThreadMarker, NSArray, NSAutoreleasePool, NSDictionary, NSInteger, NSPoint,
-  NSRect, NSSize, NSString, NSTimeInterval, NSUInteger,
+  NSRect, NSSize, NSString, NSTimeInterval, NSUInteger, NSURL,
 };
 use once_cell::sync::Lazy;
 
@@ -271,7 +271,6 @@ fn create_window(
       }
       if pl_attrs.titlebar_buttons_hidden {
         for titlebar_button in &[
-          NSWindowFullScreenButton,
           NSWindowButton::MiniaturizeButton,
           NSWindowButton::CloseButton,
           NSWindowButton::ZoomButton,
@@ -470,7 +469,6 @@ pub struct SharedState {
   /// bar in exclusive fullscreen but want to restore the original options when
   /// transitioning back to borderless fullscreen.
   save_presentation_opts: Option<NSApplicationPresentationOptions>,
-  pub saved_desktop_display_mode: Option<(CGDisplay, CGDisplayMode)>,
   pub current_theme: Theme,
 }
 
@@ -507,7 +505,6 @@ pub struct UnownedWindow {
   decorations: AtomicBool,
   cursor_state: Weak<Mutex<CursorState>>,
   transparent: bool,
-  pub inner_rect: Option<PhysicalSize<u32>>,
 }
 
 unsafe impl Send for UnownedWindow {}
@@ -574,7 +571,8 @@ impl UnownedWindow {
       }
 
       // register for drag and drop operations.
-      ns_window.registerForDraggedTypes(&NSArray::arrayWithObject(appkit::NSFilenamesPboardType));
+      let pasteboard = NSPasteboard::pasteboardWithName(appkit::NSPasteboardNameDrag);
+      ns_window.registerForDraggedTypes(&NSURL::readableTypesForPasteboard(&pasteboard));
     }
 
     // Since `win_attribs` is put into a mutex below, we'll just copy these
@@ -589,9 +587,6 @@ impl UnownedWindow {
     let focused = win_attribs.focused;
     let decorations = win_attribs.decorations;
     let visible_on_all_workspaces = win_attribs.visible_on_all_workspaces;
-    let inner_rect = win_attribs
-      .inner_size
-      .map(|size| size.to_physical(scale_factor));
 
     let cloned_preferred_theme = win_attribs.preferred_theme;
 
@@ -602,7 +597,6 @@ impl UnownedWindow {
       shared_state: Arc::new(Mutex::new(win_attribs.into())),
       decorations: AtomicBool::new(decorations),
       cursor_state,
-      inner_rect,
       transparent,
     });
 

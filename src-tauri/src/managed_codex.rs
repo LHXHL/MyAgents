@@ -30,9 +30,13 @@ const MAX_ARCHIVE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_UNPACKED_BYTES: u64 = 900 * 1024 * 1024;
 const MAX_ARCHIVE_ENTRIES: usize = 4096;
 const MAX_CAPTURED_OUTPUT_CHARS: usize = 1000;
-const DOWNLOADING_STATE_TTL_SECS: i64 = 30 * 60;
-const PREFERRED_DOWNLOAD_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(90);
-const DIRECT_DOWNLOAD_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+const PREFERRED_DOWNLOAD_ATTEMPT_TIMEOUT: Duration = crate::resource_download::RESOURCE_DOWNLOAD_TIMEOUT;
+const DIRECT_DOWNLOAD_ATTEMPT_TIMEOUT: Duration = crate::resource_download::RESOURCE_DOWNLOAD_TIMEOUT;
+// Manifest and archive can each use the configured path then the direct path.
+// Keep persisted progress valid while all four bounded transfers are possible.
+const DOWNLOADING_STATE_TTL_SECS: i64 =
+    2 * (PREFERRED_DOWNLOAD_ATTEMPT_TIMEOUT.as_secs() + DIRECT_DOWNLOAD_ATTEMPT_TIMEOUT.as_secs()) as i64
+        + 60;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

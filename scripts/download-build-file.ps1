@@ -5,12 +5,14 @@ function Get-BuildDownload {
         [Parameter(Mandatory = $true)][string]$OutFile,
         [scriptblock]$Validate
     )
+    $Attempts = 5
+    $TimeoutSeconds = 1800
     $Partial = "$OutFile.$([guid]::NewGuid().ToString('N')).partial"
     try {
-        for ($Attempt = 1; $Attempt -le 3; $Attempt++) {
-            Write-Host "[download] $Uri attempt $Attempt/3, timeout 300s"
+        for ($Attempt = 1; $Attempt -le $Attempts; $Attempt++) {
+            Write-Host "[download] $Uri attempt ${Attempt}/${Attempts}, timeout ${TimeoutSeconds}s"
             try {
-                Invoke-WebRequest -Uri $Uri -OutFile $Partial -UseBasicParsing -TimeoutSec 300
+                Invoke-WebRequest -Uri $Uri -OutFile $Partial -UseBasicParsing -TimeoutSec $TimeoutSeconds
                 break
             } catch {
                 Remove-Item -LiteralPath $Partial -Force -ErrorAction SilentlyContinue
@@ -20,8 +22,8 @@ function Get-BuildDownload {
                     ($Status -eq 0 -and ($_.Exception -is [System.Net.WebException] -or
                         $_.Exception.GetType().FullName -in @('System.Net.Http.HttpRequestException',
                             'System.Threading.Tasks.TaskCanceledException')))
-                if (-not $Transient -or $Attempt -eq 3) {
-                    throw "Download failed: $Uri (attempt $Attempt/3, timeout 300s): $($_.Exception.Message)"
+                if (-not $Transient -or $Attempt -eq $Attempts) {
+                    throw "Download failed: $Uri (attempt ${Attempt}/${Attempts}, timeout ${TimeoutSeconds}s): $($_.Exception.Message)"
                 }
                 Write-Host "[download] transient failure; retry in $Attempt second(s)"
                 Start-Sleep -Seconds $Attempt

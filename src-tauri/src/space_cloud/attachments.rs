@@ -423,6 +423,7 @@ pub(super) async fn download_attachment_with_token(
         token,
         space_id,
         user_session,
+        None,
     )
     .await?;
     let headers = response.headers().clone();
