@@ -1511,10 +1511,9 @@
     },
     "config": {
       "title": "Settings",
-      "differs": "Current session differs",
-      "differsHint": "The current session still uses {{what}}; new sessions use these settings.",
-      "effortOf": "{{effort}} effort",
-      "toolsOf": "{{count}} tools",
+      "needsNewTitle": "New conversation needed",
+      "needsNewMessage": "This change takes effect only in a new conversation. Start a new conversation now?",
+      "needsNewConfirm": "New conversation",
       "runtimeHint": "Changing the Runtime only affects sessions created afterwards.",
       "laterTag": "New sessions",
       "customFoot_private": "New sessions in this private chat use these settings, independent of Agent defaults.",

@@ -21,7 +21,7 @@ import {
 import { formatPastRelativeTime } from '@/i18n/format';
 import { getSessionDisplayText } from '@/utils/sessionDisplay';
 import { copyPlainText } from '@/utils/clipboard';
-import type { TeamAction, TeamPeerConfig, TeamPeerProfile, TeamSessionState } from '@/../shared/teamAi';
+import type { TeamAction, TeamActionResult, TeamPeerConfig, TeamPeerProfile, TeamSessionState } from '@/../shared/teamAi';
 import type { RuntimeType } from '@/../shared/types/runtime';
 import { teamPeerConfig } from './client';
 import { channelOffline, isBusyActivity, peerHistory, peerLabel, peerStats, sessionActivity, type PeerRow } from './model';
@@ -42,13 +42,12 @@ const tag = 'inline-flex h-[18px] shrink-0 items-center rounded-full px-1.5 text
 export type TeamNote = { tone: 'ok' | 'err' | 'info'; text: string; scope: 'config' | 'sessions' };
 export type TeamPending = { key: string; kind: TeamAction['kind']; sessionId?: string };
 /** Execute a Team AI action; the page owns feedback. `done` is the success text. */
-export type RunTeamAction = (action: TeamAction, done: string) => Promise<void>;
+export type RunTeamAction = (action: TeamAction, done: string) => Promise<TeamActionResult | null>;
 export type ConfirmRequest = { title: string; message: string; confirmText: string; onConfirm: () => void };
 
 const RUNTIMES: RuntimeType[] = ['builtin', 'dsh', 'codex', 'claude-code'];
 const toolTotal = (config: TeamPeerProfile) =>
   (config.mcpEnabledServers?.length ?? 0) + (config.enabledPluginIds?.length ?? 0) + (config.enabledOfficialToolIds?.length ?? 0);
-const sameSet = (a: readonly string[] = [], b: readonly string[] = []) => a.length === b.length && a.every(id => b.includes(id));
 
 export function PeerDetail({ agentId, row, sessions, states, pending, note, run, confirm, onOpen, onEnable, onBack }: {
   agentId: string;
@@ -146,8 +145,18 @@ function ConfigSection({ agentId, row, editable, note, run, confirm }: {
   }, [agentId, channel.channelId, peer.sessionKey, peer.hasProfile, current?.configSnapshotAt, version]);
   const kind = { context: peer.sourceType };
   const edit = async (action: TeamAction, done: string) => {
-    await run(action, done);
+    const result = await run(action, done);
     setVersion(v => v + 1);
+    // A change the current Session cannot take (another Runtime, an incompatible model) only reaches new Sessions.
+    if (action.kind === 'updateConfig' && result?.sessionApply === 'skipped' && peer.sessionId) {
+      confirm({
+        title: t('teamAi.config.needsNewTitle'),
+        message: t('teamAi.config.needsNewMessage'),
+        confirmText: t('teamAi.config.needsNewConfirm'),
+        onConfirm: () => { void run({ kind: 'new' }, t('teamAi.done.created')); },
+      });
+    }
+    return result;
   };
 
   const config = view?.config;
@@ -156,23 +165,6 @@ function ConfigSection({ agentId, row, editable, note, run, confirm }: {
   const effort = config?.reasoningEffort ?? 'default';
   const effortLabel = t(`teamAi.efforts.${effort}`, { defaultValue: effort });
   const canManage = view?.tools.canManageExtensions ?? false;
-  // What the current Session uses where it differs from this config (it changes only at birth or by a compatible edit).
-  const differs = (() => {
-    if (!config || !current) return [];
-    if ((current.runtime ?? 'builtin') !== config.runtime || (current.runtimeSource ?? undefined) !== (config.runtimeSource ?? undefined)) {
-      return [sessionRuntimePresentation((current.runtime ?? 'builtin') as RuntimeType, current.runtimeSource).name];
-    }
-    const parts: string[] = [];
-    if (current.model !== config.model) parts.push(current.model ?? t('teamAi.defaultModel'));
-    if ((current.reasoningEffort ?? 'default') !== effort) {
-      parts.push(t('teamAi.config.effortOf', { effort: t(`teamAi.efforts.${current.reasoningEffort ?? 'default'}`, { defaultValue: current.reasoningEffort }) }));
-    }
-    if (!sameSet(current.mcpEnabledServers, config.mcpEnabledServers) || !sameSet(current.enabledPluginIds, config.enabledPluginIds)
-      || !sameSet(current.enabledOfficialToolIds, config.enabledOfficialToolIds)) {
-      parts.push(t('teamAi.config.toolsOf', { count: (current.mcpEnabledServers?.length ?? 0) + (current.enabledPluginIds?.length ?? 0) + (current.enabledOfficialToolIds?.length ?? 0) }));
-    }
-    return parts;
-  })();
   const summary = config ? [runtimeName, model?.name ?? config.model ?? t('teamAi.defaultModel'), effortLabel,
     canManage ? t('teamAi.toolsCount', { count: toolTotal(config) }) : t('teamAi.toolsExternal', { runtime: runtimeName })].join(' · ') : '';
 
@@ -188,7 +180,6 @@ function ConfigSection({ agentId, row, editable, note, run, confirm }: {
           ? <span className={`${tag} bg-[var(--accent-warm-subtle)] text-[var(--accent-warm)]`}>{t('teamAi.profile.custom')}</span>
           : <span className={`${tag} bg-[var(--paper-inset)] text-[var(--ink-muted)]`}>{t('teamAi.profile.default')}</span>}
         <span className="min-w-0 flex-1 truncate text-sm text-[var(--ink-muted)]">{summary}</span>
-        {differs.length > 0 && <span className={`${tag} bg-[var(--paper-inset)] text-[var(--ink-muted)]`} title={t('teamAi.config.differsHint', { what: differs.join('、') })}>{t('teamAi.config.differs')}</span>}
         <ChevronDownIcon className={`h-4 w-4 shrink-0 text-[var(--ink-subtle)] transition-transform motion-reduce:transition-none ${open ? 'rotate-180' : ''}`} />
       </button>
       {open && (
@@ -265,16 +256,6 @@ function ConfigSection({ agentId, row, editable, note, run, confirm }: {
               >
                 {() => <ToolsPanel view={view} runtimeName={runtimeName} edit={edit} />}
               </PropRow>
-              {differs.length > 0 && (
-                <div className="mx-2 mt-2 flex items-center gap-2 rounded-[var(--radius-md)] bg-[var(--paper-inset)] px-3 py-2 text-xs text-[var(--ink-muted)]">
-                  <InfoIcon className="h-3.5 w-3.5 shrink-0" />
-                  <span className="min-w-0 flex-1">{t('teamAi.config.differsHint', { what: differs.join('、') })}</span>
-                  <button className="shrink-0 text-[var(--ink)] underline-offset-2 hover:underline disabled:opacity-40" disabled={!editable}
-                    onClick={() => { void run({ kind: 'new' }, t('teamAi.done.created')); }}>
-                    {t('teamAi.new')}
-                  </button>
-                </div>
-              )}
               <div className="flex items-center gap-3 px-2 pt-2.5 pb-1 text-xs">
                 <span
                   className={`min-w-0 flex-1 ${note?.tone === 'ok' ? 'text-[var(--success)]' : note?.tone === 'err' ? 'text-[var(--error)]' : 'text-[var(--ink-muted)]'}`}

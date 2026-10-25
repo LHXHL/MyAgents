@@ -75,8 +75,15 @@ describe('Team AI peer config', () => {
     expect(model).toMatchObject({ profile: { providerId: 'q', model: 'b' }, apply: null });
     mocks.snapshot.mockReturnValue({ runtime: 'dsh', runtimeSource: 'integrated', providerId: 'p', model: 'a', mcpEnabledServers: ['mcp-a'] });
     const runtime = await (await peerConfig('/api/im/peer-config/compose', { change: { runtime: 'dsh' } }))!.json();
-    expect(runtime).toMatchObject({ profile: { runtime: 'dsh', runtimeSource: 'integrated' }, apply: null });
+    expect(runtime).toMatchObject({ profile: { runtime: 'dsh', runtimeSource: 'integrated' }, apply: null, inEffect: false });
     expect(mocks.update).not.toHaveBeenCalled();
+  });
+
+  it('says when the current Session already runs a config it was not asked to change', async () => {
+    metadata = { ...metadata, providerId: 'p', model: 'a' };
+    mocks.snapshot.mockReturnValue({ runtime: 'builtin', providerId: 'p', model: 'a' });
+    const back = await (await peerConfig('/api/im/peer-config/compose', { profile: { runtime: 'dsh', runtimeSource: 'integrated', providerId: 'p', model: 'a' }, change: { runtime: 'builtin' } }))!.json();
+    expect(back).toMatchObject({ profile: { runtime: 'builtin', model: 'a' }, apply: null, inEffect: true });
   });
 
   it('applies compatible effort and tool changes to the current Session, and nothing across Runtimes', async () => {

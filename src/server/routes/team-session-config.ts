@@ -39,6 +39,11 @@ function peerConfigBase(owner: Context, profile: unknown): { config: PeerProfile
 const sameExecution = (session: SessionMetadata | null | undefined, config: PeerProfile) =>
   !!session && (session.runtime ?? 'builtin') === config.runtime && (session.runtimeSource ?? undefined) === (config.runtimeSource ?? undefined);
 
+/** Whether a Session already runs this config's Runtime and model (e.g. after switching back to them). */
+const runsConfig = (session: SessionMetadata | null | undefined, config: PeerProfile) =>
+  sameExecution(session, config) && session!.model === config.model
+  && (session!.providerExecutionIdentity?.providerId ?? session!.providerId) === (config.providerExecutionIdentity?.providerId ?? config.providerId);
+
 /** MCP servers a peer config may choose: globally enabled ones plus any it already uses. */
 const mcpCatalog = (context: Context, config: PeerProfile) =>
   getAllMcpServers(context.config).filter(s => getEnabledMcpServerIds(context.config).includes(s.id) || config.mcpEnabledServers?.includes(s.id));
@@ -126,8 +131,10 @@ async function handlePeerConfig(path: string, body: PeerConfigBody): Promise<Res
   } else {
     return json({ success: false, error: 'No change provided' }, 400);
   }
+  // Without an apply request the operator is offered a new Session, unless the current one already runs this config.
+  const inEffect = !apply && runsConfig(session, next);
   // Drop undefined keys so the stored profile is a plain, complete value.
-  return json({ success: true, profile: JSON.parse(JSON.stringify(next)), apply });
+  return json({ success: true, profile: JSON.parse(JSON.stringify(next)), apply, inEffect });
 }
 
 /** Team AI surfaces edit Product Session state or the peer profile. Agent defaults have no writer here. */

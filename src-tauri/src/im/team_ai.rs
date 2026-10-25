@@ -651,7 +651,9 @@ pub async fn cmd_team_ai_action(
             // The profile is the operator's intent; it commits first and stands on its own.
             write_peer_profile(&channelId, &sessionKey, Some(next), None)?;
             let Some(apply) = composed.get("apply").filter(|a| a.is_object()) else {
-                return Ok(json!({"success":true,"peerProfile":"saved","sessionApply":"skipped"}));
+                // "applied" when the current Session already runs this config (e.g. switched back to its Runtime).
+                let state = if composed["inEffect"].as_bool() == Some(true) { "applied" } else { "skipped" };
+                return Ok(json!({"success":true,"peerProfile":"saved","sessionApply":state}));
             };
             let (Some(sid), Some(path)) = (prior.as_deref(), apply["path"].as_str()) else {
                 return Ok(json!({"success":true,"peerProfile":"saved","sessionApply":"skipped"}));

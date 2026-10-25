@@ -78,7 +78,7 @@ export interface TeamActionResult {
   sessionConfig?: string;
   /** Whether the peer profile was written (`null` when not applicable). */
   peerProfile?: 'saved' | 'failed' | null;
-  /** updateConfig: whether the change also reached the current Session. */
+  /** updateConfig: whether the current Session now runs the change; `skipped` = only new Sessions take it. */
   sessionApply?: 'applied' | 'deferred' | 'pending-next-turn' | 'skipped' | 'failed';
 }
 export interface TeamSessionTarget { channelId: string; sessionKey: string; sessionId: string }

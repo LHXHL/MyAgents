@@ -1510,10 +1510,9 @@
     },
     "config": {
       "title": "配置",
-      "differs": "当前会话不同",
-      "differsHint": "当前会话仍使用 {{what}}，新建会话后使用这组配置。",
-      "effortOf": "推理强度{{effort}}",
-      "toolsOf": "{{count}} 项工具",
+      "needsNewTitle": "需要新建对话",
+      "needsNewMessage": "变更的配置需要新对话才生效，是否立刻新建对话？",
+      "needsNewConfirm": "新建对话",
       "runtimeHint": "更换 Runtime 只影响之后新建的会话。",
       "laterTag": "新会话生效",
       "customFoot_private": "这个私聊的新会话使用这组配置，不随 Agent 默认变化。",

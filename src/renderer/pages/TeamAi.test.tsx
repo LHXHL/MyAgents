@@ -144,23 +144,31 @@ describe('Team AI peer detail', () => {
     expect(mocks.patch).not.toHaveBeenCalled();
   });
 
-  it('changes the Runtime without a confirmation or a new Session', async () => {
+  it('offers a new conversation when the current Session cannot take the change', async () => {
+    mocks.action.mockResolvedValueOnce({ success: true, peerProfile: 'saved', sessionApply: 'skipped' });
     render(<TeamAi {...props()} />);
     await selectPeer();
     await openConfig();
     fireEvent.click(within(row('teamAi.runtime')).getByRole('button'));
     fireEvent.click(await screen.findByText('MyAgents (DeepSeek Harness)'));
     await waitFor(() => expect(mocks.action).toHaveBeenCalledWith('agent', 'bot-a', peer, { kind: 'updateConfig', change: { runtime: 'dsh' } }));
+    expect(await screen.findByText('teamAi.config.needsNewMessage')).toBeInTheDocument();
     expect(mocks.action.mock.calls.some(call => call[3].kind === 'new')).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: 'teamAi.config.needsNewConfirm' }));
+    await waitFor(() => expect(mocks.action).toHaveBeenLastCalledWith('agent', 'bot-a', peer, { kind: 'new' }));
   });
 
-  it('says what the current Session still uses when it differs from the config', async () => {
-    mocks.sessions.mockResolvedValue([{ ...metadata, model: 'older-model' }, earlier]);
+  it('asks nothing when the change reached the current Session', async () => {
+    mocks.action.mockResolvedValueOnce({ success: true, peerProfile: 'saved', sessionApply: 'applied' });
     render(<TeamAi {...props()} />);
     await selectPeer();
-    expect(await screen.findByText('teamAi.config.differs')).toBeInTheDocument();
     await openConfig();
-    expect(screen.getAllByText('teamAi.config.differsHint').length).toBeGreaterThan(0);
+    fireEvent.click(within(row('teamAi.runtime')).getByRole('button'));
+    fireEvent.click(await screen.findByText('MyAgents (DeepSeek Harness)'));
+    await waitFor(() => expect(mocks.action).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mocks.channels.mock.calls.length).toBeGreaterThan(1));
+    expect(screen.queryByText('teamAi.config.needsNewMessage')).not.toBeInTheDocument();
+    expect(screen.queryByText('teamAi.config.differs')).not.toBeInTheDocument();
   });
 
   it('restores Agent defaults for a peer that owns its settings', async () => {

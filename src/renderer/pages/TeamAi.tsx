@@ -162,7 +162,7 @@ export default function TeamAi({
   }, []);
 
   const run = useCallback(async (row: PeerRow, action: TeamAction, done: string) => {
-    if (!agentId || pending) return;
+    if (!agentId || pending) return null;
     const key = peerRowKey(row.channel.channelId, row.peer.sessionKey);
     const scope = action.kind === 'updateConfig' || action.kind === 'clearProfile' ? 'config' : 'sessions';
     setPending({ key, kind: action.kind, sessionId: action.kind === 'setPrimary' ? action.sessionId : undefined });
@@ -170,8 +170,10 @@ export default function TeamAi({
     try {
       const result = await teamAction(agentId, row.channel.channelId, row.peer, action);
       showNote(key, { ...noteFor(result, done, row.peer.hasProfile, t), scope });
+      return result;
     } catch (failure) {
       showNote(key, { tone: 'err', text: errorText(failure), scope });
+      return null;
     } finally {
       setPending(null);
       await refresh();
