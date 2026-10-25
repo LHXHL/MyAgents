@@ -1,6 +1,6 @@
-import { syntaxTree } from '@codemirror/language';
+import { ensureSyntaxTree, syntaxTree } from '@codemirror/language';
 import { ChangeSet, StateEffect, StateField, type ChangeSpec, type EditorState } from '@codemirror/state';
-import type { SyntaxNode } from '@lezer/common';
+import type { SyntaxNode, Tree } from '@lezer/common';
 import type { ImageInsertionRange } from './imageImport';
 
 export interface TableCellSource {
@@ -57,8 +57,8 @@ function rowSource(state: EditorState, node: SyntaxNode): TableRowSource {
   return { from: node.from, to: node.to, prefix: state.sliceDoc(state.doc.lineAt(node.from).from, node.from), cells, leadingPipe, trailingPipe };
 }
 
-export function tableAt(state: EditorState, position: number): TableSource | null {
-  let node: SyntaxNode | null = syntaxTree(state).resolveInner(Math.min(position + 1, state.doc.length), -1);
+export function tableAt(state: EditorState, position: number, tree: Tree = syntaxTree(state)): TableSource | null {
+  let node: SyntaxNode | null = tree.resolveInner(Math.min(position + 1, state.doc.length), -1);
   while (node && node.name !== 'Table' && node.name !== 'LiveTable') node = node.parent;
   return node ? tableFromNode(state, node) : null;
 }
@@ -183,8 +183,13 @@ export function pasteTableCells(state: EditorState, table: TableSource, row: num
     const tr = current.update({ changes: spec });
     changes = changes.compose(tr.changes);
     current = tr.state;
-    model = tableAt(current, table.from)!;
-    if (!model) throw new Error('Table structure changed');
+    // Detached transaction states have no view to finish budgeted parsing.
+    // Finish through this table before deriving coordinates for the next edit;
+    // ensureSyntaxTree returns the completed tree, not the state's old snapshot.
+    const tree = ensureSyntaxTree(current, tr.changes.mapPos(model.to, 1), Infinity);
+    const nextModel = tree ? tableAt(current, table.from, tree) : null;
+    if (!nextModel) throw new Error('Table structure changed');
+    model = nextModel;
   };
   while (model.columns < columns) apply(tableAction(current, model, 'column-after', 0, model.columns - 1));
   while (model.rows.length < row + grid.length) apply(tableAction(current, model, 'row-after', model.rows.length - 1, 0));
