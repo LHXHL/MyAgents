@@ -3,14 +3,18 @@
  *
  * Lightweight event tracker for the Node Sidecar.
  * Reads config from ~/.myagents/analytics_config.json (written by frontend at startup).
- * Sends events directly via fetch() — Node 20+'s undici-based fetch has no CORS.
+ * Uses the existing general-network transport and an in-memory receipt queue.
  */
 
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 
-import { cancellableFetch } from './utils/cancellation';
+import { fetchWithGeneralProxy, withAbortSignal } from './utils/cancellation';
+import {
+  AnalyticsDeliveryError, analyticsFailureDetails, analyticsRetryDelay,
+  assertAnalyticsReceipt, assertAnalyticsStatus,
+} from '../shared/analyticsDelivery';
 
 const CONFIG_PATH = join(homedir(), '.myagents', 'analytics_config.json');
 
@@ -55,11 +59,25 @@ const pendingConfigQueue: PendingConfigTrackEvent[] = [];
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
 const FLUSH_DELAY_MS = 3000;
 const MAX_QUEUE_SIZE = 30;
+const MAX_BUFFERED_EVENTS = 500;
 const CONFIG_PENDING_RETRY_MS = 1000;
 const PENDING_CONFIG_TTL_MS = 30_000;
 const MAX_PENDING_CONFIG_QUEUE_SIZE = 100;
 const ANALYTICS_FETCH_TIMEOUT_MS = 10_000;
 let flushInFlight = false;
+let retryAttempt = 0;
+let retryAt = 0;
+let capacityReported = false;
+
+function enqueueReadyEvent(event: ServerTrackEvent): void {
+  if (queue.length >= MAX_BUFFERED_EVENTS) {
+    // Log once per capacity episode, rather than once per rejected event.
+    if (!capacityReported) console.warn('[Analytics] Queue capacity reached', { limit: MAX_BUFFERED_EVENTS });
+    capacityReported = true;
+    return;
+  }
+  queue.push(event);
+}
 
 function loadConfig(): ConfigState {
   try {
@@ -120,13 +138,13 @@ function materializePendingConfigEvents(cfg: AnalyticsConfig): void {
 
   const pending = pendingConfigQueue.splice(0, pendingConfigQueue.length);
   for (const item of pending) {
-    queue.push(createEvent(cfg, item.event, item.params, item.client_timestamp));
+    enqueueReadyEvent(createEvent(cfg, item.event, item.params, item.client_timestamp));
   }
 }
 
 function scheduleFlush(delayMs: number): void {
   if (flushTimer) clearTimeout(flushTimer);
-  flushTimer = setTimeout(() => void flushQueue(), delayMs);
+  flushTimer = setTimeout(() => void flushQueue(), retryAt > Date.now() ? retryAt - Date.now() : delayMs);
   flushTimer.unref?.();
 }
 
@@ -140,6 +158,10 @@ async function flushQueue(): Promise<void> {
     if (queue.length > 0 || pendingConfigQueue.length > 0) {
       scheduleFlush(FLUSH_DELAY_MS);
     }
+    return;
+  }
+  if (retryAt > Date.now()) {
+    scheduleFlush(retryAt - Date.now());
     return;
   }
 
@@ -163,22 +185,49 @@ async function flushQueue(): Promise<void> {
     return;
   }
 
-  const events = queue.splice(0, MAX_QUEUE_SIZE);
+  const events = queue.slice(0, MAX_QUEUE_SIZE);
 
   flushInFlight = true;
   try {
-    await cancellableFetch(cfg.endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-API-Key': cfg.apiKey,
-      },
-      body: JSON.stringify({ events }),
-    }, {
-      timeoutMs: ANALYTICS_FETCH_TIMEOUT_MS,
+    // Keep the timeout alive through the receipt body, not just the headers.
+    await withAbortSignal(undefined, async signal => {
+      const response = await fetchWithGeneralProxy(cfg.endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-API-Key': cfg.apiKey,
+        },
+        body: JSON.stringify({ events }),
+        signal,
+      });
+      if (!response.ok) {
+        // undici requires every body to be consumed or cancelled. Otherwise
+        // a stalled error body survives this request's timeout and each retry
+        // can leave another open stream behind.
+        await response.body?.cancel().catch(() => {});
+        assertAnalyticsStatus(response.ok, response.status);
+      }
+      assertAnalyticsReceipt(await response.json(), events.length);
+    }, { timeoutMs: ANALYTICS_FETCH_TIMEOUT_MS });
+    queue.splice(0, events.length);
+    retryAttempt = 0;
+    retryAt = 0;
+    capacityReported = false;
+  } catch (error) {
+    const retryable = !(error instanceof AnalyticsDeliveryError) || error.retryable;
+    if (retryable) {
+      retryAttempt = Math.min(retryAttempt + 1, 7);
+      retryAt = Date.now() + analyticsRetryDelay(retryAttempt);
+    } else {
+      queue.splice(0, events.length);
+      retryAttempt = 0;
+      retryAt = 0;
+      capacityReported = false;
+    }
+    console.warn('[Analytics] Delivery failed', {
+      ...analyticsFailureDetails(error), count: events.length, retryable,
+      retryInMs: Math.max(0, retryAt - Date.now()),
     });
-  } catch {
-    // Silent failure — analytics must never affect the main flow
   } finally {
     flushInFlight = false;
   }
@@ -222,7 +271,7 @@ export function trackServer(
   }
 
   materializePendingConfigEvents(cfg);
-  queue.push(createEvent(cfg, event, params));
+  enqueueReadyEvent(createEvent(cfg, event, params));
 
   if (queue.length >= MAX_QUEUE_SIZE) {
     void flushQueue();

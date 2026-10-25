@@ -6,7 +6,11 @@
 import { proxyAnalyticsFetch } from '@/api/tauriClient';
 import { isTauriEnvironment } from '@/utils/browserMock';
 import { isAnalyticsEnabled, getApiKey, getEndpoint } from './config';
-import type { TrackEvent, TrackResponse } from './types';
+import type { TrackEvent } from './types';
+import {
+  AnalyticsDeliveryError, analyticsFailureDetails, analyticsRetryDelay,
+  assertAnalyticsReceipt, assertAnalyticsStatus,
+} from '../../shared/analyticsDelivery';
 
 // 事件队列
 const eventQueue: TrackEvent[] = [];
@@ -20,8 +24,6 @@ const MAX_QUEUE_SIZE = 50;      // 队列满发送阈值
 const MAX_BATCH_SIZE = 100;     // 单次最大发送数量
 
 // 重试配置
-const MAX_RETRY_COUNT = 5;           // 最大重试次数
-const RETRY_BASE_DELAY_MS = 1000;    // 重试基础延迟（指数退避）
 const MAX_FAILED_EVENTS = 500;       // 失败事件最大保留数量（防止内存泄漏）
 
 // 节流配置
@@ -36,6 +38,9 @@ let timestampStartIndex = 0;  // 有效时间戳的起始索引
 let isFlushing = false;       // 是否正在发送（防止并发）
 let retryCount = 0;
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
+let retryAt = 0;
+let queueGeneration = 0;
+let capacityReported = false;
 
 // 缓存 analytics 启用状态（避免频繁读取环境变量）
 let cachedEnabled: boolean | null = null;
@@ -93,6 +98,11 @@ export function enqueue(event: TrackEvent): void {
   // 记录事件时间戳
   eventTimestamps.push(Date.now());
 
+  if (eventQueue.length >= MAX_FAILED_EVENTS) {
+    if (!capacityReported) console.warn('[Analytics] Queue capacity reached', { limit: MAX_FAILED_EVENTS });
+    capacityReported = true;
+    return;
+  }
   eventQueue.push(event);
 
   // 防抖：重置定时器
@@ -107,83 +117,46 @@ export function enqueue(event: TrackEvent): void {
   }
 }
 
-/**
- * 自定义错误类：标识不可重试的错误
- */
-class NonRetryableError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'NonRetryableError';
-  }
-}
+/** Send only after the current retry deadline; retain the head until acknowledged. */
+export async function flush(keepalive = false): Promise<void> {
+  if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+  if (isFlushing || eventQueue.length === 0) return;
+  if (retryAt > Date.now()) return;
+  if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
 
-/**
- * 立即发送队列中的事件
- */
-export async function flush(): Promise<void> {
-  // 清除防抖定时器
-  if (flushTimer) {
-    clearTimeout(flushTimer);
-    flushTimer = null;
-  }
-
-  // 如果正在发送中，跳过（避免并发）
-  if (isFlushing) {
-    return;
-  }
-
-  // 队列为空则跳过
-  if (eventQueue.length === 0) {
-    return;
-  }
-
-  // 标记为正在发送
   isFlushing = true;
-
-  // 取出事件（最多 MAX_BATCH_SIZE 条）
-  const events = eventQueue.splice(0, MAX_BATCH_SIZE);
-
+  const generation = queueGeneration;
+  const events = eventQueue.slice(0, MAX_BATCH_SIZE);
   try {
-    await sendEvents(events);
-    // 成功：重置重试计数
-    retryCount = 0;
+    await sendEvents(events, keepalive);
+    if (generation === queueGeneration) {
+      eventQueue.splice(0, events.length);
+      retryCount = 0;
+      retryAt = 0;
+      capacityReported = false;
+    }
   } catch (error) {
-    console.debug('[Analytics] Failed to send events:', error);
-
-    // 检查是否为不可重试的错误（4xx 客户端错误）
-    if (error instanceof NonRetryableError) {
-      console.debug('[Analytics] Non-retryable error, dropping events');
-      retryCount = 0;
-    } else if (retryCount < MAX_RETRY_COUNT) {
-      // 可重试错误：将事件放回队列头部
-      // 限制总数防止内存泄漏
-      const maxToRestore = Math.max(0, MAX_FAILED_EVENTS - eventQueue.length);
-      const eventsToRestore = events.slice(0, maxToRestore);
-
-      if (eventsToRestore.length > 0) {
-        eventQueue.unshift(...eventsToRestore);
+    if (generation === queueGeneration) {
+      const retryable = !(error instanceof AnalyticsDeliveryError) || error.retryable;
+      if (retryable) {
+        retryCount = Math.min(retryCount + 1, 7);
+        scheduleRetry(analyticsRetryDelay(retryCount));
+      } else {
+        eventQueue.splice(0, events.length);
+        retryCount = 0;
+        retryAt = 0;
+        capacityReported = false;
       }
-
-      // 指数退避重试
-      retryCount++;
-      const delay = RETRY_BASE_DELAY_MS * Math.pow(2, retryCount - 1);
-      console.debug(`[Analytics] Scheduling retry ${retryCount}/${MAX_RETRY_COUNT} in ${delay}ms`);
-
-      scheduleRetry(delay);
-    } else {
-      // 超过最大重试次数，丢弃事件
-      console.debug(`[Analytics] Max retries (${MAX_RETRY_COUNT}) exceeded, dropping ${events.length} events`);
-      retryCount = 0;
+      console.warn('[Analytics] Delivery failed', {
+        ...analyticsFailureDetails(error), count: events.length, retryable,
+        retryInMs: Math.max(0, retryAt - Date.now()),
+      });
     }
   } finally {
-    // 确保状态重置
     isFlushing = false;
   }
-
-  // 如果队列中还有事件且没有在重试中，继续发送
   if (eventQueue.length > 0 && retryTimer === null) {
-    // 使用 setTimeout 避免递归调用栈溢出
-    setTimeout(() => void flush(), 0);
+    flushTimer = setTimeout(() => void flush(), 0);
   }
 }
 
@@ -191,6 +164,7 @@ export async function flush(): Promise<void> {
  * 调度重试
  */
 function scheduleRetry(delay: number): void {
+  retryAt = Date.now() + delay;
   if (retryTimer) {
     clearTimeout(retryTimer);
   }
@@ -223,7 +197,7 @@ function safeStringify(obj: unknown): string {
 /**
  * 发送事件到服务器
  */
-async function sendEvents(events: TrackEvent[]): Promise<TrackResponse> {
+async function sendEvents(events: TrackEvent[], keepalive: boolean): Promise<void> {
   const endpoint = getEndpoint();
   const apiKey = getApiKey();
 
@@ -234,6 +208,7 @@ async function sendEvents(events: TrackEvent[]): Promise<TrackResponse> {
       'X-API-Key': apiKey,
     },
     body: safeStringify({ events }),
+    signal: AbortSignal.timeout(10_000),
   };
 
   let response: Response;
@@ -243,23 +218,11 @@ async function sendEvents(events: TrackEvent[]): Promise<TrackResponse> {
     response = await proxyAnalyticsFetch(endpoint, requestInit);
   } else {
     // 浏览器开发模式：直接 fetch
-    response = await fetch(endpoint, requestInit);
+    response = await fetch(endpoint, { ...requestInit, keepalive });
   }
 
-  // 根据状态码分类错误
-  if (!response.ok) {
-    const status = response.status;
-
-    // 4xx 客户端错误：不重试（请求本身有问题）
-    if (status >= 400 && status < 500) {
-      throw new NonRetryableError(`HTTP ${status} - Client error`);
-    }
-
-    // 5xx 服务器错误：可重试
-    throw new Error(`HTTP ${status} - Server error`);
-  }
-
-  return response.json() as Promise<TrackResponse>;
+  assertAnalyticsStatus(response.ok, response.status);
+  assertAnalyticsReceipt(await response.json(), events.length);
 }
 
 /**
@@ -283,39 +246,20 @@ export function clearQueue(): void {
     retryTimer = null;
   }
   retryCount = 0;
-  isFlushing = false;
+  retryAt = 0;
+  queueGeneration++;
+  capacityReported = false;
 }
 
 /**
- * 页面卸载前同步发送（仅浏览器环境使用）
+ * 页面卸载前尽力发送（仅浏览器环境使用）
  *
- * 注意：此函数使用原生 fetch with keepalive，在 Tauri 环境中会被 CORS 阻止。
+ * 注意：此函数与普通发送共用内存队列与互斥；浏览器发送使用 keepalive。
  * Tauri 环境应使用 visibilitychange + flush() 代替。
  * 参见 tracker.ts 中的环境判断逻辑。
  */
 export function flushSync(): void {
-  if (eventQueue.length === 0 || !isCachedEnabled()) {
-    return;
-  }
-
-  const events = eventQueue.splice(0, MAX_BATCH_SIZE);
-  const endpoint = getEndpoint();
-  const apiKey = getApiKey();
-
-  try {
-    // 使用 fetch with keepalive 确保页面卸载时可靠发送
-    fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-API-Key': apiKey,
-      },
-      body: safeStringify({ events }),
-      keepalive: true,
-    }).catch(() => {
-      // 静默失败
-    });
-  } catch {
-    // 静默失败
-  }
+  // The browser may terminate before completion; keepalive shares the same
+  // owner and receipt path so a visibility flush cannot duplicate an in-flight batch.
+  void flush(true);
 }
