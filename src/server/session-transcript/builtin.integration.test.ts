@@ -310,6 +310,18 @@ afterEach(async () => {
 });
 
 describe('builtin V2 execution independent of product storage', () => {
+  it('persists a notification status once without a model turn, including a failed flush retry', async () => {
+    const workspace = join(state.home,'workspace'); await mkdir(workspace);
+    const metadata = await store.createSession(workspace,{runtime:'builtin'});
+    await agent.initializeAgent(workspace,null,metadata.id,{preWarmDisabled:true});
+    const writer = store.getActiveSessionTranscript(metadata.id)!.writer;
+    const flush = vi.spyOn(writer,'flush').mockResolvedValueOnce(false);
+    await expect(agent.recordNotificationEvent('task-status','Task status changed')).rejects.toThrow('Could not persist');
+    await agent.recordNotificationEvent('task-status','Task status changed');
+    expect(flush).toHaveBeenCalledTimes(2);
+    expect((await store.getSessionData(metadata.id))?.messages.filter(message=>message.id==='task-status')).toHaveLength(1);
+    expect(state.query).not.toHaveBeenCalled();
+  });
   it.each(['dsh', 'claude-code', 'codex'] as const)('does not start SDK prewarm or publish a %s transcript after a stray builtin reload', async runtime => {
     const workspace = join(state.home, 'workspace');
     await mkdir(workspace, { recursive: true });

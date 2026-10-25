@@ -148,10 +148,13 @@ impl std::fmt::Display for RouteError {
 
 pub struct SessionRouter {
     peer_sessions: HashMap<String, PeerSession>,
+    peer_history: HashMap<String, super::types::PeerSessionHistory>,
     default_workspace: PathBuf,
     http_client: Client,
     /// Agent ID (if this router belongs to an Agent channel). None for legacy IM bots.
     agent_id: Option<String>,
+    /// Owning Agent Channel ID; locates Channel-owned config such as Team AI peer profiles.
+    channel_id: Option<String>,
 }
 
 /// Private peer target selected for heartbeat/cron delivery.
@@ -180,9 +183,11 @@ impl SessionRouter {
     pub fn new(default_workspace: PathBuf) -> Self {
         Self {
             peer_sessions: HashMap::new(),
+            peer_history: HashMap::new(),
             default_workspace,
             http_client: create_sidecar_http_client(),
             agent_id: None,
+            channel_id: None,
         }
     }
 
@@ -190,10 +195,23 @@ impl SessionRouter {
     pub fn new_for_agent(default_workspace: PathBuf, agent_id: String) -> Self {
         Self {
             peer_sessions: HashMap::new(),
+            peer_history: HashMap::new(),
             default_workspace,
             http_client: create_sidecar_http_client(),
             agent_id: Some(agent_id),
+            channel_id: None,
         }
+    }
+
+    /// Attach the Agent Channel this router serves.
+    pub fn with_channel_id(mut self, channel_id: String) -> Self {
+        self.channel_id = Some(channel_id);
+        self
+    }
+
+    /// `(agentId, channelId)` for an Agent Channel router.
+    pub fn channel_owner(&self) -> Option<(&str, &str)> {
+        Some((self.agent_id.as_deref()?, self.channel_id.as_deref()?))
     }
 
     /// Generate session key from IM message.
@@ -829,11 +847,58 @@ impl SessionRouter {
         self.peer_sessions.get(session_key).cloned()
     }
 
+    pub fn restore_peer_history(&mut self, history: Vec<super::types::PeerSessionHistory>) {
+        self.peer_history = history
+            .into_iter()
+            .map(|entry| (entry.session_key.clone(), entry))
+            .collect();
+    }
+
+    pub fn peer_history(&self) -> Vec<super::types::PeerSessionHistory> {
+        let mut history = self.peer_history.clone();
+        for peer in self.peer_sessions.values() {
+            let entry = history.entry(peer.session_key.clone()).or_insert_with(|| {
+                super::types::PeerSessionHistory {
+                    session_key: peer.session_key.clone(),
+                    source_type: peer.source_type.clone(),
+                    source_id: peer.source_id.clone(),
+                    source_display_name: peer.source_display_name.clone(),
+                    workspace_path: peer.workspace_path.display().to_string(),
+                    session_ids: Vec::new(),
+                }
+            });
+            if peer.source_display_name.is_some() {
+                entry.source_display_name = peer.source_display_name.clone();
+            }
+            if (peer.metadata_indexed || !peer.metadata_birth_pending)
+                && !entry.session_ids.contains(&peer.session_id)
+            {
+                entry.session_ids.push(peer.session_id.clone());
+            }
+        }
+        let mut entries: Vec<_> = history.into_values().collect();
+        entries.sort_by(|a, b| a.session_key.cmp(&b.session_key));
+        entries
+    }
+
+    fn remember_current_peers(&mut self) {
+        self.peer_history = self
+            .peer_history()
+            .into_iter()
+            .map(|entry| (entry.session_key.clone(), entry))
+            .collect();
+    }
+
+    pub fn knows_peer(&self, key: &str) -> bool {
+        self.peer_sessions.contains_key(key) || self.peer_history.contains_key(key)
+    }
+
     /// Insert-or-replace a peer_session — used by handover to redirect a
     /// channel binding to a new session_id. Caller is responsible for
     /// SidecarOwner accounting (release old, ensure new) — this method only
     /// touches the router's HashMap.
     pub fn upsert_peer_session(&mut self, ps: PeerSession) {
+        self.remember_current_peers();
         self.peer_sessions.insert(ps.session_key.clone(), ps);
     }
 
@@ -841,6 +906,7 @@ impl SessionRouter {
     /// touched; its Agent owner is released only after the caller durably
     /// projects this pending peer state.
     pub fn stage_new_session_binding(&mut self, session_key: &str) -> PeerBindingTransition {
+        self.remember_current_peers();
         let prior = self.peer_sessions.get(session_key).cloned();
         let target_session_id = uuid::Uuid::new_v4().to_string();
         let next = match prior.as_ref() {
@@ -925,6 +991,7 @@ impl SessionRouter {
             last_active: Instant::now(),
             ..prior.clone()
         };
+        self.remember_current_peers();
         self.peer_sessions.insert(session_key.to_string(), next);
         Ok(PeerBindingTransition {
             session_key: session_key.to_string(),
@@ -963,6 +1030,7 @@ impl SessionRouter {
         session_id: &str,
         keep_session_key: Option<&str>,
     ) -> Vec<PeerSession> {
+        self.remember_current_peers();
         let keys: Vec<String> = self
             .peer_sessions
             .iter()
@@ -2222,5 +2290,41 @@ mod tests {
             .expect("peer session exists");
         assert!(!restored_peer.metadata_birth_pending);
         assert!(restored_peer.metadata_indexed);
+    }
+    #[test]
+    fn peer_history_survives_rotation_removal_and_restore_without_changing_current() {
+        let key = "agent:a:feishu:group:team";
+        let mut router = SessionRouter::new_for_agent(PathBuf::from("/tmp/workspace"), "a".into());
+        router.upsert_peer_session(peer(key, "session-a"));
+        router.upsert_peer_session(peer(key, "session-b"));
+        let history = router.peer_history();
+        assert_eq!(history[0].session_ids, vec!["session-a", "session-b"]);
+        router.remove_peer_sessions_for_session_except("session-b", None);
+        assert!(!router.has_peer_session(key));
+        assert_eq!(router.peer_history()[0].session_ids, history[0].session_ids);
+        let wire = serde_json::to_string(&router.peer_history()).unwrap();
+        let mut restored =
+            SessionRouter::new_for_agent(PathBuf::from("/tmp/workspace"), "a".into());
+        restored.restore_peer_history(serde_json::from_str(&wire).unwrap());
+        assert!(restored.knows_peer(key));
+        assert!(!restored.has_peer_session(key));
+        assert_eq!(
+            restored.peer_history()[0].session_ids,
+            history[0].session_ids
+        );
+    }
+
+    #[test]
+    fn rollback_does_not_publish_an_uncommitted_target_as_history() {
+        let key = "agent:a:feishu:private:member";
+        let mut router = SessionRouter::new_for_agent(PathBuf::from("/tmp/workspace"), "a".into());
+        router.upsert_peer_session(peer(key, "session-a"));
+        let transition = router.stage_materialized_session_binding(key, "uncommitted");
+        assert!(router.rollback_peer_binding_transition(&transition));
+        assert_eq!(router.peer_history()[0].session_ids, vec!["session-a"]);
+        assert_eq!(
+            router.peer_session_snapshot(key).unwrap().session_id,
+            "session-a"
+        );
     }
 }

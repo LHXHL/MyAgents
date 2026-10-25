@@ -95,8 +95,8 @@ export interface SessionMetadata {
     runtimeSessionId?: string;
 
     // ─── Config snapshot (v0.1.69) ───
-    // Desktop/Cron sessions capture these on first write; IM sessions stay undefined
-    // (live-follow AgentConfig). `configSnapshotAt` presence marks "locked".
+    // Owned desktop/Task/IM Sessions freeze their complete execution choices.
+    // `configSnapshotAt` presence marks a saved, Session-owned snapshot.
     model?: string;
     /** #324 — reasoning effort snapshot ('default' | level) */
     reasoningEffort?: string;

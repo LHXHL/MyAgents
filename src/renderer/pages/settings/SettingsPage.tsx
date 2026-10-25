@@ -6163,6 +6163,31 @@ export default function Settings({
                 <div className="mt-4 flex items-center justify-between">
                   <div className="flex-1 pr-4">
                     <p className="text-sm font-medium text-[var(--ink)]">
+                      {tSettings('about.teamAiPanelTitle')}
+                    </p>
+                    <p className="text-xs text-[var(--ink-muted)]">
+                      {tSettings('about.teamAiPanelDescription')}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-label={tSettings('about.teamAiPanelTitle')}
+                    aria-checked={config.teamAiPanelEnabled === true}
+                    onClick={() => updateConfig({ teamAiPanelEnabled: config.teamAiPanelEnabled !== true })}
+                    className={`relative h-6 w-11 shrink-0 cursor-pointer rounded-full transition-colors ${
+                      config.teamAiPanelEnabled === true ? 'bg-[var(--accent)]' : 'bg-[var(--line-strong)]'
+                    }`}
+                  >
+                    <span className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-[var(--toggle-thumb)] shadow transition-transform ${
+                      config.teamAiPanelEnabled === true ? 'translate-x-5' : 'translate-x-0'
+                    }`} />
+                  </button>
+                </div>
+
+                <div className="mt-4 flex items-center justify-between">
+                  <div className="flex-1 pr-4">
+                    <p className="text-sm font-medium text-[var(--ink)]">
                       {tSettings('about.cliRegistryTitle')}
                     </p>
                     <p className="text-xs text-[var(--ink-muted)]">

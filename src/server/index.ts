@@ -648,6 +648,7 @@ import { createGlobalSkillInventorySnapshot } from './global-skill-inventory';
 import { isManagedSymlink } from './utils/project-user-config-sync';
 import { managementApi } from './utils/management-api-client';
 import { snapshotForOwnedSession, snapshotForImSession } from './utils/session-snapshot';
+import { completePeerProfileSnapshot, resolvePeerProfileBirth, type PeerProfile } from './utils/peer-profile';
 import {
   isManagedCodexProviderReady,
   managedCodexNotReadyMessage,
@@ -720,6 +721,7 @@ import { handleSessionReadRoute } from './routes/session-read';
 import { handleChatStreamRoute } from './routes/chat-stream';
 import { handleSessionConfigRoute } from './routes/session-config';
 import { handleImModelRoute } from './routes/im-model-selection';
+import { handleTeamSessionConfigRoute } from './routes/team-session-config';
 import { handleSessionOperationRoute } from './routes/session-operations';
 import {
   handleGoalExecuteSyncRoute,
@@ -1475,6 +1477,11 @@ async function routeAdminApi(
     delete payload.localSessionId;
   }
 
+  if (route === 'task/create-direct' || route === 'cron/create' || route === 'cron/add' || route === 'task/update' || route === 'cron/update') {
+    const { taskNotificationContext } = await import('./session-engine/task-notification');
+    payload = taskNotificationContext(getSessionEngine(), payload, caller);
+  }
+
   // Lazy-load admin-api (~150ms on first hit, cached thereafter)
   const api = await getAdminApi();
 
@@ -1836,6 +1843,7 @@ async function routeAdminApi(
     return await api.handleTaskList(
       payload as Parameters<typeof api.handleTaskList>[0],
     );
+  if (route === 'task/notification') return await api.handleTaskNotification(payload);
   if (route === 'task/get')
     return await api.handleTaskGet(
       payload as Parameters<typeof api.handleTaskGet>[0],
@@ -3843,6 +3851,8 @@ async function main() {
           origin?: unknown;
           prepareForFirstUserMessage?: boolean;
           materializationSourceSessionId?: string;
+          /** Team AI peer birth template, stored opaquely by Rust. */
+          peerProfile?: unknown;
         };
         let payload: CreateSessionPayload;
         try {
@@ -3860,6 +3870,26 @@ async function main() {
             { success: false, error: 'agentDir is required.' },
             400,
           );
+        }
+        // A valid peer profile supplies the explicit birth fields below; a
+        // permanently invalid one falls back to the Agent template and is
+        // reported so its Rust owner deletes it.
+        let peerProfileOutcome: 'applied' | 'rejected' | undefined;
+        let appliedPeerProfile: PeerProfile | undefined;
+        if (payload.peerProfile !== undefined) {
+          const resolved = resolvePeerProfileBirth(
+            payload.peerProfile,
+            loadConfig(),
+            listInstalledPlugins().map((plugin) => plugin.id),
+          );
+          if (resolved.kind === 'applied') {
+            payload = { ...payload, ...resolved.fields };
+            appliedPeerProfile = resolved.fields;
+            peerProfileOutcome = 'applied';
+          } else {
+            console.warn(`[sessions] Peer profile rejected (${resolved.reason}); using Agent defaults`);
+            peerProfileOutcome = 'rejected';
+          }
         }
 
         // Use the shared VALID_RUNTIMES constant — same list that drives
@@ -4062,6 +4092,9 @@ async function main() {
         );
         if (payloadReasoningEffort !== undefined)
           baseSnapshot.reasoningEffort = payloadReasoningEffort;
+        if (appliedPeerProfile) {
+          Object.assign(baseSnapshot, completePeerProfileSnapshot(baseSnapshot, appliedPeerProfile));
+        }
         if (payload.mcpEnabledServers !== undefined)
           baseSnapshot.mcpEnabledServers = payload.mcpEnabledServers;
         if (payload.enabledPluginIds !== undefined)
@@ -4122,7 +4155,7 @@ async function main() {
           void deleteSession(session.id, { kind: 'user-delete' });
           return jsonResponse({ success: false, error: 'Unable to publish the new Session target.' }, 503);
         }
-        return jsonResponse({ success: true, session: toClientSessionMetadata(session) });
+        return jsonResponse({ success: true, session: toClientSessionMetadata(session), ...(peerProfileOutcome ? { peerProfile: peerProfileOutcome } : {}) });
       }
 
       // GET /sessions/:id/since/:lastMessageId - Incremental tail fetch
@@ -5356,6 +5389,8 @@ async function main() {
 
       // ============= END PROVIDER VERIFICATION API =============
 
+      const teamConfigResponse = await handleTeamSessionConfigRoute(pathname, request);
+      if (teamConfigResponse) return teamConfigResponse;
       const imModelRouteResponse = await handleImModelRoute(pathname, request);
       if (imModelRouteResponse) return imModelRouteResponse;
 
@@ -11806,6 +11841,10 @@ description: >
                 if (!originBinding.success) {
                   return { queued: false, error: originBinding.error };
                 }
+              }
+              if (options?.taskNotification) {
+                const { admitTaskNotification } = await import('./session-engine/task-notification');
+                return admitTaskNotification(engine, options.taskNotification, text, sessionMeta?.agentDir ?? currentAgentDir ?? process.cwd());
               }
               let images: import('./runtimes/types').ImagePayload[] | undefined;
               let beforeDispatch = options?.beforeDispatch;

@@ -107,6 +107,7 @@ export const getCronRuns = (taskId: string, limit?: number): Promise<CronRunReco
 // ============= Cron Task Field Updates =============
 
 export interface CronTaskFieldUpdate {
+  notification?: import('@/../shared/types/task').NotificationConfig;
   name?: string;
   prompt?: string;
   schedule?: CronSchedule;

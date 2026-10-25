@@ -1152,6 +1152,7 @@ export default function Launcher({
             runMode: 'new_session',
             notifyEnabled: cron.notifyEnabled,
             schedule: cron.schedule,
+            notification: cron.notification,
             delivery: cron.delivery,
             name: cron.name,
             permissionMode: cronPermissionMode,

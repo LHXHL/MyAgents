@@ -9,6 +9,7 @@ import type { ProductSystemSkillRequirement } from '@/../shared/systemSkills';
 
 /** Cron settings drafted before Chat owns the first turn. */
 export interface InitialMessageCron {
+  notification?: import('@/../shared/types/task').NotificationConfig;
   taskKind: ScheduledTaskKind;
   schedule: CronSchedule;
   runMode: 'single_session' | 'new_session';

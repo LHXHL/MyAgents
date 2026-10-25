@@ -167,7 +167,10 @@ where
     let old_session_id = transition.old_session_id().map(str::to_string);
 
     if let Err(error) = health
-        .persist_active_sessions_snapshot(router_guard.active_sessions())
+        .persist_active_sessions_snapshot(
+            router_guard.active_sessions(),
+            router_guard.peer_history(),
+        )
         .await
     {
         let rolled_back = router_guard.rollback_peer_binding_transition(&transition);
@@ -898,11 +901,14 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
     // TD-2: Agent channels use new_for_agent() for agent-scoped session keys
     let router = {
         let mut r = match &agent_id {
-            Some(aid) => SessionRouter::new_for_agent(default_workspace, aid.clone()),
+            Some(aid) => SessionRouter::new_for_agent(default_workspace, aid.clone())
+                .with_channel_id(bot_id.clone()),
             None => SessionRouter::new(default_workspace),
         };
         // Restore peer→session mapping from previous run's im_state.json
-        let prev_sessions = health.get_state().await.active_sessions;
+        let previous = health.get_state().await;
+        r.restore_peer_history(previous.peer_session_history);
+        let prev_sessions = previous.active_sessions;
         r.restore_sessions(&prev_sessions).await;
         Arc::new(Mutex::new(r))
     };
@@ -1068,7 +1074,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
         let changed = router.reconcile_protocol_bindings(&config.platform, &platform)?;
         if changed > 0 {
             health
-                .persist_active_sessions_snapshot(router.active_sessions())
+                .persist_active_sessions_snapshot(router.active_sessions(), router.peer_history())
                 .await?;
             ulog_info!(
                 "[im] Reconciled {} Channel protocol binding(s) for {}",
@@ -1855,17 +1861,24 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                     }
 
                     if command == Some("/help") {
-                        let (client, session_id) = {
+                        let (client, session_id, team_ai) = {
                             let router = router_clone.lock().await;
                             (router.http_client().clone(), router.get_peer_session(&session_key)
-                                .filter(|peer| peer.metadata_indexed).map(|peer| peer.session_id.clone()))
+                                .filter(|peer| peer.metadata_indexed).map(|peer| peer.session_id.clone()),
+                             router.channel_owner().is_some_and(|(agent, _)| super::config_store::agent_is_team_ai(agent)))
                         };
                         let model_line = model_commands::model_help_line(&client, &manager_clone, session_id.as_deref()).await;
+                        // Team AI peers own their settings; ordinary Agents keep updating Agent defaults.
+                        let (new_line, select_line) = if team_ai {
+                            ("开始新对话，历史仍保留", "选择模型，之后这个私聊的新对话也会使用")
+                        } else {
+                            ("使用最新 Agent 默认设置开始新对话，历史仍保留", "选择模型，并更新 Agent 默认设置")
+                        };
                         let mut help = format!(
                             "📖 私聊命令\n\n直接发送消息即可开始对话。\n\n\
-                             /new — 使用最新 Agent 默认设置开始新对话，历史仍保留\n\
+                             /new — {new_line}\n\
                              /model — {model_line}\n\
-                             /model <序号> — 选择模型，并更新 Agent 默认设置\n\
+                             /model <序号> — {select_line}\n\
                              /status — 查看当前会话状态\n\
                              /help — 查看帮助"
                         );
@@ -1898,8 +1911,8 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                         };
                         let _peer_guard = peer_lock.lock().await;
                         let runtime = runtime_for_loop.read().await.clone();
-                        let (client, workspace) = { let router = router_clone.lock().await; (router.http_client().clone(), router.peer_session_workspace(&session_key).unwrap_or_else(|| router.default_workspace_path())) };
-                        let result = match model_commands::create_birth(&client, &manager_clone, &json!({ "agentDir": workspace, "seedMaxPermission": true, "origin": { "kind": "agent-channel", "surface": "channel_message" } })).await {
+                        let (client, workspace, owner) = { let router = router_clone.lock().await; (router.http_client().clone(), router.peer_session_workspace(&session_key).unwrap_or_else(|| router.default_workspace_path()), router.channel_owner().map(|(a, c)| (a.to_string(), c.to_string()))) };
+                        let result = match super::team_ai::birth_for_peer(&client, &manager_clone, &workspace.to_string_lossy(), owner.as_ref().map(|(a, c)| (a.as_str(), c.as_str())), &session_key).await {
                             Ok(target_id) => rotate_peer_binding_for_new_command(&session_key, &runtime, &router_clone, &health_clone, &manager_clone, &target_id, &im_consumers_for_loop).await,
                             Err(error) => Err(error),
                         };

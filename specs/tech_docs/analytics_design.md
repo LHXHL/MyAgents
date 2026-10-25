@@ -338,3 +338,12 @@ presentation aliases must not rewrite the wire identity. Permission events are
 emitted after the response is accepted. Companion events use
 `source='floating_ball'` and `surface='floating_ball'`, with the Companion's
 frozen Session binding rather than the main window's active Tab.
+
+
+## 投递确认与失败诊断
+
+Renderer 与各 Sidecar 分别维护内存队列。只有 HTTP 请求成功，且云端返回 `success: true`、`received` 等于整批数量，才确认送达并移除该批事件；Cloud Analytics 在 D1 原子批量提交后返回此确认。
+
+网络异常、408、429、5xx 和无效响应保留队首批次，按指数退避重试，最长间隔 60 秒。新事件和页面可见性变化触发的发送不得绕过重试期限；每个队列同时最多发送一个批次。其他 4xx 视为永久拒收，移除该批并记录状态。失败日志只含固定原因、状态、数量与等待时间，不输出传输异常原文、密钥或事件参数。
+
+队列总容量包含正在发送的批次；容量满时拒绝新事件，并在每次持续满载期间只告警一次。Renderer 事件限流和 Sidecar 等待配置的缓冲限制继续生效，数值以实现为准。这是进程内尽力投递：退出会丢失内存队列；请求超时后服务端可能已经提交，重试可能重复。没有持久化发送队列或幂等事件 ID，不能保证每条事件恰好投递一次。

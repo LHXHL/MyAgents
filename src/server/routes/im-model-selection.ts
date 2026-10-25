@@ -7,7 +7,7 @@ import { createConcreteProviderRoute } from '../../shared/providerRoute';
 import { projectProvidersForRuntime, isProviderModelCompatibleWithRuntime, resolveProviderSwitchIntegratedRuntime, platformHiddenProviderIds } from '../../shared/runtimeProviderProjection';
 import { workspacePathsEqual } from '../../shared/workspacePath';
 import { createHash } from 'node:crypto';
-import { coerceReasoningEffortSettingForRuntime, reasoningEffortAfterModelChange, type ModelReasoningCapabilities } from '../../shared/reasoningEffort';
+import { coerceReasoningEffortSettingForRuntime, reasoningEffortAfterModelChange, reasoningEffortChoices, type ModelReasoningCapabilities } from '../../shared/reasoningEffort';
 import { getSessionEngine, queryRuntimeModels } from '../session-engine';
 import { getSessionMetadata, updateSessionMetadata } from '../SessionStore';
 import { findProjectAgentByWorkspacePath, getAllEffectiveProviders, getProviderSelectionError, loadConfig, loadProjects, resolveProviderEnv } from '../utils/admin-config';
@@ -22,22 +22,32 @@ import type { SessionMetadata } from '../types/session';
 export type ImModelSelection = AgentModelSelection;
 export type ImModelOption = { selection: ImModelSelection; group: string; name: string; isCurrent: boolean; requiresNewSession: boolean; capabilities?: ModelReasoningCapabilities };
 function json(body: unknown, status = 200) { return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } }); }
-function sameSelection(a: ImModelSelection, b: ImModelSelection) {
+export function sameSelection(a: ImModelSelection, b: ImModelSelection) {
   return a.kind === b.kind && a.model === b.model && (a.kind === 'product-provider' && b.kind === 'product-provider' ? a.providerId === b.providerId : a.kind === 'external-cli' && b.kind === 'external-cli' && a.runtime === b.runtime && a.runtimeSource === b.runtimeSource);
 }
 
-/** Reads persisted authority without binding the Global Host to a Product Session. */
-async function modelContext(agentId: string, sessionId?: string) {
+/** The Agent, its workspace and config, without compiling any birth template. */
+export function agentContext(agentId: string) {
   const config = loadConfig();
   const projects = loadProjects().filter(p => p.agentId === agentId);
   if (projects.length !== 1 || !projects[0].path) throw new Error('Agent workspace is unavailable or ambiguous');
   const workspacePath = projects[0].path;
   const agent = findProjectAgentByWorkspacePath(workspacePath) as AgentConfig | undefined;
   if (!agent || agent.id !== agentId) throw new Error('Agent is unavailable');
+  return { config, workspacePath, agent };
+}
+
+/** Reads persisted authority without binding the Global Host to a Product Session.
+ *  `base` lists options relative to a Team AI peer config instead of a Session. */
+export async function modelContext(agentId: string, sessionId?: string, base?: Partial<SessionMetadata>) {
+  const { config, workspacePath, agent } = agentContext(agentId);
   const metadata = sessionId ? getSessionMetadata(sessionId) : null;
   if (sessionId && (!metadata || !workspacePathsEqual(metadata.agentDir, workspacePath))) throw new Error('Session workspace does not match Agent');
   if (metadata && !metadata.configSnapshotAt) throw new Error('Legacy Session must be frozen before model selection');
-  const current = metadata ?? snapshotForImSession(agent, { managedCodexProviderReady: isManagedCodexProviderReady(config), runtimePolicy: { defaultIntegratedRuntime: config.defaultIntegratedRuntime } });
+  const current = metadata ?? base ?? snapshotForImSession(agent, { managedCodexProviderReady: isManagedCodexProviderReady(config), runtimePolicy: { defaultIntegratedRuntime: config.defaultIntegratedRuntime } });
+  // Effort choices and Provider compatibility depend on the endpoint of this Session or peer config.
+  const currentEnv = metadata ? resolveWorkspaceConfig(workspacePath, metadata, { includeMcp: false }).providerEnv
+    : resolveProviderEnv(current.providerId ?? agent.providerId ?? 'anthropic-sub', config);
   const runtime = current.runtime ?? 'builtin';
   const nativeCli = (runtime === 'codex' || runtime === 'claude-code') && current.runtimeSource !== 'managed-provider';
   const options: ImModelOption[] = [];
@@ -51,7 +61,8 @@ async function modelContext(agentId: string, sessionId?: string) {
       .filter(provider => !platformHiddenProviderIds(process.platform).includes(provider.id)) as unknown as Provider[], runtime);
     const currentProvider = current.providerExecutionIdentity
       ?? (current.providerId && current.model ? { kind: 'builtin-provider' as const, route: createConcreteProviderRoute(current.providerId, current.model) } : undefined);
-    const currentEnv = metadata ? resolveWorkspaceConfig(workspacePath, metadata, { includeMcp: false }).providerEnv : resolveProviderEnv(agent.providerId ?? 'anthropic-sub', config);
+    // A runtime-backed identity (Managed Codex) carries the provider id instead of `providerId`.
+    const currentProviderId = current.providerExecutionIdentity?.providerId ?? current.providerId;
     for (const provider of providers) {
       if (getProviderSelectionError(provider as unknown as ReturnType<typeof getAllEffectiveProviders>[number], config)) continue;
       for (const model of provider.models) {
@@ -59,11 +70,11 @@ async function modelContext(agentId: string, sessionId?: string) {
         const nextIntent = toProviderExecutionIntent(provider, model.model);
         const nextEnv = provider.id === current.providerId ? currentEnv : provider.id === CODEX_SUBSCRIPTION_PROVIDER_ID ? undefined : resolveProviderEnv(provider.id, config);
         const requiresNewSession = !!metadata && !canReuseSessionAcrossProviderExecutionBoundary({ currentIntent: currentProvider, nextIntent, currentProviderEnv: currentEnv ? { ...currentEnv, model: current.model } : undefined, nextProviderEnv: nextEnv ? { ...nextEnv, model: model.model } : undefined, legacyCurrentProviderUnknown: !currentProvider && !currentEnv });
-        options.push({ selection: { kind: 'product-provider', providerId: provider.id, model: model.model }, group: provider.name, name: model.modelName, isCurrent: current.providerId === provider.id && current.model === model.model, requiresNewSession, capabilities: model });
+        options.push({ selection: { kind: 'product-provider', providerId: provider.id, model: model.model }, group: provider.name, name: model.modelName, isCurrent: currentProviderId === provider.id && current.model === model.model, requiresNewSession, capabilities: model });
       }
     }
   }
-  return { config, workspacePath, agent, metadata, current, options, currentEnv: metadata ? resolveWorkspaceConfig(workspacePath, metadata, { includeMcp: false }).providerEnv : undefined };
+  return { config, workspacePath, agent, metadata, current, options, currentEnv: metadata || base ? currentEnv : undefined };
 }
 
 /** Observe desired execution fields, excluding transcript/activity and credentials. */
@@ -80,7 +91,14 @@ export function imSnapshotObservation(metadata: SessionMetadata): string {
   return createHash('sha256').update(JSON.stringify(stable(projection))).digest('hex');
 }
 
-function birthForSelection(context: Awaited<ReturnType<typeof modelContext>>, selection: ImModelSelection) {
+export function sessionEffortChoices(context: Awaited<ReturnType<typeof modelContext>>): readonly string[] | null {
+  const current = context.current;
+  const capabilities = context.options.find(option => option.isCurrent)?.capabilities;
+  if (current.runtimeSource === 'managed-provider') return capabilities?.supportedReasoningEfforts?.map(option => option.reasoningEffort) ?? [];
+  return reasoningEffortChoices(current.runtime ?? 'builtin', context.currentEnv?.apiProtocol, current.providerId, current.model, context.currentEnv?.baseUrl);
+}
+
+export function birthForSelection(context: Awaited<ReturnType<typeof modelContext>>, selection: ImModelSelection) {
   const mutation = mutationForAgentModelSelection(context.agent, selection);
   const targetAgent = { ...context.agent, ...resolveAgentConfigMutation(context.agent, mutation) };
   // A model choice uses this Product Session's execution owner, not a later
@@ -100,12 +118,14 @@ function birthForSelection(context: Awaited<ReturnType<typeof modelContext>>, se
 }
 
 export async function handleImModelRoute(path: string, request: Request): Promise<Response | null> {
+  const sessionOnly = path === '/api/im/session-model-selection';
+  if (sessionOnly) path = '/api/im/model-selection';
   if (path !== '/api/im/model-options' && path !== '/api/im/model-selection') return null;
   try {
     if (path === '/api/im/model-options' && request.method === 'GET') {
       const url = new URL(request.url);
       const context = await modelContext(url.searchParams.get('agentId') ?? '', url.searchParams.get('sessionId') ?? undefined);
-      return json({ success: true, sessionId: context.metadata?.id ?? null, configSnapshotAt: context.metadata?.configSnapshotAt ?? null, snapshotObservation: context.metadata ? imSnapshotObservation(context.metadata) : null, currentModel: context.current.model ?? '(默认)', options: context.options });
+      return json({ success: true, sessionId: context.metadata?.id ?? null, configSnapshotAt: context.metadata?.configSnapshotAt ?? null, snapshotObservation: context.metadata ? imSnapshotObservation(context.metadata) : null, currentModel: context.current.model ?? '(默认)', runtime: context.current.runtime, runtimeSource: context.current.runtimeSource, model: context.current.model, reasoningEffort: context.current.reasoningEffort, reasoningEffortChoices: sessionEffortChoices(context), mcpEnabledServers: context.current.mcpEnabledServers ?? [], enabledPluginIds: context.current.enabledPluginIds ?? [], enabledOfficialToolIds: context.current.enabledOfficialToolIds ?? [], options: context.options });
     }
     if (path === '/api/im/model-options' && request.method === 'POST') {
       const body = await request.json() as { agentId: string; selection: ImModelSelection };
@@ -126,7 +146,10 @@ export async function handleImModelRoute(path: string, request: Request): Promis
       const selection = option.selection;
       if (option.requiresNewSession) {
         if (body.allowNewSession !== true) return json({ success: false, error: '模型兼容性已变化，请重新发送 /model 查看列表' }, 409);
-        return json({ success: false, requiresNewSession: true, birth: birthForSelection(context, selection) }, 409);
+        return json({ success: false, requiresNewSession: true, birth: { ...birthForSelection(context, selection), ...(sessionOnly ? {
+          reasoningEffort: coerceReasoningEffortSettingForRuntime(reasoningEffortAfterModelChange(metadata.reasoningEffort, option.capabilities), selection.kind === 'external-cli' ? selection.runtime : selection.providerId === CODEX_SUBSCRIPTION_PROVIDER_ID ? 'codex' : metadata.runtime ?? 'builtin'),
+          mcpEnabledServers: metadata.mcpEnabledServers ?? [], enabledPluginIds: metadata.enabledPluginIds ?? [], enabledOfficialToolIds: metadata.enabledOfficialToolIds ?? [],
+        } : {}) } }, 409);
       }
       const runtime = metadata.runtime ?? 'builtin';
       const effort = coerceReasoningEffortSettingForRuntime(reasoningEffortAfterModelChange(metadata.reasoningEffort, option.capabilities), runtime);
@@ -143,6 +166,7 @@ export async function handleImModelRoute(path: string, request: Request): Promis
       try { applied = await engine.applyModelSelection({ model: selection.model, providerEnv: selection.kind === 'product-provider' && selection.providerId !== CODEX_SUBSCRIPTION_PROVIDER_ID ? (metadata.providerId === selection.providerId ? context.currentEnv : resolveProviderEnv(selection.providerId, context.config)) : undefined, reasoningEffort: effort });
       } catch { return json({ success: false, sessionConfig: 'saved', runtimeApply: 'failed', error: '会话模型已保存，运行时应用失败；请查看 /status 后重试' }, 500); }
       if (!applied.success) return json({ success: false, sessionConfig: 'saved', runtimeApply: 'failed', error: applied.error }, 500);
+      if (sessionOnly) return json({ success: true, sessionConfig: 'saved', runtimeApply: applied.status ?? 'applied' });
       let defaults;
       try { defaults = await commitAgentModelSelection(body.agentId, selection, effort); }
       catch { defaults = { success: false, error: '当前会话已修改，Agent 默认模型保存失败' }; }

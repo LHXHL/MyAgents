@@ -25,6 +25,7 @@ const channelSchema = z.object({
   mediaTypes: z.array(z.enum(["image", "file"])),
 });
 const scopeSchema = z.object({
+  conversationRef: z.object({ channelId: z.string().min(1), sessionKey: z.string().min(1) }).nullable().optional(),
   channels: z.array(channelSchema),
   defaultTarget: channelTargetSchema.nullable(),
   sourceType: z.enum(["private", "group"]).nullable(),

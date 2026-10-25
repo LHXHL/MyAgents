@@ -71,6 +71,7 @@ export type CronSchedule =
  * Note: Uses camelCase to match Rust's serde(rename_all = "camelCase")
  */
 export interface CronTask {
+  notification?: import('../../shared/types/task').NotificationConfig;
   id: string;
   workspacePath: string;
   sessionId: string;
@@ -138,6 +139,7 @@ export interface CronTaskProviderEnv {
  * Note: Uses camelCase to match Rust's serde(rename_all = "camelCase")
  */
 export interface CronTaskConfig {
+  notification?: import('../../shared/types/task').NotificationConfig;
   workspacePath: string;
   sessionId: string;
   prompt: string;

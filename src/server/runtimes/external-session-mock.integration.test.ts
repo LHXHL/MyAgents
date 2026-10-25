@@ -8779,6 +8779,35 @@ describe('external SessionEngine with fake runtime', () => {
   });
 
 
+  it.each(['dsh', 'codex', 'claude-code'] as const)('keeps a busy %s notification queued and rechecks its binding before the exact terminal', async runtimeType => {
+    const harness = await createHarness([
+      {kind:'success',text:'warm'}, {kind:'success',text:'existing work',completeDelayMs:250}, {kind:'success',text:'notification answer'},
+    ], {runtimeType});
+    const sessionId = `notification-${runtimeType}`; const workspacePath = join(harness.home,'workspace');
+    mkdirSync(workspacePath,{recursive:true});
+    const request = {sessionId,workspacePath,scenario:{type:'desktop' as const},timeoutMs:2000,pollMs:10};
+    await runInjectedTurn(harness,{...request,prompt:'warm'}); await harness.engine.waitIdle(2000,10);
+    const active = runInjectedTurn(harness,{...request,prompt:'existing'});
+    await waitFor(()=>harness.runtime.sentMessages.includes('existing'),'existing work');
+    let bound = true;
+    const admitted = vi.fn(); const terminal = vi.fn();
+    const relay = runInjectedTurn(harness,{...request,prompt:'stale notification',queueId:'stale-attempt',assistantChannelDelivery:'caller-owned',onEnqueued:admitted,onTerminal:terminal,
+      beforeDispatch:async()=>bound ? {accepted:true as const} : {accepted:false as const,error:'binding changed',code:'binding_changed'}});
+    await waitFor(()=>admitted.mock.calls.length===1,'short notification admission');
+    expect(harness.runtime.sentMessages).not.toContain('stale notification');
+    bound=false;
+    await expect(active).resolves.toMatchObject({success:true});
+    await expect(relay).resolves.toMatchObject({success:false});
+    expect(harness.runtime.sentMessages).not.toContain('stale notification');
+    const finalTerminal=vi.fn();
+    await expect(runInjectedTurn(harness,{...request,prompt:'fresh notification',queueId:'fresh-attempt',assistantChannelDelivery:'caller-owned',onTerminal:finalTerminal})).resolves.toMatchObject({success:true});
+    expect(finalTerminal).toHaveBeenCalledWith(expect.objectContaining({status:'complete',text:'notification answer'}));
+    expect(harness.mirrorCalls).toEqual([]);
+    await harness.engine.recordNotificationEvent('status-event','Task status changed');
+    await harness.engine.recordNotificationEvent('status-event','Task status changed');
+    expect((await harness.sessionStore.getSessionData(sessionId))?.messages.filter(message=>message.id==='status-event')).toHaveLength(1);
+  });
+
   it.each(['dsh', 'codex', 'claude-code'] as const)('admits a busy %s Inbox immediately, then dispatches through the same boundary queue', async runtimeType => {
     const harness = await createHarness([
       { kind: 'success', text: 'warm' },

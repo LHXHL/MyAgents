@@ -372,7 +372,37 @@
       "connecting": "连接中",
       "error": "异常",
       "offline": "离线"
-    }
+    },
+    "off": "未设置 IM 通知",
+    "conversation": "指定私聊或群聊",
+    "recentChannel": "{{name}} 内最近私聊",
+    "recentAgent": "跟随 {{name}} 最近私聊（可跨平台）",
+    "unavailable": "不可用 · {{id}}",
+    "group": "群聊",
+    "private": "私聊",
+    "chooseChannel": "选择 Channel",
+    "choosePeer": "选择私聊或群聊",
+    "loadingPeers": "正在读取会话…",
+    "noPeers": "此 Channel 暂无已知会话",
+    "futureOnly": "修改仅影响之后产生的通知；已排队的通知保留原目标。",
+    "latestDelivery": "最近投递",
+    "retry": "重试通知",
+    "resend": "重新发送",
+    "cancel": "取消通知",
+    "resendWarning": "平台可能已经接收此前的通知。重新发送可能造成重复，只会重发通知，不会重跑任务。",
+    "states": {
+      "waiting": "等待目标或连接",
+      "preparing": "准备回报",
+      "prepared": "待发送",
+      "sending": "发送中",
+      "sent": "已发送",
+      "suppressed": "已抑制",
+      "failed": "失败",
+      "unknown": "结果未确认",
+      "partial": "部分发送",
+      "cancelled": "已取消"
+    },
+    "completeTarget": "请选择完整的通知 Channel 和聊天"
   },
   "cron": {
     "untitledTask": "未命名任务",
@@ -641,7 +671,15 @@
       "weekly": "每周",
       "monthly": "每月"
     },
-    "weekdays": ["一", "二", "三", "四", "五", "六", "日"],
+    "weekdays": [
+      "一",
+      "二",
+      "三",
+      "四",
+      "五",
+      "六",
+      "日"
+    ],
     "monthDay": "{{day}} 号",
     "every": "每",
     "intervalSuffix": "分钟触发一次(最少 {{min}} 分钟)",

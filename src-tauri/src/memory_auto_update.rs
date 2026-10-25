@@ -441,7 +441,9 @@ pub async fn configure_memory_auto_update_task(
                         bot_channel_id: None,
                         bot_thread: None,
                         events: Some(vec![]),
-                    }),
+                        version: None,
+            ..Default::default()
+        }),
                     notification_patch: None,
                     prompt: Some(MANAGED_AUTO_UPDATE_PROMPT.to_string()),
                 })
@@ -483,7 +485,9 @@ pub async fn configure_memory_auto_update_task(
                     bot_channel_id: None,
                     bot_thread: None,
                     events: Some(vec![]),
-                }),
+                    version: None,
+            ..Default::default()
+        }),
             })
             .await?
     };

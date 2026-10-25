@@ -19,7 +19,8 @@ import type { ChannelType } from '../../../shared/types/agent';
 import type { InstalledPlugin } from '../../../shared/types/im';
 import { upsertInstalledPlugin } from './pluginInstallState';
 import { PROMOTED_PLUGINS } from './promotedPlugins';
-import BotWorkspacePickerDialog from './BotWorkspacePickerDialog';
+import AgentWorkspacePickerDialog from '@/components/AgentWorkspacePickerDialog';
+import { getBotWorkspaceCandidates } from './botWorkspaceSelection';
 import telegramIcon from './assets/telegram.png';
 import dingtalkIcon from './assets/dingtalk.svg';
 
@@ -391,9 +392,11 @@ export default function BotPlatformRegistry({
       )}
 
       {workspacePlatform && (
-        <BotWorkspacePickerDialog
-          projects={projects}
-          defaultWorkspacePath={defaultWorkspacePath}
+        <AgentWorkspacePickerDialog
+          projects={getBotWorkspaceCandidates(projects, defaultWorkspacePath)}
+          title={t('agentSettings.botRegistry.selectWorkspaceTitle')}
+          description={t('agentSettings.botRegistry.selectWorkspaceDescription')}
+          emptyLabel={t('agentSettings.botRegistry.noWorkspaceAvailable')}
           onClose={() => setWorkspacePlatform(null)}
           onSelect={project => {
             const platform = workspacePlatform;

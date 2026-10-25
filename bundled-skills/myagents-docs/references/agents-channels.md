@@ -43,6 +43,16 @@ Telegram、钉钉、飞书由 MyAgents 桌面应用直接提供配置向导并�
 - 群聊需要遵守群上下文与静默回复规则；不是每条 heartbeat 或工具结果都应该公开发送。
 - 渠道是否支持原生交互卡片、AskUserQuestion、媒体类型和文件名取决于平台能力；不支持时应安全降级，而不是等待一个用户无法响应的 UI。
 
+## Team AI
+
+Team AI 是共享 Agent 工作区的管理面板。先在“设置 → 关于 → 实验室”打开“Team AI 面板”（默认关闭），再从侧栏“更多”进入。关闭开关只隐藏入口，已打开的面板、渠道连接和任务仍保留。
+
+- 可以创建 Team AI，也可以选择已有 Agent 工作区加入；创建沿用普通 Agent 面板和 mino 模板，工作区仍显示在侧栏。
+- 左侧列出连接的 Bot 及群聊、私聊；右侧查看当前会话、历史会话、统计和配置。点击 Session 会打开对应对话。
+- 同一个 Bot 内，每个群聊或私聊有稳定的 `sessionKey`，可先后绑定多个 Session；不同 Bot 的聊天不能只凭 `sessionKey` 合并。
+- 每个聊天可保存自己的 Runtime、模型、推理强度和工具配置，不修改 Agent 默认值，也不在此配置权限。兼容改动会同步到当前 Session；需要新会话才能生效时，先保存配置，再询问是否新建。
+- 可以把本聊天下的历史 Session 设为当前，换绑不会停止旧任务。恢复跟随 Agent 默认只影响以后新建的 Session；移出 Team AI 不删除工作区或聊天记录。
+
 ## 主动 Agent、Heartbeat 与长期记忆
 
 主动 Agent 可以按 heartbeat 感知工作区或执行周期性维护。长期记忆更新、整理和进化可以由隐藏的系统维护 Task 驱动，普通任务列表不一定显示这些内部维护行。
@@ -56,9 +66,9 @@ Telegram、钉钉、飞书由 MyAgents 桌面应用直接提供配置向导并�
 
 ## IM 中的媒体与结果
 
-Agent 在 IM Session 中可以发送图片、视频或文件，但只允许来自当前 Workspace、MyAgents scratch 或明确安全临时目录的文件。普通桌面 Session 调用 IM media 命令会得到“No IM context”，这是作用域边界，不是产品故障。
+Agent 可通过现有 IM 命令发送文本与当前平台支持的附件，文件必须通过工作区/安全路径校验。当前绑定位置可以直接发送；不同位置通过目标会话 handoff 接续。没有默认绑定的桌面或后台 Session，可以显式指定所属 Agent 的 Channel 和目标，并提供转交正文与背景；不能把“没有默认绑定”理解为所有发送能力均不可用。
 
-Task、Goal 和 heartbeat 的结果需要回到触发它们的正确 Channel/peer。用户看到“任务执行了但发给了另一个聊天”属于实际路由异常，应转 support。
+Task 的执行 Session 与通知目标分别配置。通知按 Channel + sessionKey 定位聊天，与 Heartbeat 独立；默认来源、目标选择和投递状态见 [自动化与结果通知](automation.md#结果通知)。普通 IM 回复和 Goal 仍遵循各自的投递规则。
 
 ## AI 小助理
 

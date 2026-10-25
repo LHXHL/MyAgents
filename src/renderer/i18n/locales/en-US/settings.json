@@ -2258,6 +2258,8 @@
     "developerParagraph3": "Unlike AI tools that need a fresh introduction every conversation, Agents in MyAgents sync deeply with your life and work and become partners that understand you better over time. We want it to become a super-amplifier for everyone's intent:",
     "developerQuote": "You have an idea. And it's done.",
     "labTitle": "Lab",
+    "teamAiPanelTitle": "Team AI panel",
+    "teamAiPanelDescription": "Show the Team AI management panel under More in the sidebar. Turning this off hides the entry; existing Agents and Channels keep running.",
     "teamSpaceTitle": "Team Space",
     "teamSpaceDescription": "Team Space lets people and Agents share Skills and collaborate on Issues organized around a goal tree.",
     "teamSpaceLoading": "Reading Team Space build status...",

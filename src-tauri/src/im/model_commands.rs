@@ -45,7 +45,12 @@ async fn call(
         .json()
         .await
         .map_err(|_| "响应未确认，请重新查看当前会话状态".to_string())?;
-    if !status.is_success() && result.get("requiresNewSession") != Some(&json!(true)) {
+    // A saved Session with a failed runtime apply is a committed partial result:
+    // callers still settle what was saved (e.g. the Team AI peer profile).
+    if !status.is_success()
+        && result.get("requiresNewSession") != Some(&json!(true))
+        && result.get("sessionConfig") != Some(&json!("saved"))
+    {
         return Err(result
             .get("error")
             .and_then(|v| v.as_str())
@@ -60,7 +65,19 @@ pub(super) async fn create_birth(
     manager: &ManagedSidecarManager,
     birth: &serde_json::Value,
 ) -> Result<String, String> {
-    let value = call(client, global_port(manager)?, "/sessions", Some(birth)).await?;
+    birth_session_id(&create_birth_value(client, manager, birth).await?)
+}
+
+/// Full `POST /sessions` response, for callers that need birth outcomes beyond the id.
+pub(super) async fn create_birth_value(
+    client: &Client,
+    manager: &ManagedSidecarManager,
+    birth: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    call(client, global_port(manager)?, "/sessions", Some(birth)).await
+}
+
+pub(super) fn birth_session_id(value: &serde_json::Value) -> Result<String, String> {
     value["session"]["id"]
         .as_str()
         .map(str::to_string)
@@ -134,7 +151,11 @@ pub(super) async fn read_menu(
             }
         ));
     }
-    text.push_str("\n发送 /model 序号 切换模型，同时更新 Agent 默认模型。\n发送 /new 使用最新默认设置开始新会话。");
+    text.push_str(if super::config_store::agent_is_team_ai(agent_id) {
+        "\n发送 /model 序号 切换模型，之后这个私聊的新会话也会使用它。\n发送 /new 开始新会话。"
+    } else {
+        "\n发送 /model 序号 切换模型，同时更新 Agent 默认模型。\n发送 /new 使用最新默认设置开始新会话。"
+    });
     Ok((menu, text))
 }
 
@@ -186,6 +207,13 @@ pub(super) async fn select_model<R: Runtime>(
             .clone()
     };
     let mut fence = lock.lock_owned().await;
+    // Team AI peers own their choice: Session + peer profile, never the Agent default.
+    let team_ai = super::config_store::agent_is_team_ai(context.agent_id);
+    let selection_path = if team_ai {
+        "/api/im/session-model-selection"
+    } else {
+        "/api/im/model-selection"
+    };
     let (client, prior) = {
         let router = context.router.lock().await;
         (
@@ -201,6 +229,7 @@ pub(super) async fn select_model<R: Runtime>(
         return Err("会话已变化，请重新发送 /model".to_string());
     }
     let mut transferred = false;
+    let mut final_session = current_id.map(str::to_string);
     let result = if let Some(session_id) = current_id {
         let port = ensure_sidecar_port_for_command(
             context.router,
@@ -212,7 +241,7 @@ pub(super) async fn select_model<R: Runtime>(
             context.health,
         )
         .await?;
-        call(&client, port, "/api/im/model-selection", Some(&json!({ "agentId": context.agent_id, "sessionId": session_id, "configSnapshotAt": menu.snapshot_at, "snapshotObservation": menu.observation, "selection": option["selection"], "allowNewSession": option["requiresNewSession"].as_bool().unwrap_or(false) }))).await?
+        call(&client, port, selection_path, Some(&json!({ "agentId": context.agent_id, "sessionId": session_id, "configSnapshotAt": menu.snapshot_at, "snapshotObservation": menu.observation, "selection": option["selection"], "allowNewSession": option["requiresNewSession"].as_bool().unwrap_or(false) }))).await?
     } else {
         let plan = call(
             &client,
@@ -257,9 +286,26 @@ pub(super) async fn select_model<R: Runtime>(
             .get_peer_session(context.session_key)
             .map(|peer| peer.sidecar_port)
             .ok_or_else(|| "绑定结果未确认".to_string())?;
-        call(&client, port, "/api/im/model-selection", Some(&json!({ "agentId": context.agent_id, "sessionId": target_id, "configSnapshotAt": target_menu.snapshot_at, "snapshotObservation": target_menu.observation, "selection": option["selection"] }))).await?
+        let selected = call(&client, port, selection_path, Some(&json!({ "agentId": context.agent_id, "sessionId": target_id, "configSnapshotAt": target_menu.snapshot_at, "snapshotObservation": target_menu.observation, "selection": option["selection"] }))).await?;
+        final_session = Some(target_id);
+        selected
     } else {
         result
+    };
+    let profile_saved = match (team_ai, final_session.as_deref()) {
+        (true, Some(session_id)) if result["sessionConfig"] == "saved" => Some(
+            super::team_ai::sync_peer_profile(
+                context.manager,
+                context.agent_id,
+                context.channel_id,
+                context.session_key,
+                session_id,
+            )
+            .await
+            .map_err(|error| ulog_warn!("[im] /model peer profile not saved: {}", error))
+            .is_ok(),
+        ),
+        _ => None,
     };
     drop(fence);
     if let Some(patch) = result.get("reloadPatch").filter(|value| value.is_object()) {
@@ -291,10 +337,18 @@ pub(super) async fn select_model<R: Runtime>(
     } else {
         "当前会话模型已更新"
     };
+    let scope = match profile_saved {
+        Some(true) => "之后这个私聊的新会话也会使用该模型。",
+        Some(false) => "当前会话已修改，但这个私聊的专属设置保存失败。",
+        None if team_ai => "",
+        None => "Agent 默认模型已更新。",
+    };
     Ok(format!(
-        "{prefix}：{}\nAgent 默认模型已更新。",
+        "{prefix}：{}\n{scope}",
         option["name"].as_str().unwrap_or("模型")
-    ))
+    )
+    .trim_end()
+    .to_string())
 }
 
 #[cfg(test)]
@@ -344,6 +398,7 @@ mod tests {
                 unindexed,
             ]
             .into_iter(),
+            &Default::default(),
         );
         assert_eq!(
             peers
@@ -353,6 +408,20 @@ mod tests {
             vec!["one", "two"]
         );
         assert!(peers.iter().all(|peer| peer.sidecar_port == 0));
+    }
+
+    #[test]
+    fn notifications_skip_team_ai_peers_that_own_their_settings() {
+        let profiled = peer("own", ImSourceType::Private);
+        let skip = std::iter::once(profiled.session_key.clone()).collect();
+        let peers = private_notice_peers(
+            vec![profiled, peer("follows", ImSourceType::Private)].into_iter(),
+            &skip,
+        );
+        assert_eq!(
+            peers.iter().map(|peer| peer.source_id.as_str()).collect::<Vec<_>>(),
+            vec!["follows"]
+        );
     }
     #[test]
     fn notice_uses_current_session_model_and_skips_the_peer_already_on_the_default() {
@@ -443,7 +512,7 @@ pub(super) async fn ensure_peer_snapshot(
     manager: &ManagedSidecarManager,
     session_key: &str,
 ) -> Result<(), String> {
-    let (client, prior, workspace) = {
+    let (client, prior, workspace, owner) = {
         let router = router.lock().await;
         (
             router.http_client().clone(),
@@ -451,6 +520,9 @@ pub(super) async fn ensure_peer_snapshot(
             router
                 .peer_session_workspace(session_key)
                 .unwrap_or_else(|| router.default_workspace_path()),
+            router
+                .channel_owner()
+                .map(|(agent, channel)| (agent.to_string(), channel.to_string())),
         )
     };
     if let Some(peer) = prior.as_ref() {
@@ -488,7 +560,14 @@ pub(super) async fn ensure_peer_snapshot(
             return Err("无法确认旧会话状态，请稍后重试".to_string());
         }
     }
-    let target = create_birth(&client, manager, &json!({"agentDir":workspace,"seedMaxPermission":true,"origin":{"kind":"agent-channel","surface":"channel_message"}})).await?;
+    let target = super::team_ai::birth_for_peer(
+        &client,
+        manager,
+        &workspace.to_string_lossy(),
+        owner.as_ref().map(|(a, c)| (a.as_str(), c.as_str())),
+        session_key,
+    )
+    .await?;
     let _projection = health.lock_active_sessions_projection().await;
     let mut router = router.lock().await;
     if router
@@ -501,7 +580,7 @@ pub(super) async fn ensure_peer_snapshot(
     }
     let transition = router.stage_materialized_session_binding(session_key, &target);
     if let Err(error) = health
-        .persist_active_sessions_snapshot(router.active_sessions())
+        .persist_active_sessions_snapshot(router.active_sessions(), router.peer_history())
         .await
     {
         router.rollback_peer_binding_transition(&transition);
@@ -543,7 +622,7 @@ async fn mark_owned_peer(
     owned.metadata_birth_pending = false;
     router.upsert_peer_session(owned);
     if let Err(error) = health
-        .persist_active_sessions_snapshot(router.active_sessions())
+        .persist_active_sessions_snapshot(router.active_sessions(), router.peer_history())
         .await
     {
         router.upsert_peer_session(prior);
@@ -600,12 +679,15 @@ pub(super) async fn notify_default_change(
 }
 
 /// No freshness/port filter: every established private binding is a notification target.
+/// Team AI peers in `follows_own_profile` own their settings and are not notified of Agent default changes.
 pub(super) fn private_notice_peers(
     peers: impl Iterator<Item = types::PeerSession>,
+    follows_own_profile: &std::collections::HashSet<String>,
 ) -> Vec<types::PeerSession> {
     let mut targets = std::collections::HashSet::new();
     peers
         .filter(|peer| peer.source_type == ImSourceType::Private && peer.metadata_indexed)
+        .filter(|peer| !follows_own_profile.contains(&peer.session_key))
         .filter(|peer| targets.insert(peer.source_id.clone()))
         .collect()
 }

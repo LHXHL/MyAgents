@@ -4,7 +4,6 @@ use std::time::Instant;
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
-use crate::cron_task::CronDelivery;
 use crate::sidecar::{
     execute_cron_task, release_session_sidecar, CronExecutePayload, ManagedSidecarManager,
     SessionLifecycleGuard, SidecarOwner,
@@ -292,91 +291,6 @@ pub(crate) async fn execute_task(
     })
 }
 
-pub async fn deliver_task_result(handle: &AppHandle, task: &Task, outcome: &TaskExecutionOutcome) {
-    let content = outcome.output_text.clone().unwrap_or_else(|| {
-        if outcome.success {
-            format!("Task '{}' completed successfully.", task.name)
-        } else {
-            format!(
-                "Task '{}' failed: {}",
-                task.name,
-                outcome.error.as_deref().unwrap_or("unknown error")
-            )
-        }
-    });
-
-    if let Some(notification) = task.notification.as_ref() {
-        if let Some(bot_id) = notification
-            .bot_channel_id
-            .as_deref()
-            .filter(|value| !value.is_empty())
-        {
-            let delivery = CronDelivery {
-                bot_id: bot_id.to_string(),
-                chat_id: notification
-                    .bot_thread
-                    .clone()
-                    .unwrap_or_else(|| "_auto_".to_string()),
-                platform: "task-center".to_string(),
-            };
-            crate::cron_task::deliver_cron_result_to_bot(
-                handle,
-                &delivery,
-                &task.id,
-                &content,
-                outcome.session_id.as_deref(),
-            )
-            .await;
-        }
-    }
-
-    if should_deliver_desktop_notification(task) {
-        let title = if outcome.success {
-            "定时任务执行完成"
-        } else {
-            "定时任务执行失败"
-        };
-        let session_id = outcome.session_id.clone().unwrap_or_default();
-        let navigation = crate::notification::NotificationNavigation::for_session(
-            None,
-            session_id.clone(),
-            task.workspace_path.clone(),
-        );
-        let badge = crate::notification_badge::NotificationBadgeIncrement {
-            id: format!(
-                "task:{}:{}",
-                task.id,
-                task.execution_count.saturating_add(1)
-            ),
-            source: "task".to_string(),
-            created_at: chrono::Utc::now().timestamp_millis(),
-            target: crate::notification_badge::NotificationBadgeTarget::Session {
-                session_id,
-                workspace_path: task.workspace_path.clone(),
-            },
-        };
-        crate::notification::show_with_navigation_target_and_badge(
-            handle,
-            title,
-            &content,
-            navigation,
-            Some(badge),
-        );
-    }
-}
-
-fn should_deliver_desktop_notification(task: &Task) -> bool {
-    if matches!(
-        task.managed_kind.as_deref(),
-        Some(crate::task::MANAGED_KIND_MEMORY_GARDENER | crate::task::MANAGED_KIND_MEMORY_MOLT)
-    ) {
-        return false;
-    }
-    task.notification
-        .as_ref()
-        .map(|notification| notification.desktop)
-        .unwrap_or(true)
-}
 
 pub async fn release_task_sessions(
     handle: &AppHandle,
@@ -576,25 +490,6 @@ mod tests {
             assert!(!response_failure_retryable(false, code, status));
         }
         assert!(response_failure_retryable(true, None, Some(200)));
-    }
-
-    #[test]
-    fn memory_evolution_tasks_never_deliver_desktop_notifications() {
-        let mut task = single_session_task("unused");
-        task.managed_kind = Some(crate::task::MANAGED_KIND_MEMORY_GARDENER.to_string());
-        assert!(!should_deliver_desktop_notification(&task));
-
-        task.managed_kind = Some(crate::task::MANAGED_KIND_MEMORY_MOLT.to_string());
-        assert!(!should_deliver_desktop_notification(&task));
-
-        task.managed_kind = None;
-        assert!(should_deliver_desktop_notification(&task));
-
-        task.notification = Some(crate::task::NotificationConfig {
-            desktop: false,
-            ..Default::default()
-        });
-        assert!(!should_deliver_desktop_notification(&task));
     }
 
     #[test]

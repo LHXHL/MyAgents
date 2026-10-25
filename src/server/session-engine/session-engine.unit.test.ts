@@ -351,6 +351,8 @@ const mocks = vi.hoisted(() => {
 });
 
 vi.mock('../agent-session', async () => ({
+  recordNotificationEvent: vi.fn(),
+  getCurrentChannelSnapshot: vi.fn(() => null),
   runSerializedSessionMutation: (await import('../builtin-session/lifecycle')).runSerializedSessionMutation,
   applyMcpOverrideAndAwaitReady: mocks.applyMcpOverrideAndAwaitReady,
   cancelImRequest: mocks.cancelBuiltinImRequest,
@@ -411,6 +413,8 @@ vi.mock('../agent-session', async () => ({
 }));
 
 vi.mock('../runtimes/external-session', () => ({
+  recordExternalNotificationEvent: vi.fn(),
+  getExternalChannelSnapshot: vi.fn(() => null),
   inspectExternalRuntime: vi.fn(async () => null),
   awaitExternalSessionStarting: mocks.awaitExternalSessionStarting,
   cancelExternalImRequest: mocks.cancelExternalImRequest,
@@ -543,6 +547,7 @@ function runInjectedTurn(request: TestInjectedTurnRequest) {
 
 describe('session-engine selector and adapters', () => {
   beforeEach(async () => {
+    mocks.enqueueExternalSendForIm.mockImplementation((text, images, context) => ({ queued: true, dispatch: mocks.sendExternalMessage(text, images, undefined, undefined, context) }));
     vi.clearAllMocks();
     mocks.state.useExternal = false;
     mocks.state.externalActive = false;
@@ -1789,7 +1794,7 @@ describe('session-engine selector and adapters', () => {
     expect(mocks.interruptCurrentResponse).not.toHaveBeenCalled();
   });
 
-  it('clears stale builtin agent errors before starting an injected turn', async () => {
+  it('clears stale builtin agent errors at promotion without touching a busy preceding turn', async () => {
     mocks.getAndClearLastAgentError.mockReturnValueOnce('stale previous error');
 
     const result = await runInjectedTurn({
@@ -1805,7 +1810,7 @@ describe('session-engine selector and adapters', () => {
     expect(result).toMatchObject({ success: true, text: 'builtin answer' });
     expect(mocks.getAndClearLastAgentError).toHaveBeenCalledTimes(1);
     expect(mocks.getAndClearLastAgentError.mock.invocationCallOrder[0])
-      .toBeLessThan(mocks.enqueueUserMessage.mock.invocationCallOrder[0]);
+      .toBeGreaterThan(mocks.enqueueUserMessage.mock.invocationCallOrder[0]);
   });
 
   it('does not install an injected-turn-specific MCP admission gate', async () => {
@@ -1844,7 +1849,7 @@ describe('session-engine selector and adapters', () => {
     expect(mocks.enqueueUserMessage).toHaveBeenCalledTimes(1);
     expect(mocks.enqueueUserMessage.mock.calls[0]?.[11]).not.toHaveProperty('beforeUserPersistence');
     expect(mocks.enqueueUserMessage.mock.calls[0]?.[11]).toEqual(expect.objectContaining({
-      beforeDispatch: domainGuard,
+      beforeDispatch: expect.any(Function),
     }));
     expect(domainGuard).toHaveBeenCalledOnce();
   });
@@ -2620,8 +2625,7 @@ describe('session-engine selector and adapters', () => {
   it('stops the external runtime when an injected turn times out', async () => {
     mocks.state.useExternal = true;
     mocks.sendExternalMessage.mockImplementationOnce(async (...args: unknown[]) => {
-      const onDispatchAccepted = args[6] as (() => void) | undefined;
-      onDispatchAccepted?.();
+      mocks.state.externalCurrentQueueId = (args[4] as { queueId: string }).queueId;
       return { queued: true };
     });
 

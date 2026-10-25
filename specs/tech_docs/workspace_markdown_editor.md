@@ -111,3 +111,5 @@ Live Preview 左缘的短横线入口不占正文布局，悬停展开共享 `Po
 DOM composition 事件仅证明调度和 view identity，不能代替真实输入法验收。Chrome 或独立 WKWebView 的开发态 harness 也不能证明真实 Tauri OS drop、Windows WebView2 或完整 cold 性能。具体发布证据与尚未关闭的 mandatory 检查留在对应 PRD 执行台账，不把未测项写成实现已通过。
 
 表格模型利用 CM Text 的行索引和语法树按需解析 `rows.at(index)`，渲染/编辑热路径中仅结构性列操作才遍历全部行；投影以 immutable Text 身份失效，不在每次输入时把整表拷成字符串。定义索引包含匿名子树以复用稳定分组；可见行出现额外 GFM cell 时提示源码出口。
+
+多单元格 TSV 粘贴通过一系列临时 `EditorState` 组合父文档的 `ChangeSet`。临时状态没有 View 推进后台解析，限时解析得到的 `syntaxTree(state)` 可能不完整。每步结构或单元格变更后，必须补全到映射后的当前表格末尾，再用 `ensureSyntaxTree` 返回的树计算下一步坐标；该函数不会同步替换状态中原有的树快照。正常输入与渲染仍按解析时间预算执行，最终只向父文档提交一次事务。

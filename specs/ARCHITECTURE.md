@@ -163,9 +163,9 @@ Session 首屏恢复先取得 REST snapshot，再接续 revision 连续的 SSE�
 
 Task、Goal 与 Agent Channel 都复用 Product Session 和同一 Runtime queue，但拥有独立的业务状态：
 
-- TaskStore/Scheduler 拥有 schedule、execution claim、状态与审计；Task 只在执行期持有 `SidecarOwner::Task`。
+- TaskStore/Scheduler 拥有 schedule、execution claim、状态与审计；Task 只在执行期持有 `SidecarOwner::Task`。通知策略由 TaskStore 保存，IM 投递记录与执行结果原子提交；通知作业复用 ChannelOwner / Inbox / SessionEngine，按 Channel + sessionKey 定位聊天，独立于业务重跑与 Heartbeat 巡检。
 - SessionGoalManager 拥有 Goal 状态、continuation、deadline 和当前 Turn fence；Goal 不创建 Task。
-- Agent/IM owner 持有 channel binding 与 delivery lifecycle；已有 Session 继续服从自己的 birth snapshot。
+- Agent/IM owner 管理 Channel 绑定与消息投递。Team AI 复用这条路径：工作区用途由 Project 保存，聊天专属配置由 Rust 在 `config.json` 中维护；新建 Session 时采用专属配置或 Agent 默认值，已有 Session 以自身快照为准，兼容改动经 Session 接口应用。详见 [Team AI](tech_docs/im_integration_architecture.md#team-ai-管理投影)。
 - BackgroundCompletion 只在前台 owner 离开而已接纳工作仍需结算时保活。
 
 等待 Runtime idle 不能代替业务 terminal。状态提交、通知和 owner 释放必须按各自 owner 的终态协议执行。

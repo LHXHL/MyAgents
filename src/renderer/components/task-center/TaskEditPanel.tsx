@@ -1,3 +1,4 @@
+import { isNotificationTargetComplete } from '@/../shared/types/task';
 // TaskEditPanel — edit mode for a Task. Rendered inside `TaskDetailOverlay`
 // when the user clicks the 「编辑」 affordance. Shares its scheduling and
 // end-condition editors AND its panel chrome (FormSection / PanelFooter /
@@ -338,6 +339,7 @@ export function TaskEditPanel({
 
   const errors = useMemo(() => {
     const errs: string[] = [];
+    if (!isNotificationTargetComplete(draft.notification)) errs.push(t('notifications.completeTarget'));
     if (!draft.name.trim()) errs.push(t('edit.validation.nameRequired'));
     if (taskMdReadState === 'failed')
       errs.push(t('edit.validation.taskReadFailed'));

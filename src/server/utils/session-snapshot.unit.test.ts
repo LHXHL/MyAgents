@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-import { snapshotForForkedSession, snapshotForOwnedSession, snapshotForImSession } from './session-snapshot';
+import { snapshotForImRuntimeSwitch, snapshotForForkedSession, snapshotForOwnedSession, snapshotForImSession } from './session-snapshot';
 import type { SessionMetadata } from '../types/session';
 import type { AgentConfig } from '../../shared/types/agent';
 
@@ -360,5 +360,21 @@ describe('snapshotForForkedSession', () => {
     });
     expect(snapshot).not.toHaveProperty('managedCodexExtensionProtocolVersion');
     expect(snapshot).not.toHaveProperty('managedCodexHostCatalogFingerprint');
+  });
+});
+
+
+describe('explicit Team Runtime switch', () => {
+  it('scrubs Managed Codex choices when switching the same Runtime to the native CLI owner', () => {
+    const source: SessionMetadata = {id:'s',agentDir:'/w',title:'S',createdAt:'',lastActiveAt:'',runtime:'codex',runtimeSource:'managed-provider',providerId:'codex-sub',model:'managed-only',reasoningEffort:'xhigh'};
+    expect(snapshotForImRuntimeSwitch(source,'codex')).toMatchObject({runtime:'codex',runtimeSource:'system-cli',model:undefined,providerId:undefined,reasoningEffort:undefined});
+  });
+  it.each([['builtin','dsh'],['dsh','builtin']] as const)('%s to %s carries Session choices without Agent defaults', (from,to) => {
+    const source: SessionMetadata = {id:'s',agentDir:'/w',title:'S',createdAt:'',lastActiveAt:'',runtime:from,providerId:'session-provider',model:'session-model',reasoningEffort:'high',mcpEnabledServers:['m'],enabledPluginIds:['p']};
+    expect(snapshotForImRuntimeSwitch(source,to)).toMatchObject({runtime:to,providerId:'session-provider',model:'session-model',reasoningEffort:'high',mcpEnabledServers:['m'],enabledPluginIds:['p']});
+  });
+  it('does not leak an integrated model into a native CLI birth', () => {
+    const source: SessionMetadata = {id:'s',agentDir:'/w',title:'S',createdAt:'',lastActiveAt:'',runtime:'builtin',providerId:'session-provider',model:'claude-model',reasoningEffort:'high'};
+    expect(snapshotForImRuntimeSwitch(source,'codex')).toMatchObject({runtime:'codex',runtimeSource:'system-cli',model:undefined,providerId:undefined,reasoningEffort:undefined});
   });
 });

@@ -1,3 +1,5 @@
+import { recordExternalNotificationEvent } from '../runtimes/external-session';
+import { getExternalChannelSnapshot } from '../runtimes/external-session';
 import { updateExternalRuntimeConfig } from '../runtimes/external-session';
 import { retryDesktopRequest } from './retry';
 import { randomUUID } from 'node:crypto';
@@ -416,6 +418,10 @@ export function createExternalSessionEngine(): SessionEngine {
       return getExternalCurrentTurnIdentity();
     },
 
+    recordNotificationEvent: recordExternalNotificationEvent,
+
+    getNotificationConversation() { return getExternalChannelSnapshot()?.scope.conversationRef ?? null; },
+
     getExecutionTurnId() { return getExternalExecutionTurnId(); },
 
     getActiveImBridgeTurnContext() {
@@ -743,10 +749,8 @@ export function createExternalSessionEngine(): SessionEngine {
       const terminal = new Promise<TurnTerminalOutcome>((resolve) => {
         resolveTerminal = resolve;
       });
-      const sendPromise = sendExternalMessage(
+      const queuedTurn = enqueueExternalSendForIm(
         request.prompt,
-        undefined,
-        undefined,
         undefined,
         {
           sessionId: request.sessionId,
@@ -773,10 +777,14 @@ export function createExternalSessionEngine(): SessionEngine {
           channelPrimaryReminder: true,
         },
       );
+      if (queuedTurn.queued) request.onEnqueued?.(queueId);
+      const sendPromise = queuedTurn.dispatch;
       const result = await waitForDeadline(sendPromise, deadline - Date.now());
       if (!result) {
         request.beforeDispatch?.cancel?.();
         void sendPromise.catch(() => undefined);
+        const cancellation = await cancelExternalQueueItem(queueId);
+        await cancellation?.promotion?.settled;
         const dispatchAccepted = isExternalTurnCurrent(queueId);
         const stopped = !dispatchAccepted || await stopExternalTarget();
         if (stopped) clearExternalTurnBinding(queueId);
@@ -828,7 +836,7 @@ export function createExternalSessionEngine(): SessionEngine {
           });
           return { ...decision, enqueued: true, channelDeliveryMode: settledOutcome.channelDeliveryMode };
         }
-        const stopped = await stopExternalTarget();
+        const stopped = !isExternalTurnCurrent(queueId) || await stopExternalTarget();
         if (stopped) clearExternalTurnBinding(queueId);
         return {
           ...decideExternalInjectedTurnResult({ idleCompleted: false }),

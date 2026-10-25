@@ -3,6 +3,9 @@ import { describe, expect, test } from "vitest";
 import { resolveNotificationClickRoute } from "./notificationClickRoute";
 
 describe("resolveNotificationClickRoute", () => {
+  test("opens Task Center for status-only notification clicks", () => {
+    expect(resolveNotificationClickRoute({ taskId: "task-1" }, () => false)).toEqual({ type: "open-task-center", taskId: "task-1" });
+  });
   test("selects an existing tab when tabId is still live", () => {
     expect(
       resolveNotificationClickRoute(

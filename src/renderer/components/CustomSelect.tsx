@@ -103,7 +103,12 @@ export default function CustomSelect({
         type="button"
         aria-label={ariaLabel}
         disabled={disabled}
-        onClick={() => setIsOpen(!isOpen)}
+        onClick={(event) => {
+          // Native accessibility activation may click without moving focus.
+          // Keep Escape in this select's existing keyboard/focus owner.
+          if (!isOpen) event.currentTarget.focus({ preventScroll: true });
+          setIsOpen(!isOpen);
+        }}
         className={`flex w-full items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--paper)] text-left transition-colors hover:border-[var(--ink-subtle)] disabled:cursor-not-allowed disabled:opacity-60 ${
           compact
             ? 'px-2 py-1 text-xs'

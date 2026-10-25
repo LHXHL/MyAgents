@@ -81,6 +81,39 @@ GUI 只修复“多个其它方面有效的 Project 声明同一 Agent”这一�
 
 Rust adapter与Plugin Bridge都属于general request proxy consumer。effective proxy变化时，在Channel model-work gate到达idle边界后复用标准stop/start，以磁盘配置重建transport。连续变化按generation合并到最终intent；不能另建proxy专用进程管理器或复制SessionRouter。
 
+## Team AI 管理投影
+
+Team AI 复用既有 Project、Agent、Channel 和 Session，不另建执行器或数据库。Project service 在 `projects.json` 的写锁内维护 `purpose=team-ai`；创建复用 NewAgentPanel/mino，加入或移出只更新用途。实验室开关只控制侧栏入口，不参与后台执行和配置解析；界面规则见 [App Shell](../design/app_shell.md#team-ai)。
+
+### 聊天身份与历史
+
+管理位置以 `(agentId, channelId, sessionKey)` 定位。`sessionKey` 只在连接内标识群聊或私聊，不能单独用来合并不同 Bot 的聊天。`im/team_ai.rs` 从配置枚举连接，再合并运行中的 Router/Health 或持久化 health，停用的连接也可浏览。
+
+Router 的 `peer_history` 记录已建立关联的 Session ID，与当前绑定一同保存为 health 快照中的 `peerSessionHistory`。这是可重建的历史索引，不存储聊天配置，也不向 Session origin 重复写入绑定。轮换或移除前保留原关联，未提交的候选绑定不进入历史；旧数据没有历史字段时只恢复已知的当前绑定。Session 删除后保留失效引用，不重建会话。
+
+状态读取使用对应进程代次的 dispatch lease，限制单批数量并优先观察当前 Session；浏览不会启动 Session Sidecar 或注册 Tab owner。没有活跃进程与观察失败是两种状态，分别表示未运行和状态未知。最近活动取 Session 元数据 `lastActiveAt`；Router 的 `last_active` 是渠道启动时重置的进程内计时，只用于 Heartbeat 等运行时选择。页面不读取对话正文，关闭页面不释放渠道持有的执行 owner。
+
+### 聊天专属配置
+
+仅 Team AI 使用 `config.json` 中的 `agents[].channels[].peerProfiles[sessionKey]`。它定义此聊天以后新建 Session 的配置，不替代已有 Session 的快照，也不修改 Agent 默认值。配置结构定义在 `src/shared/teamAi.ts::TeamPeerProfile`，Node `src/server/utils/peer-profile.ts` 负责验证、组合与转换；字段包含 Runtime/source、Provider 或 runtime-backed identity、模型、推理强度与工具，不含权限。Rust 保存完整 JSON，随 Channel 删除。普通 Renderer Channel 写入不得修改此字段，由 `channelExecutionConfigChangeError` 检查。
+
+配置统一由 Rust `team_ai::write_peer_profile` 在 config lock 内替换或删除，来源有两种：
+
+- **管理页修改**：`UpdateConfig` 在 peer fence 内，将已存专属配置（没有则用 Agent 模板）交给 Global `/api/im/peer-config/compose` 组合新配置。先保存，再通过目标 Session 的接口应用兼容改动。Runtime 或不兼容模型变更返回 `sessionApply: skipped`，由界面询问是否新建；当前 Session 已使用该配置时返回 `applied`。`UpdateConfig` 本身不创建 Session。
+- **当前会话修改**：`sync_peer_profile` 确认工作区为 Team AI，且 Session 仍是该聊天的当前绑定后，通过 `/api/im/peer-profile` 读取完整 Session 配置并保存。Team AI 私聊 `/model` 和 Chat 的 Session 配置更新都走此入口，不合并陈旧增量。
+
+在线同步先取得 peer fence，写入前非阻塞取得 Channel lifecycle lock，再核对连接代次与绑定；锁不可用时报告未保存。持有 lifecycle lock 时不能等待 peer fence，否则会与会话中的配置重载互相等待。离线同步没有 peer fence，在 lifecycle lock 内检查持久绑定并写入，防止渠道同时启动。
+
+`team_ai::birth_for_peer` 是首条 IM 消息、私聊 `/new` 和管理页新建 Session 的共同入口。它将专属配置传给 Global `POST /sessions`；没有专属配置时使用 Agent 最新模板。Node 确认 Runtime 不存在、Provider 删除或停用、模型已被移除等永久失效情况时，改用 Agent 模板创建并返回 `peerProfile: rejected`，Rust 仅在存储值仍匹配时删除失效配置。凭据、订阅校验、托管 Codex 就绪和 CLI 登录等暂时问题不清除配置；缺失的 MCP/插件仅被过滤。
+
+新建或换绑不改专属配置；`clearProfile` 删除专属配置，恢复以后新建 Session 对 Agent 默认值的继承，当前 Session 不变。移出 Team AI 后忽略已保存的专属配置，重新加入可恢复使用。
+
+### 管理操作与回复
+
+新建、设为当前、修改或恢复配置沿用 Channel model-work gate、peer fence 和 `expectedSessionId` 校验，不调用 Agent 默认配置写入接口。新建 Session 经既有 handover 绑定到指定聊天；历史菜单只允许选择本聊天已关联的 Session。Global 的配置读取和组合接口不写 Session；模型、推理强度和工具的实际更新仍由目标 Session 接口执行。
+
+换绑不停止旧任务。已接纳的 IM 请求仍通过原 ReplySlot 回复原目标；客户端普通结果依当前绑定投递。管理页不改 ReplyRouter、BackgroundCompletion 或通知协议。handover 的 `state_persisted`、平台通知结果和已创建但未绑定的 Session 必须分别反馈，不能把后续失败描述为整体回滚。
+
 ## 4. 入站消息与 SessionRouter
 
 ### 4.1 并发与 backpressure
@@ -113,7 +146,7 @@ peer binding 是持久关联，Agent owner 是当前进程的执行租约：重�
 `/new` 仅支持私聊，在 per-peer fence 内处理：
 
 - 从 SessionStore 读取 source；有完整快照时原样保留，活跃 legacy 由其 Session owner 捕获真实 held 配置；
-- 由 Global `POST /sessions` 从 Agent 最新模板创建完整 metadata，采用与桌面同源的 Runtime policy、Provider constraint 和 snapshot compiler；IM 出生权限使用该 Runtime 的最高 unattended 档；
+- 经 `team_ai::birth_for_peer` 调用 Global `POST /sessions` 创建完整 metadata：Team AI 优先采用聊天专属配置，否则使用 Agent 最新模板。Runtime 策略、Provider 约束和快照编译与桌面同源；新 IM Session 使用该 Runtime 的最高无人值守权限档位；
 - 在 projection → Router 短锁中校验 prior binding，发布已实体化 target，并持久化 peer projection；失败只回滚本次尚未提交的 binding；
 - 旧 consumer 有已接纳 request 时，复用 BackgroundCompletion owner 留到原请求 terminal 后退出，再释放精确 owner；历史与其它 Tab/Task/Goal owner 保留；
 - 命令无需启动目标 Runtime；首条普通消息经标准 ensure 唤醒。
@@ -124,7 +157,7 @@ desktop handover、heartbeat、模型选择和 surface migration 复用同一 pe
 
 IM 与桌面共享 owned Session 策略。`configSnapshotAt` 后，模型、Runtime/source/binding、effort、permission、MCP ID、plugins 和 official tools 服从该 Session；恢复、普通消息和 heartbeat 不读最新 Agent 模板覆盖它。SidecarManager 对 IM owner 同样优先持久执行身份，冲突 override 直接拒绝，不再按默认 Runtime drift 自动轮换。
 
-Agent 默认设置变更只刷新出生模板，并向所有已建立私聊 binding 发送系统提示；不发群聊，不启动目标 Sidecar、不查询模型目录、不进入 AI queue。已与默认一致的当前 Session 不重复提示。消息从当前 metadata 读取旧模型，提供 `/new`、`/model`；在业务锁释放后由一次性后台任务投递，配置刷新不等待平台，元数据 IPC 使用 5 秒期限。单个读取或发送失败继续其他私聊，不回滚默认，不增加通知 outbox。Channel 关闭或不可达时按 best effort 处理。
+Agent 默认设置变更只刷新新会话模板，并向所有已建立私聊 binding 发送系统提示（Team AI 中拥有 peer 专属配置的私聊不跟随默认，跳过）；不发群聊，不启动目标 Sidecar、不查询模型目录、不进入 AI queue。已与默认一致的当前 Session 不重复提示。消息从当前 metadata 读取旧模型，提供 `/new`、`/model`；在业务锁释放后由一次性后台任务投递，配置刷新不等待平台，元数据 IPC 使用 5 秒期限。单个读取或发送失败继续其他私聊，不回滚默认，不增加通知 outbox。Channel 关闭或不可达时按 best effort 处理。
 
 旧完整快照原样使用。legacy 活跃实例仅由对应 Session owner freeze；离线数据无法证明完整配置时拒绝恢复并引导 `/new`，保留历史，不能拿当前默认制造旧 snapshot。Cloud registered Agent 的 live-follow 生命周期保持独立。
 
@@ -134,9 +167,9 @@ Agent 默认设置变更只刷新出生模板，并向所有已建立私聊 bind
 
 `/model` 从 Node 读取桌面同源 Provider 顺序、启用/删除/自定义模型与 readiness，按供应商分组、模型连续编号，混入真实 Managed Codex catalog。本机 Claude Code/Codex CLI Session 仅显示该 CLI 的模型。无 Runtime 或权限选择菜单。
 
-每个 peer 只保存最后成功展示的临时菜单（Session id、execution observation、条目 identity）；数字绑定该菜单而非重新计算的顺序。选择前重查 availability，在 SessionStore writer 锁内 CAS 校验 observation 与当前 engine binding。兼容选择先写 snapshot，再经 SessionEngine apply；忙时下一轮生效。随后在 fresh config 锁内写 Agent 默认，释放 peer fence 后触发 Rust 模板刷新。分阶段失败明确返回已提交内容。
+每个 peer 只保存最后成功展示的临时菜单（Session id、execution observation、条目 identity）；数字绑定该菜单而非重新计算的顺序。选择前重查 availability，在 SessionStore writer 锁内 CAS 校验 observation 与当前 engine binding。兼容选择先写 snapshot，再经 SessionEngine apply；忙时下一轮生效。普通 Agent 随后在 fresh config 锁内写 Agent 默认，释放 peer fence 后触发 Rust 模板刷新；Team AI Agent 改走 session-only 入口并在 fence 内同步该私聊的 peer 专属配置，不写 Agent 默认，菜单、`/help` 与回复文案同步说明作用范围。分阶段失败明确返回已提交内容。
 
-不兼容条目标记“（会启用新会话）”，选择后直接完整 birth 并复用既有 handover 接管该私聊，不二次确认、不修改旧 snapshot、不自动重放未确认写入。`chat:session-config-changed` 仅携带 Session id；打开同一 Session 的 Tab 经自己的代理回读 metadata 更新模型展示。
+不兼容条目标记“（会启用新会话）”，选择后创建完整 Session，并复用既有 handover 接管该私聊，不二次确认、不修改旧 snapshot、不自动重放未确认写入。`chat:session-config-changed` 仅携带 Session id；打开同一 Session 的 Tab 经自己的代理回读 metadata 更新模型展示。
 
 ## 5. ReplyRouter 与渠道投递
 
@@ -264,7 +297,7 @@ request registry的清理权在admission route与runtime之间明确移交：adm
 
 ### 9.1 private target
 
-Agent可以有多个Channel，后台结果不能广播到全部Channel。`lastActivePrivateTarget {channelId, sessionKey}`是Heartbeat、Task completion和manual wake的目标authority，只由private user ingress/handover更新；group activity不能覆盖。
+Agent 可以连接多个 Channel。`lastActivePrivateTarget { channelId, sessionKey }` 决定 Heartbeat 和手动唤醒的最近私聊目标，只由私聊用户消息或 handover 更新，群聊活动不能覆盖。Task 的默认通知地址不从该字段推断；只有显式选择 Agent 范围的最近私聊时，才复用这里的选址规则。
 
 解析规则：
 
@@ -273,7 +306,7 @@ Agent可以有多个Channel，后台结果不能广播到全部Channel。`lastAc
 3. 只有完全没有历史时，才在online Channels中选择最近private session；
 4. wake必须携带exact target，per-Channel runner不得再次猜测。
 
-pending Task/Cron delivery持久化target session key，并由同一Channel queue按序ACK。没有valid private target时只保留领域执行历史，不把事件塞入任意旧Bot queue。
+Task/Cron 通知已从 Heartbeat 的内存 pending 队列迁出，改由 TaskStore 保存待发记录并经 Inbox / SessionEngine 转述，详见下方「Task 通知」。上述最近私聊路由仍供 Heartbeat 使用；Task 只有显式 Agent 自动策略复用其选址判断，不复用 wake 或 pending 队列。入队成功仍不等于平台已接受消息。
 
 ### 9.2 Goal
 
@@ -290,7 +323,7 @@ detached/new-session Goal需要独立parent/return-target设计，不能混入cu
 
 ## 10. 配置与持久化
 
-`config.json` 是 Agent 出生模板和 Channel transport 配置的 authority。Channel 不再拥有独立执行配置；详情与 writer 移除 model/provider/runtime/permission 覆盖，旧字段只读保留以免损坏存量信息，正常解析不采用。连接凭据、白名单、群规则和 toolsDeny 仍由 Channel 实时拥有。所有写入在config lock内fresh read-modify-write；Renderer提交typed intent并在成功后refresh完整snapshot，不能用可能过期的React state覆盖其它Channel。
+`config.json` 保存 Agent 的新会话模板、Team AI 聊天专属配置和 Channel 连接配置。Channel 级不拥有独立执行配置；详情与 writer 移除 model/provider/runtime/permission 覆盖，旧字段只读保留以免损坏存量信息，正常解析不采用。Team AI 的 `peerProfiles` 为每个聊天指定新会话配置，不是整个 Channel 的执行配置覆盖，写入规则见「Team AI 管理投影」。连接凭据、白名单、群规则和 toolsDeny 仍由 Channel 实时拥有。所有写入在config lock内fresh read-modify-write；Renderer提交typed intent并在成功后refresh完整snapshot，不能用可能过期的React state覆盖其它Channel。
 
 群聊与绑定用户的展示名保存于同一 Channel 配置：`groupPermissions[].groupName` 与 `userDisplayNames[userId]`。名称只用于展示，授权、群发现去重与路由继续使用 ID；不再把群名当作历史 ID 迁移依据。设置页显示 `名称（ID）`；私聊用户名称未知或等于 ID 时只显示 ID，群聊的未知/同 ID 名称留空并显示 `（ID）`。Rust 在配置锁内按最新已有 ID 合并名字，不创建授权记录，不修改群状态，查询失败/空值不清除旧名字。绑定成功和后续入站更新此元数据，沿 `im:bot-config-changed` 刷新 UI。
 
@@ -331,7 +364,7 @@ Channel credential、token、App Secret和provider env不得进入日志、analy
 | 路径 | 职责 |
 |---|---|
 | `src-tauri/src/im/agent_channel.rs` | Channel lifecycle与入站编排 |
-| `src-tauri/src/im/model_commands.rs` | 私聊模型菜单、选择、完整出生与默认通知 |
+| `src-tauri/src/im/model_commands.rs` | 私聊模型菜单、选择、Session 创建与默认变更通知 |
 | `src/server/routes/im-model-selection.ts` | 同源目录、兼容计划、Session CAS、Engine apply 与默认提交 |
 | `src-tauri/src/im/router.rs` | peer→Session binding与Sidecar owner |
 | `src-tauri/src/im/enqueue.rs` | Rust→Node admission |
@@ -372,3 +405,10 @@ Channel 路由使用 Adapter 已验证的协议身份；OpenClaw 从注册后的
 
 
 在线 Channel 的 capability/context projection 与 handoff world 同取 Adapter 的已注册协议身份；配置安装 ID 只负责安装与生命周期，离线 capability 保留现有配置投影。精确 live binding 查询同时返回同一快照中的 Adapter，避免另一次扫描拼接身份。Inbox 准入只核对 Product Session、连接 UUID、peer ID/ID 类型与私聊/群聊归属；platform 是环境描述，不是第二套绑定身份，旧消息中的平台别名不构成错投。无需模型填写 Session ID、平台或已有绑定的连接 ID。
+
+
+### Task 通知的稳定地址与发送 owner
+
+Task 自动回报使用 `ConversationRef { channelId, sessionKey }`。`im::task_notification` 从既有配置、health、ChannelOwner 和 Router 解析目标，不新增聊天存储。固定 Channel 的 `recent-private` 只在该连接内选择私聊；Agent 范围允许跨连接，沿用最近私聊的选址规则。两者均不经过 Heartbeat 待发队列或唤醒流程。首次解析后由 TaskStore 固定聊天地址与连接归属；目标离线时等待，归属变化时失败，不改投其他联系人。
+
+转述前在 ChannelOwner 的 peer fence 内初始化当前 Session，复用 Inbox delivery lease。排队后的 `beforeDispatch` 再检查绑定，换绑使旧队列项失效，由 Task 通知作业重新解析同一个聊天。转述结果交给 TaskStore 保存；IM `channel_send` 按平台能力分段发送并返回接受片数和消息 ID。普通 ReplyRouter、显式 handoff、Heartbeat 与 Goal 的生命周期不变。状态与重试规则由 [Task 通知策略与投递记录](task_center.md#task-通知策略与投递记录) 统一说明。

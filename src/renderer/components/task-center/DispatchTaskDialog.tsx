@@ -1,3 +1,4 @@
+import { isNotificationTargetComplete } from '@/../shared/types/task';
 // DispatchTaskDialog — Full-featured modal for creating a Task.
 // Two invocation paths, single surface:
 //   • `thought` present → "派发为任务": prefills name/body from the thought and
@@ -229,6 +230,7 @@ export function DispatchTaskDialog({
 
   const manualErrors = useMemo(() => {
     const errs: string[] = [];
+    if (!isNotificationTargetComplete(notification)) errs.push(t('notifications.completeTarget'));
     if (!name.trim()) errs.push(t('dispatch.validation.nameRequired'));
     if (!workspace) errs.push(t('dispatch.validation.workspaceRequired'));
     if (!taskMd.trim()) errs.push(t('dispatch.validation.taskMdRequired'));
@@ -252,6 +254,7 @@ export function DispatchTaskDialog({
   }, [
     t,
     name,
+    notification,
     workspace,
     taskMd,
     isRecurring,

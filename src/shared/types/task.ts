@@ -194,25 +194,44 @@ export interface EndConditions {
   aiCanExit: boolean;
 }
 
-/** Per-task notification configuration. Falls back to global defaults when `null`. */
+export interface ConversationRef { channelId: string; sessionKey: string }
+export type NotificationTarget =
+  | { type: 'off' }
+  | ({ type: 'conversation' } & ConversationRef)
+  | { type: 'recent-private'; scope: 'channel'; channelId: string }
+  | { type: 'recent-private'; scope: 'agent'; agentId: string }
+  | { type: 'current' };
 export interface NotificationConfig {
-  /** Show OS desktop notification. Default `true`. */
+  version?: 1;
   desktop: boolean;
-  /** Target IM bot channel id (AgentChannel/ImBot unique id). */
+  im?: NotificationTarget;
+  source?: string;
+  error?: string;
+  /** Legacy input only. Canonical output uses im. */
   botChannelId?: string;
-  /** Specific chat id within the bot (e.g. feishu chat_id, telegram chat_id). */
   botThread?: string;
-  /**
-   * Which transitions trigger a push.
-   * Default: `['done', 'blocked', 'endCondition']`. Loop single-round completion is NOT a
-   * status change and therefore not listed (see PRD §11.5).
-   */
-  events?: Array<'done' | 'blocked' | 'stopped' | 'verifying' | 'endCondition'>;
+  events?: Array<'execution' | 'done' | 'blocked' | 'stopped' | 'verifying' | 'endCondition'>;
+}
+export interface TaskNotificationDelivery {
+  id: string;
+  events: string[];
+  policy: NotificationConfig;
+  state: 'waiting' | 'preparing' | 'prepared' | 'sending' | 'sent' | 'suppressed' | 'failed' | 'unknown' | 'partial' | 'cancelled';
+  createdAt: number;
+  updatedAt: number;
+  title: string;
+  target?: ConversationRef | null;
+  executionSessionId?: string | null;
+  targetSessionId?: string | null;
+  error?: string | null;
+  messageIds: string[];
+  acceptedParts: number;
 }
 
 /** Field-level Task notification mutation. Omitted values stay unchanged;
  * `null` restores that field's default/absence. */
 export interface TaskNotificationPatch {
+  im?: NotificationTarget | null;
   desktop?: boolean | null;
   botChannelId?: string | null;
   botThread?: string | null;
@@ -243,6 +262,7 @@ export interface TaskLastExecution {
 
 /** A Task — workspace-scoped execution unit. */
 export interface Task {
+  notificationDestination?: { label: string; availability: string; reason?: string };
   id: string;
   name: string;
   executor: TaskExecutor;
@@ -326,6 +346,7 @@ export interface Task {
   /** Append-only audit log of status changes. See PRD §3.2 / §10.2.1. */
   statusHistory: StatusTransition[];
   notification?: NotificationConfig;
+  notificationDeliveries?: TaskNotificationDelivery[];
   /** Creation provenance; never an execution-protocol switch. */
   dispatchOrigin: TaskDispatchOrigin;
   /** Optional external coordination record that caused this local Task. */
@@ -540,4 +561,10 @@ export interface TaskListFilter {
   includeDeleted?: boolean;
   /** Internal only. If `true`, include system-managed hidden tasks. */
   includeManaged?: boolean;
+}
+
+/** Form completeness only; Channel authority still validates the destination. */
+export function isNotificationTargetComplete(config?: NotificationConfig): boolean {
+  const target = config?.im;
+  return target?.type !== 'conversation' || !!(target.channelId.trim() && target.sessionKey.trim());
 }

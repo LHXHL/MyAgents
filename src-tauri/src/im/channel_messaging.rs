@@ -25,7 +25,7 @@ pub(crate) struct ChannelCapability {
     pub health_path: PathBuf,
 }
 
-fn configured_channels() -> Vec<ChannelCapability> {
+pub(crate) fn configured_channels() -> Vec<ChannelCapability> {
     let mut channels = Vec::new();
     for agent in config_store::read_agent_configs_from_disk() {
         for channel in agent.channels {
@@ -155,6 +155,7 @@ pub(crate) fn binding_target(
 pub(crate) struct ResolvedChannelScope {
     pub channels: Vec<ChannelCapability>,
     pub binding: Option<ChannelTarget>,
+    pub session_key: Option<String>,
     pub source_type: Option<ImSourceType>,
     pub binding_name: Option<String>,
 }
@@ -206,6 +207,7 @@ pub(crate) fn resolve_scope_from_channels(
                     binding_target(channel, &target.chat_id, &target.source_type)?,
                     target.source_type.clone(),
                     target.name.clone(),
+                    target.session_key.clone(),
                 ));
             }
         } else if !live_channels.contains_key(&channel.id) {
@@ -223,6 +225,7 @@ pub(crate) fn resolve_scope_from_channels(
                             binding_target(channel, &id, &peer.source_type)?,
                             peer.source_type,
                             peer.source_display_name,
+                            peer.session_key,
                         ));
                     }
                 }
@@ -235,11 +238,11 @@ pub(crate) fn resolve_scope_from_channels(
                 .into(),
         );
     }
-    let (binding, source_type, binding_name) = bindings
+    let (binding, source_type, binding_name, session_key) = bindings
         .pop()
-        .map(|(target, source, name)| {
+        .map(|(target, source, name, key)| {
             let name = name.filter(|n| !n.trim().is_empty() && n != &target.id);
-            (Some(target), Some(source), name)
+            (Some(target), Some(source), name, Some(key))
         })
         .unwrap_or_default();
     let bound_agent = binding
@@ -269,12 +272,13 @@ pub(crate) fn resolve_scope_from_channels(
         binding,
         source_type,
         binding_name,
+        session_key,
     })
 }
 
 impl ResolvedChannelScope {
     pub fn projection(&self) -> Value {
-        json!({"ok":true,"defaultTarget": self.binding,"sourceType":self.source_type,"bindingName":self.binding_name,"channels":self.channels.iter().map(|channel| json!({
+        json!({"ok":true,"defaultTarget": self.binding,"conversationRef":self.binding.as_ref().zip(self.session_key.as_ref()).map(|(b,k)| json!({"channelId":b.channel_id,"sessionKey":k})),"sourceType":self.source_type,"bindingName":self.binding_name,"channels":self.channels.iter().map(|channel| json!({
             "channelId":channel.id,"platform":channel.platform.to_string(),"name":channel.name,"mode":channel.mode,
             "groupActivation":channel.group_activation.as_deref().unwrap_or("mention"),"targetTypes":target_types(&channel.platform),"mediaTypes":media_types(&channel.platform)
         })).collect::<Vec<_>>()})

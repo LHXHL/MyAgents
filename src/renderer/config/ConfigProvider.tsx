@@ -274,6 +274,7 @@ export interface ConfigActionsValue {
 }
 
 export interface AddProjectOptions {
+    purpose?: Project['purpose'];
     icon?: string;
     displayName?: string;
     templateId?: string;
@@ -962,6 +963,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
             project = await addProjectService(path, { notification: 'deferred', onExisting: options.onExisting });
 
             const metadataPatch: Partial<Omit<Project, 'id'>> = {};
+            if (options.purpose) metadataPatch.purpose = options.purpose;
             if (options.icon) metadataPatch.icon = options.icon;
             if (options.displayName) metadataPatch.displayName = options.displayName;
             if (options.templateId) metadataPatch.templateId = options.templateId;

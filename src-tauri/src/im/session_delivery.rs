@@ -6,6 +6,7 @@ use super::{adapter, types::ImSourceType, AnyAdapter, ManagedAgents, ManagedImBo
 pub(crate) struct SessionChannelTarget {
     pub adapter: Arc<AnyAdapter>,
     pub chat_id: String,
+    pub session_key: String,
     pub channel_id: String,
     pub source_type: ImSourceType,
     pub name: Option<String>,
@@ -29,15 +30,17 @@ async fn find_in_snapshots(
             .map(|peer| {
                 (
                     peer.source_id.clone(),
+                    peer.session_key.clone(),
                     peer.source_type.clone(),
                     peer.source_display_name.clone(),
                 )
             });
         drop(router);
-        if let Some((chat_id, source_type, name)) = peer {
+        if let Some((chat_id, session_key, source_type, name)) = peer {
             return Some(SessionChannelTarget {
                 adapter,
                 chat_id,
+                session_key,
                 channel_id,
                 source_type,
                 name,
@@ -98,6 +101,7 @@ pub(crate) async fn exact_live_bindings(
                 adapter: Arc::clone(&adapter),
                 channel_id: channel_id.clone(),
                 chat_id: peer.source_id.clone(),
+                session_key: peer.session_key.clone(),
                 source_type: peer.source_type.clone(),
                 name: peer.source_display_name.clone(),
             });

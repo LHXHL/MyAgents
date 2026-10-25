@@ -13,6 +13,9 @@
 //! - §10.2.1 — `update-status` handler: transition validity, actor/source guard,
 //!   atomic history append, side-effect dispatch, progress.md, notification, SSE.
 
+pub mod notification;
+pub mod notification_worker;
+
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -141,6 +144,7 @@ pub struct TaskLastExecution {
 
 #[derive(Debug, Clone)]
 pub(crate) struct TaskExecutionSettlement {
+    pub result: String,
     pub success: bool,
     pub duration_ms: u64,
     pub session_id: Option<String>,
@@ -262,8 +266,20 @@ pub struct StatusTransition {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", try_from = "serde_json::Value")]
 pub struct NotificationConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel_owner: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub im: Option<notification::NotificationTarget>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(skip)]
+    pub desktop_explicit: bool,
     #[serde(default = "default_true")]
     pub desktop: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -279,11 +295,39 @@ pub struct NotificationConfig {
 impl Default for NotificationConfig {
     fn default() -> Self {
         Self {
+            channel_owner: None,
+            version: Some(notification::VERSION),
+            im: None,
+            source: None,
+            error: None,
+            desktop_explicit: true,
             desktop: true,
             bot_channel_id: None,
             bot_thread: None,
             events: None,
         }
+    }
+}
+
+impl TryFrom<serde_json::Value> for NotificationConfig {
+    type Error = String;
+    fn try_from(value: serde_json::Value) -> Result<Self, String> {
+        let object = value.as_object().ok_or("notification must be an object")?;
+        if object.contains_key("im") && (object.contains_key("botChannelId") || object.contains_key("botThread")) {
+            return Err("Do not mix notification.im and legacy bot fields".into());
+        }
+        fn field<T: serde::de::DeserializeOwned>(value: &serde_json::Value, name: &str) -> Result<Option<T>, String> {
+            value.get(name).filter(|v| !v.is_null()).map(|v| serde_json::from_value(v.clone()).map_err(|e| format!("notification.{name}: {e}"))).transpose()
+        }
+        let config = Self {
+            channel_owner: field(&value, "channelOwner")?,
+            version: field(&value, "version")?, im: if value.get("im").is_some_and(serde_json::Value::is_null) || value.get("botChannelId").is_some_and(serde_json::Value::is_null) { Some(notification::NotificationTarget::Off) } else { field(&value, "im")? },
+            source: field(&value, "source")?, error: field(&value, "error")?,
+            desktop: field(&value, "desktop")?.unwrap_or(true), desktop_explicit: object.contains_key("desktop"),
+            bot_channel_id: field(&value, "botChannelId")?, bot_thread: field(&value, "botThread")?, events: field(&value, "events")?,
+        };
+        if config.version.is_some_and(|v| v != notification::VERSION) { return Err("Unsupported notification version; refusing a lossy rewrite".into()); }
+        Ok(config)
     }
 }
 
@@ -321,6 +365,10 @@ where
 #[serde(rename_all = "camelCase")]
 pub struct TaskNotificationPatch {
     #[serde(default)]
+    version: Option<u32>,
+    #[serde(default)]
+    im: NotificationFieldPatch<notification::NotificationTarget>,
+    #[serde(default)]
     desktop: NotificationFieldPatch<bool>,
     #[serde(default)]
     bot_channel_id: NotificationFieldPatch<String>,
@@ -331,37 +379,46 @@ pub struct TaskNotificationPatch {
 }
 
 impl TaskNotificationPatch {
-    fn is_empty(&self) -> bool {
-        matches!(self.desktop, NotificationFieldPatch::Unchanged)
+    pub(crate) fn is_empty(&self) -> bool {
+        matches!(self.im, NotificationFieldPatch::Unchanged)
+            && matches!(self.desktop, NotificationFieldPatch::Unchanged)
             && matches!(self.bot_channel_id, NotificationFieldPatch::Unchanged)
             && matches!(self.bot_thread, NotificationFieldPatch::Unchanged)
             && matches!(self.events, NotificationFieldPatch::Unchanged)
     }
 
-    fn apply(self, existing: Option<NotificationConfig>) -> NotificationConfig {
-        let mut notification = existing.unwrap_or_default();
-        match self.desktop {
-            NotificationFieldPatch::Unchanged => {}
-            NotificationFieldPatch::Clear => notification.desktop = true,
-            NotificationFieldPatch::Set(value) => notification.desktop = value,
+    pub(crate) fn apply(self, existing: Option<NotificationConfig>) -> Result<NotificationConfig, String> {
+        if self.version.is_some_and(|v| v != notification::VERSION) { return Err("Unsupported notification version".into()); }
+        let legacy = !matches!(self.bot_channel_id, NotificationFieldPatch::Unchanged) || !matches!(self.bot_thread, NotificationFieldPatch::Unchanged);
+        if legacy && !matches!(self.im, NotificationFieldPatch::Unchanged) { return Err("Do not mix notification.im and legacy bot fields".into()); }
+        let mut config = existing.map(notification::migrate_legacy).unwrap_or_default();
+        match self.im {
+            NotificationFieldPatch::Unchanged => {},
+            NotificationFieldPatch::Clear => { config.im = Some(notification::NotificationTarget::Off); config.error = None; config.source = Some("explicit".into()); notification::freeze_channel_owner(&mut config)?; },
+            NotificationFieldPatch::Set(value) => { config.im = Some(value); config.error = None; config.source = Some("explicit".into()); notification::freeze_channel_owner(&mut config)?; },
         }
+        match self.desktop { NotificationFieldPatch::Unchanged => {}, NotificationFieldPatch::Clear => config.desktop = true, NotificationFieldPatch::Set(v) => config.desktop = v }
         match self.bot_channel_id {
-            NotificationFieldPatch::Unchanged => {}
-            NotificationFieldPatch::Clear => notification.bot_channel_id = None,
-            NotificationFieldPatch::Set(value) => notification.bot_channel_id = Some(value),
-        }
-        match self.bot_thread {
-            NotificationFieldPatch::Unchanged => {}
-            NotificationFieldPatch::Clear => notification.bot_thread = None,
-            NotificationFieldPatch::Set(value) => notification.bot_thread = Some(value),
+            NotificationFieldPatch::Unchanged => {}, // botThread alone never selected a destination.
+            NotificationFieldPatch::Clear => { config.im = Some(notification::NotificationTarget::Off); config.error = None; config.channel_owner = None; },
+            NotificationFieldPatch::Set(value) => {
+                config.bot_channel_id = Some(value); config.version = None;
+                config = notification::migrate_legacy(config);
+                if let Some(error) = &config.error { return Err(error.clone()); }
+            },
         }
         match self.events {
-            NotificationFieldPatch::Unchanged => {}
-            NotificationFieldPatch::Clear => notification.events = None,
-            NotificationFieldPatch::Set(value) => notification.events = Some(value),
+            NotificationFieldPatch::Unchanged => {}, NotificationFieldPatch::Clear => config.events = None,
+            NotificationFieldPatch::Set(mut events) => {
+                if self.version.is_none() && !events.iter().any(|e| e == "execution") { events.push("execution".into()); }
+                config.events = Some(events);
+            },
         }
-        notification
+        config.version = Some(notification::VERSION);
+        notification::validate(&config)?;
+        Ok(config)
     }
+
 }
 
 fn default_true() -> bool {
@@ -590,6 +647,8 @@ pub struct Task {
     pub status_history: Vec<StatusTransition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notification: Option<NotificationConfig>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notification_deliveries: Vec<notification::NotificationDelivery>,
     pub dispatch_origin: TaskDispatchOrigin,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_source: Option<TaskExternalSource>,
@@ -1030,6 +1089,7 @@ pub fn build_task_docs(task_id: &str) -> Result<TaskDocs, String> {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskWithDocs {
+    pub notification_destination: serde_json::Value,
     #[serde(flatten)]
     pub task: Task,
     pub docs: TaskDocs,
@@ -1046,6 +1106,7 @@ pub struct TaskWithDocs {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskProjection {
+    pub notification_destination: serde_json::Value,
     #[serde(flatten)]
     pub task: Task,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1063,6 +1124,7 @@ impl TaskProjection {
             .flatten()
             .map(|value| value.timestamp_millis());
         Self {
+            notification_destination: crate::im::task_notification::describe_policy(task.notification.as_ref()),
             task,
             execution_state: execution.as_ref().map(|value| value.state),
             execution_error: execution.and_then(|value| value.error),
@@ -2274,6 +2336,11 @@ impl TaskStore {
         let now = now_ms();
         let mut changed = false;
         for task in map.values_mut() {
+            if task.notification.as_ref().is_some_and(|c| c.version.is_none()) {
+                task.notification = task.notification.take().map(notification::migrate_legacy);
+                changed = true;
+            }
+            changed |= notification::recover(task);
             if task.promote_published_legacy_source() {
                 changed = true;
             }
@@ -2584,6 +2651,7 @@ impl TaskStore {
                 source: created_source,
             }],
             notification: input.notification,
+            notification_deliveries: Vec::new(),
             dispatch_origin: TaskDispatchOrigin::Direct,
             external_source: None,
             deleted: false,
@@ -2756,6 +2824,7 @@ impl TaskStore {
                 source: Some(TransitionSource::Migration),
             }],
             notification: input.notification,
+            notification_deliveries: Vec::new(),
             dispatch_origin: TaskDispatchOrigin::Direct,
             external_source: None,
             deleted: false,
@@ -2929,6 +2998,7 @@ impl TaskStore {
             last_activation_event_id: None,
             status_history: vec![created_transition, attached_transition],
             notification: input.notification,
+            notification_deliveries: Vec::new(),
             dispatch_origin: TaskDispatchOrigin::AttachedSession,
             external_source: Some(external_source),
             deleted: false,
@@ -3104,6 +3174,23 @@ impl TaskStore {
         Ok(())
     }
 
+    pub(crate) async fn validate_notification_update(&self, input: &TaskUpdateInput) -> Result<(), String> {
+        if input.notification.is_some() || input.notification_patch.as_ref().is_some_and(|p| !p.is_empty()) {
+            let current = self.get(&input.id).await.ok_or("Task not found")?;
+            let config = if let Some(config) = input.notification.clone() { notification::normalize_replacement(config, current.notification.as_ref())? }
+                else { input.notification_patch.clone().unwrap().apply(current.notification.clone())? };
+            if current.notification.as_ref().and_then(|c| c.im.as_ref()) != config.im.as_ref() && config.error.is_none() {
+                use tauri::Manager;
+                if let Some(app) = crate::logger::get_app_handle() {
+                    let agents = app.try_state::<crate::im::ManagedAgents>();
+                    let bots = app.try_state::<crate::im::ManagedImBots>();
+                    crate::im::task_notification::validate_target(config.im.as_ref().unwrap_or(&Default::default()), None, agents.as_deref(), bots.as_deref()).await?;
+                } else if !matches!(config.im, None | Some(notification::NotificationTarget::Off)) { return Err("Channel owner unavailable".into()); }
+            }
+        }
+        Ok(())
+    }
+
     pub async fn list(&self, filter: TaskListFilter) -> Vec<Task> {
         let inner = self.inner.read().await;
         let mut out: Vec<Task> = inner.values().cloned().collect();
@@ -3272,6 +3359,7 @@ impl TaskStore {
                 "preselectedSessionId is only valid with runMode=single-session".to_string(),
             );
         }
+        self.validate_notification_update(&input).await?;
         if input.prompt.is_some() {
             self.ensure_legacy_verify_merged(&input.id).await?;
         }
@@ -3452,11 +3540,11 @@ impl TaskStore {
             updated.tags = v;
         }
         if let Some(v) = input.notification {
-            updated.notification = Some(v);
+            updated.notification = Some(notification::normalize_replacement(v, updated.notification.as_ref())?);
         }
         if let Some(patch) = input.notification_patch {
             if !patch.is_empty() {
-                updated.notification = Some(patch.apply(updated.notification));
+                updated.notification = Some(patch.apply(updated.notification)?);
             }
         }
         // PRD 0.2.9 — Pin runtime='builtin' on the merged state when the
@@ -3704,6 +3792,7 @@ impl TaskStore {
             source,
         };
         updated.status_history.push(transition.clone());
+        let notification_event = notification::record_event(&mut updated, Some(&transition), None);
 
         let mut next = inner.clone();
         next.insert(updated.id.clone(), updated.clone());
@@ -3760,7 +3849,7 @@ impl TaskStore {
         // PRD §10.2.1 step 6: notification dispatch (desktop + bot) for
         // subscribed transitions. Side-effects fire AFTER persist so a
         // crash between write and notify is recoverable from disk state.
-        dispatch_notification(&updated, &transition);
+        notification_worker::after_commit(&updated, notification_event.as_ref());
 
         // PRD §10.2.1 step 7: SSE broadcast. Renderer listens on
         // `task:status-changed` for live refresh across all open Task Center
@@ -4121,6 +4210,8 @@ impl TaskStore {
             None
         };
         updated.updated_at = executed_at;
+        let result_session = updated.last_execution.as_ref().and_then(|e| e.session_id.clone());
+        let notification_event = notification::record_event(&mut updated, transition.as_ref(), Some((&settlement.result, result_session.as_deref())));
 
         let mut next = inner.clone();
         next.insert(updated.id.clone(), updated.clone());
@@ -4139,8 +4230,8 @@ impl TaskStore {
                 "activationEventId": activation_event_id,
             }),
         );
+        notification_worker::after_commit(&updated, notification_event.as_ref());
         if let Some(transition) = transition.as_ref() {
-            dispatch_notification(&updated, transition);
             emit_task_event(
                 "task:status-changed",
                 serde_json::json!({
@@ -4343,6 +4434,7 @@ impl TaskStore {
         });
         updated.status = TaskStatus::Deleted;
         updated.deleted = true;
+        notification::cancel_unstarted(&mut updated);
         updated.deleted_at = Some(now);
         updated.updated_at = now;
         let mut next = inner.clone();
@@ -4807,133 +4899,6 @@ fn compose_dispatch_prompt(task: &Task) -> Result<String, String> {
     }
 }
 
-/// Default events a task subscribes to when `NotificationConfig.events` is absent.
-const DEFAULT_NOTIFICATION_EVENTS: &[&str] = &["done", "blocked", "endCondition"];
-
-/// PRD §12.2 — check the per-task subscription and dispatch desktop + bot pushes.
-/// Dispatch runs best-effort; bot push failure falls back to desktop (§12.6).
-fn dispatch_notification(task: &Task, t: &StatusTransition) {
-    // Event key — prefer the transition source if it's an `endCondition`
-    // virtual event (PRD §12.2), else use the target status.
-    let event_key: &str = match (t.source, t.to) {
-        (Some(TransitionSource::EndCondition), _) => "endCondition",
-        (_, TaskStatus::Done) => "done",
-        (_, TaskStatus::Blocked) => "blocked",
-        (_, TaskStatus::Stopped) => "stopped",
-        (_, TaskStatus::Verifying) => "verifying",
-        _ => return, // other transitions don't map to notification events
-    };
-
-    let cfg = task.notification.as_ref();
-    let subscribed: Vec<String> = cfg.and_then(|c| c.events.clone()).unwrap_or_else(|| {
-        DEFAULT_NOTIFICATION_EVENTS
-            .iter()
-            .map(|s| s.to_string())
-            .collect()
-    });
-    if !subscribed.iter().any(|e| e == event_key) {
-        return;
-    }
-
-    // Build the message (PRD §12.3): "任务「<name>」<动词短语>" + optional
-    // `message` body. No emoji (v1.4 decision).
-    let verb = match event_key {
-        "done" => "已完成",
-        "blocked" => "已阻塞",
-        "stopped" => "已暂停",
-        "verifying" => "进入验证",
-        "endCondition" => "循环收敛",
-        _ => "状态变更",
-    };
-    let title = format!("任务「{}」{}", task.name, verb);
-    let body = t.message.clone().unwrap_or_default();
-
-    let desktop_enabled = cfg.map(|c| c.desktop).unwrap_or(true);
-    let bot_channel = cfg.and_then(|c| c.bot_channel_id.clone());
-
-    let Some(handle) = crate::logger::get_app_handle() else {
-        ulog_warn!("[task] notification skipped — no app handle");
-        return;
-    };
-
-    // Task Center notifications bring the window to the foreground on click
-    // but don't deep-link to a specific chat Tab — Tasks live in their own
-    // surface (the Task Center page), and no Tab is owned by a Task. The
-    // legacy implementation emitted `taskId` in the event payload but the
-    // front-end listener typed the field as `tabId`, so the value was always
-    // dropped. Pass `None` here and preserve that no-deep-link semantics
-    // exactly.
-    if desktop_enabled {
-        crate::notification::show_with_navigation_target_and_badge(
-            &handle,
-            &title,
-            &body,
-            None,
-            Some(crate::notification_badge::NotificationBadgeIncrement {
-                id: format!("task:{}:{}:{}", task.id, event_key, t.at),
-                source: "task-center".to_string(),
-                created_at: t.at,
-                target: crate::notification_badge::NotificationBadgeTarget::TaskCenter {
-                    task_id: Some(task.id.clone()),
-                },
-            }),
-        );
-    }
-
-    if let Some(channel) = bot_channel {
-        let handle_cloned = handle.clone();
-        let bot_thread = cfg.and_then(|c| c.bot_thread.clone());
-        let summary = if body.is_empty() {
-            title.clone()
-        } else {
-            format!("{}\n{}", title, body)
-        };
-        let task_id = task.id.clone();
-        let title_owned = title.clone();
-        let desktop_was_enabled = desktop_enabled;
-        let event_key_owned = event_key.to_string();
-        let transition_at = t.at;
-        tauri::async_runtime::spawn(async move {
-            // PRD §12.6 — bot push failure falls back to desktop so the user
-            // isn't silently left without any notification. Even if the user
-            // explicitly turned off `desktop`, a bot failure that left them
-            // with zero notifications is a degraded experience we surface.
-            let delivered = crate::cron_task::deliver_task_notification_to_bot_checked(
-                &handle_cloned,
-                &channel,
-                bot_thread.as_deref(),
-                &task_id,
-                &summary,
-            )
-            .await;
-            if !delivered {
-                let fallback_body = if desktop_was_enabled {
-                    format!("(bot 推送失败) {}", summary)
-                } else {
-                    format!("(bot 推送失败，降级桌面通知) {}", summary)
-                };
-                crate::notification::show_with_navigation_target_and_badge(
-                    &handle_cloned,
-                    &title_owned,
-                    &fallback_body,
-                    None,
-                    Some(crate::notification_badge::NotificationBadgeIncrement {
-                        id: format!(
-                            "task:{}:{}:{}:bot-fallback",
-                            task_id, event_key_owned, transition_at
-                        ),
-                        source: "task-center".to_string(),
-                        created_at: chrono::Utc::now().timestamp_millis(),
-                        target: crate::notification_badge::NotificationBadgeTarget::TaskCenter {
-                            task_id: Some(task_id.clone()),
-                        },
-                    }),
-                );
-            }
-        });
-    }
-}
-
 /// SSE / frontend broadcast. Uses the global AppHandle from `logger` so any
 /// module can emit without threading the handle through constructors.
 fn emit_task_event(event: &str, payload: serde_json::Value) {
@@ -5040,6 +5005,7 @@ pub async fn cmd_task_get(
         .flatten()
         .map(|value| value.timestamp_millis());
     Ok(Some(TaskWithDocs {
+        notification_destination: crate::im::task_notification::describe_policy(task.notification.as_ref()),
         task,
         docs,
         execution_state: execution.as_ref().map(|value| value.state),
@@ -5047,6 +5013,11 @@ pub async fn cmd_task_get(
         trigger_state,
         next_execution_at,
     }))
+}
+
+#[tauri::command]
+pub async fn cmd_task_notification_operate(task_id: String, delivery_id: String, action: String) -> Result<notification::NotificationDelivery, String> {
+    crate::task_application::TaskApplication::from_globals().map_err(|e| e.to_string())?.operate_notification(&task_id, &delivery_id, &action).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -5794,6 +5765,7 @@ mod tests {
 
     fn successful_settlement() -> TaskExecutionSettlement {
         TaskExecutionSettlement {
+            result: String::new(),
             success: true,
             duration_ms: 12,
             session_id: Some("test-session".to_string()),
@@ -6262,6 +6234,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unknown_notification_version_keeps_entire_store_read_only() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let data = dir.path().join("data");
+        let store = TaskStore::new(data.clone());
+        let task = store.create_direct(sample_direct_input(&ws)).await.unwrap();
+        let mut future = serde_json::to_value(task).unwrap();
+        future["notification"] = serde_json::json!({"version": 999, "futureRule": {"opaque": true}});
+        let original = format!("{}\n", future);
+        let path = data.join("tasks.jsonl");
+        std::fs::write(&path, &original).unwrap();
+        let reloaded = TaskStore::new(data);
+        assert!(reloaded.list(TaskListFilter::default()).await.is_empty());
+        assert!(reloaded.create_direct(sample_direct_input(&ws)).await.unwrap_err().contains("read-only"));
+        assert_eq!(std::fs::read_to_string(path).unwrap(), original);
+    }
+
+    #[tokio::test]
     async fn legacy_import_never_regresses_newer_task_progress() {
         ensure_test_docs_root();
         let dir = tempdir().unwrap();
@@ -6422,6 +6414,7 @@ mod tests {
                     TaskExecutionTrigger::Scheduled,
                     current.status,
                     TaskExecutionSettlement {
+                        result: String::new(),
                         success: false,
                         duration_ms: attempt,
                         session_id: Some(format!("failed-{attempt}")),
@@ -7403,9 +7396,10 @@ mod tests {
         let mut create = sample_direct_input(&ws);
         create.notification = Some(NotificationConfig {
             desktop: true,
-            bot_channel_id: Some("bot-a".to_string()),
-            bot_thread: Some("thread-a".to_string()),
+            im: Some(notification::NotificationTarget::Off),
             events: Some(vec!["done".to_string()]),
+            version: Some(1),
+            ..Default::default()
         });
         let created = store.create_direct(create).await.unwrap();
 
@@ -7415,8 +7409,7 @@ mod tests {
         let after_false = store.update(false_patch).await.unwrap();
         let notification = after_false.notification.unwrap();
         assert!(!notification.desktop);
-        assert_eq!(notification.bot_channel_id.as_deref(), Some("bot-a"));
-        assert_eq!(notification.bot_thread.as_deref(), Some("thread-a"));
+        assert_eq!(notification.im, Some(notification::NotificationTarget::Off));
         assert_eq!(notification.events, Some(vec!["done".to_string()]));
 
         let mut clear_patch = empty_update_input(&created.id);
@@ -7430,10 +7423,8 @@ mod tests {
             .unwrap(),
         );
         let after_clear = store.update(clear_patch).await.unwrap();
-        assert_eq!(
-            after_clear.notification,
-            Some(NotificationConfig::default())
-        );
+        let cleared = after_clear.notification.unwrap();
+        assert!(cleared.desktop); assert!(cleared.events.is_none()); assert_eq!(cleared.im, Some(notification::NotificationTarget::Off));
     }
 
     #[tokio::test]
@@ -7467,7 +7458,7 @@ mod tests {
             Some(serde_json::from_value(serde_json::json!({ "desktop": false })).unwrap());
         let mut bot = empty_update_input(&created.id);
         bot.notification_patch =
-            Some(serde_json::from_value(serde_json::json!({ "botChannelId": "bot-b" })).unwrap());
+            Some(serde_json::from_value(serde_json::json!({ "version": 1, "im": { "type": "off" } })).unwrap());
 
         let (desktop_result, bot_result) = tokio::join!(store.update(desktop), store.update(bot));
         desktop_result.unwrap();
@@ -7475,7 +7466,7 @@ mod tests {
         let final_task = store.get(&created.id).await.unwrap();
         let notification = final_task.notification.unwrap();
         assert!(!notification.desktop);
-        assert_eq!(notification.bot_channel_id.as_deref(), Some("bot-b"));
+        assert_eq!(notification.im, Some(notification::NotificationTarget::Off));
     }
 
     #[tokio::test]
@@ -8806,4 +8797,145 @@ mod tests {
     // append_progress_line). Test code was stale dead reference blocking the
     // workspace test binary from compiling. Cleaned up incidentally during
     // PRD 0.2.7 Phase A so workspace_files unit tests can run.
+    #[tokio::test]
+    async fn notification_result_commit_is_atomic_and_recovery_never_reexecutes() {
+        use notification::{DeliveryState, NotificationTarget, RecentPrivate};
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store = TaskStore::new(dir.path().join("data"));
+        let mut input = sample_direct_input(&ws);
+        input.notification = Some(NotificationConfig { desktop: false, im: Some(NotificationTarget::RecentPrivate { target: RecentPrivate::Agent { agent_id: "fixture-agent".into() } }), ..Default::default() });
+        let created = store.create_direct(input).await.unwrap();
+        let (created, _) = store.update_status(status_input(&created.id, TaskStatus::Running, TransitionActor::User, Some(TransitionSource::Ui))).await.unwrap();
+        let mut settlement = successful_settlement(); settlement.result = "Business result".into();
+        // Force a disk failure without global hooks or a real profile.
+        let path = store.jsonl_path.clone();
+        let original = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).unwrap(); std::fs::create_dir(&path).unwrap();
+        assert!(store.settle_execution_if_status(&created.id, None, TaskExecutionTrigger::Manual, created.status, settlement.clone(), None).await.is_err());
+        let unchanged = store.get(&created.id).await.unwrap();
+        assert_eq!(unchanged.execution_count, 0); assert!(unchanged.notification_deliveries.is_empty());
+        std::fs::remove_dir(&path).unwrap(); std::fs::write(&path, original).unwrap();
+        let completed = store.settle_execution_if_status(&created.id, None, TaskExecutionTrigger::Manual, created.status, settlement, Some(TaskExecutionTerminalTransition { status: TaskStatus::Done, message: "complete".into(), source: TransitionSource::Scheduler })).await.unwrap().unwrap();
+        assert_eq!(completed.execution_count, 1); assert_eq!(completed.notification_deliveries.len(), 1);
+        let d = &completed.notification_deliveries[0];
+        assert_eq!(d.events, vec!["execution", "done"]);
+        let attempt = "attempt-one";
+        store.mutate_notification(&created.id, &d.id, None, |record| { record.state = DeliveryState::Preparing; record.attempt_id = Some(attempt.into()); record.target_session_id = Some("target-session".into()); Ok(()) }).await.unwrap();
+        // Preparation cannot become sendable unless its text was committed.
+        let original = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).unwrap(); std::fs::create_dir(&path).unwrap();
+        assert!(store.settle_notification_preparation(&created.id, &d.id, attempt, "target-session", notification::PreparationReceipt { outcome: Some("complete"), text: Some("prepared result"), error: None }).await.is_err());
+        let retained = store.get(&created.id).await.unwrap();
+        assert_eq!(retained.notification_deliveries[0].state, DeliveryState::Preparing);
+        assert!(retained.notification_deliveries[0].prepared_text.is_none());
+        std::fs::remove_dir(&path).unwrap(); std::fs::write(&path, original).unwrap();
+        store.settle_notification_preparation(&created.id, &d.id, attempt, "target-session", notification::PreparationReceipt { outcome: Some("complete"), text: Some("prepared result"), error: None }).await.unwrap();
+        store.mutate_notification(&created.id, &d.id, None, |record| { record.state = DeliveryState::Sending; record.attempt_id = Some(attempt.into()); Ok(()) }).await.unwrap();
+        // Platform acceptance followed by a failed receipt write stays unknown
+        // across restart. Neither live state nor disk falsely claims success.
+        let original = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).unwrap(); std::fs::create_dir(&path).unwrap();
+        assert!(store.mutate_notification(&created.id, &d.id, Some(attempt), |record| { record.state = DeliveryState::Sent; record.message_ids = vec!["accepted".into()]; Ok(()) }).await.is_err());
+        assert_eq!(store.get(&created.id).await.unwrap().notification_deliveries[0].state, DeliveryState::Sending);
+        std::fs::remove_dir(&path).unwrap(); std::fs::write(&path, original).unwrap();
+        let rebuilt = TaskStore::new(dir.path().join("data"));
+        let recovered = rebuilt.get(&created.id).await.unwrap();
+        assert_eq!(recovered.execution_count, 1); assert_eq!(recovered.notification_deliveries[0].state, DeliveryState::Unknown);
+        assert!(rebuilt.operate_notification(&created.id, &d.id, "retry").await.is_err());
+        rebuilt.operate_notification(&created.id, &d.id, "resend").await.unwrap();
+        assert!(rebuilt.mutate_notification(&created.id, &d.id, Some(attempt), |_| Ok(())).await.is_err());
+        rebuilt.operate_notification(&created.id, &d.id, "cancel").await.unwrap();
+        assert_eq!(rebuilt.get(&created.id).await.unwrap().execution_count, 1);
+    }
+
+    #[tokio::test]
+    async fn notification_preparation_settlement_owns_identity_and_outcome_policy() {
+        use notification::{ConversationRef, DeliveryState, NotificationTarget, PreparationReceipt};
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store = TaskStore::new(dir.path().join("data"));
+        let mut task = store.create_direct(sample_direct_input(&ws)).await.unwrap();
+        let target = ConversationRef { channel_id: "channel".into(), session_key: "group:peer".into() };
+        task.notification = Some(NotificationConfig { desktop: false, im: Some(NotificationTarget::Conversation { address: target.clone() }), ..Default::default() });
+        let delivery = notification::record_event(&mut task, None, Some(("business result", Some("execution-session")))).unwrap();
+        let mut map = HashMap::new();
+        map.insert(task.id.clone(), task.clone());
+        TaskStore::persist_locked(&store.jsonl_path, &map).unwrap();
+        let store = TaskStore::new(dir.path().join("data"));
+        let oversized = "x".repeat(notification::MAX_TEXT_BYTES + 1);
+        for (outcome, text, expected) in [
+            ("complete", "prepared", DeliveryState::Prepared),
+            ("complete", "  ", DeliveryState::Failed),
+            ("complete", oversized.as_str(), DeliveryState::Failed),
+            ("offline", "", DeliveryState::Waiting),
+            ("binding_changed", "", DeliveryState::Waiting),
+            ("unknown", "", DeliveryState::Unknown),
+            ("suppressed", "", DeliveryState::Suppressed),
+            ("failed", "", DeliveryState::Failed),
+        ] {
+            store.mutate_notification(&task.id, &delivery.id, None, |d| {
+                d.state = DeliveryState::Preparing;
+                d.attempt_id = Some("current-attempt".into());
+                d.target_session_id = Some("target-session".into());
+                d.target = Some(target.clone());
+                d.prepared_text = None;
+                d.retry_at = None;
+                Ok(())
+            }).await.unwrap();
+            for (attempt, session) in [("old-attempt", "target-session"), ("current-attempt", "other-session")] {
+                assert!(store.settle_notification_preparation(&task.id, &delivery.id, attempt, session, PreparationReceipt { outcome: Some(outcome), text: Some(text), error: None }).await.is_err());
+                assert_eq!(store.get(&task.id).await.unwrap().notification_deliveries[0].state, DeliveryState::Preparing);
+            }
+            let settled = store.settle_notification_preparation(&task.id, &delivery.id, "current-attempt", "target-session", PreparationReceipt { outcome: Some(outcome), text: Some(text), error: Some("receipt detail") }).await.unwrap();
+            assert_eq!(settled.state, expected);
+            assert_eq!(settled.target, Some(target.clone()));
+            if expected == DeliveryState::Waiting {
+                assert!(settled.attempt_id.is_none());
+                assert!(settled.target_session_id.is_none());
+                assert!(settled.retry_at.is_some());
+            }
+            if expected == DeliveryState::Prepared {
+                assert_eq!(settled.prepared_text.as_deref(), Some(text));
+                assert!(settled.attempt_id.is_none());
+            }
+            assert!(store.settle_notification_preparation(&task.id, &delivery.id, "current-attempt", "target-session", PreparationReceipt { outcome: Some("complete"), text: Some("late result"), error: None }).await.is_err());
+        }
+        assert_eq!(store.get(&task.id).await.unwrap().execution_count, 0);
+    }
+
+    #[tokio::test]
+    async fn notification_bounds_delete_and_quiet_paths_preserve_business_state() {
+        use notification::*;
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap(); let ws = dir.path().join("workspace"); std::fs::create_dir_all(&ws).unwrap();
+        let store = TaskStore::new(dir.path().join("data"));
+        let mut task = store.create_direct(sample_direct_input(&ws)).await.unwrap();
+        task.notification = Some(NotificationConfig { im: Some(NotificationTarget::RecentPrivate { target: RecentPrivate::Agent { agent_id: "fixture".into() } }), ..Default::default() });
+        for _ in 0..MAX_PENDING { record_event(&mut task, None, Some(("result", Some("B")))); }
+        assert_eq!(task.notification_deliveries.iter().filter(|d| d.state.pending()).count(), MAX_PENDING);
+        record_event(&mut task, None, Some(("result", Some("B"))));
+        assert_eq!(task.notification_deliveries.last().unwrap().state, DeliveryState::Failed);
+        let started = std::time::Instant::now();
+        let mut map = HashMap::new(); map.insert(task.id.clone(), task.clone());
+        TaskStore::persist_locked(&store.jsonl_path, &map).unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        let rebuilt = TaskStore::new(dir.path().join("data"));
+        rebuilt.delete(&task.id).await.unwrap();
+        let deleted = rebuilt.get(&task.id).await.unwrap();
+        assert!(deleted.notification_deliveries.iter().all(|d| !d.state.pending()));
+        task.notification.as_mut().unwrap().events = Some(vec![]);
+        assert!(record_event(&mut task, None, Some(("quiet", Some("B")))).is_none());
+        task.notification.as_mut().unwrap().events = None;
+        task.notification.as_mut().unwrap().im = Some(NotificationTarget::Off);
+        task.managed_kind = Some(MANAGED_KIND_MEMORY_GARDENER.into());
+        assert!(record_event(&mut task, None, Some(("quiet", Some("B")))).is_none());
+        task.managed_kind = None; task.dispatch_origin = TaskDispatchOrigin::AttachedSession;
+        assert!(record_event(&mut task, None, Some(("quiet", Some("B")))).is_none());
+    }
+
 }

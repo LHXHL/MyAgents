@@ -155,6 +155,30 @@ test('prepared speech bundle requires exact native and legal inventories', async
   }
 });
 
+test('prepared speech cache rejects retired notices from another build', async () => {
+  const fixture = await speechFixture();
+  try {
+    assert.equal(
+      validatePreparedSpeechBundle(fixture.root, fixture.expected),
+      true,
+    );
+    for (const filename of [
+      'HDBSCAN-LICENSE-APACHE',
+      'HDBSCAN-LICENSE-MIT',
+      'KDTREE-LICENSE-APACHE',
+      'KDTREE-LICENSE-MIT',
+    ]) {
+      writeFileSync(join(fixture.root, 'legal', filename), 'retired notice');
+    }
+    assert.equal(
+      validatePreparedSpeechBundle(fixture.root, fixture.expected),
+      false,
+    );
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test('prepared speech bundle rejects tampering and duplicated ORT bytes', async () => {
   const fixture = await speechFixture();
   try {

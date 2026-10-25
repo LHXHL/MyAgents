@@ -52,6 +52,20 @@ describe('Markdown table source operations', () => {
     const next = state.update({ changes: pasteTableCells(state, table, 1, 1, 'one\ttwo\n三\t四') }).state;
     expect(next.doc.toString()).toBe('before\n\n| A | B |  |\n| --- | --- | --- |\n| x | one | two |\n|  | 三 | 四 |\n\nafter');
   });
+  it.each(['', '> '])('pastes atomically when incremental parsing exhausts its time budget: %s', prefix => {
+    const state = document(`${prefix}| A | B |\n${prefix}| --- | --- |\n${prefix}| old | two |\n`);
+    const table = tableAt(state, prefix.length)!;
+    let clock = Date.now();
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => (clock += 21));
+    try {
+      const changes = pasteTableCells(state, table, 1, 1, 'x\ty\nz\tw');
+      const next = state.update({ changes }).state;
+      expect(next.doc.toString()).toBe(`${prefix}| A | B |  |\n${prefix}| --- | --- | --- |\n${prefix}| old | x | y |\n${prefix}|  | z | w |\n`);
+      expect(state.doc.toString()).toContain('| old | two |');
+    } finally {
+      now.mockRestore();
+    }
+  });
   it.each(['- ', '1. ', '> - '])('grows a header-only nested table using its continuation prefix: %s', prefix => {
     const continuation = prefix.replace(/(?:[-+*]|\d+[.)]) /, marker => ' '.repeat(marker.length));
     const source = `${prefix}| A | B |\n${continuation}| --- | --- |`;

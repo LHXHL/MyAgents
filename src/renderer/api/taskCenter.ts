@@ -439,3 +439,7 @@ export function taskRerun(id: string): Promise<TaskRunResult> {
 export function taskCenterAvailable(): boolean {
   return isTauri();
 }
+
+export function taskNotificationOperate(taskId: string, deliveryId: string, action: 'retry' | 'resend' | 'cancel') {
+  return inv('cmd_task_notification_operate', { taskId, deliveryId, action });
+}

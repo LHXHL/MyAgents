@@ -103,6 +103,57 @@ fn lark_group_name(id: &str, names: &[PeerDisplayName]) -> Result<String, String
 }
 
 impl ChannelOwner {
+    pub(crate) async fn notification_peer(&self, key: &str) -> Option<super::types::PeerSession> {
+        self.router.lock().await.peer_session_snapshot(key)
+    }
+
+    pub(crate) async fn latest_notification_private(&self) -> Option<String> {
+        self.router.lock().await.latest_private_peer_session_target().map(|p| p.session_key)
+    }
+
+    /// Keep the ordinary /new peer fence through the short Inbox admission.
+    /// The model's beforeDispatch guard rechecks the binding after queueing.
+    pub(crate) async fn deliver_notification(
+        &self, app: &tauri::AppHandle, manager: &ManagedSidecarManager,
+        store: &crate::task::TaskStore, task_id: &str,
+        delivery: &crate::task::notification::NotificationDelivery,
+    ) -> Result<DeliverOutcome, String> {
+        use crate::task::notification::DeliveryState;
+        let address = delivery.target.as_ref().ok_or("Missing notification target")?;
+        let attempt = delivery.attempt_id.as_deref().ok_or("Missing notification attempt")?;
+        let _work = self.gate.try_enter().ok_or("Channel is restarting")?;
+        let fence = self.peer_locks.lock().await.entry(address.session_key.clone()).or_insert_with(|| Arc::new(Mutex::new(()))).clone();
+        let _fence = fence.lock().await;
+        model_commands::ensure_peer_snapshot(&self.router, &self.health, manager, &address.session_key).await?;
+        SessionRouter::ensure_sidecar(&self.router, &address.session_key, app, manager).await?;
+        let peer = self.notification_peer(&address.session_key).await.ok_or("Notification conversation no longer exists")?;
+        let same_session = delivery.execution_session_id.as_deref() == Some(&peer.session_id);
+        let status_only = !delivery.events.iter().any(|e| e == "execution");
+        store.mutate_notification(task_id, &delivery.id, Some(attempt), |d| {
+            if d.state != DeliveryState::Waiting { return Err("Notification is no longer waiting".into()); }
+            d.state = DeliveryState::Preparing;
+            d.target_session_id = Some(peer.session_id.clone());
+            Ok(())
+        }).await?;
+        let mut message = PendingInboxMessage::new_request(
+            delivery.execution_session_id.clone().unwrap_or_else(|| peer.session_id.clone()),
+            "Task result".into(), peer.session_id.clone(), delivery.result.clone(), false,
+        );
+        message.kind = crate::inbox::InboxMessageKind::Event;
+        message.message_id = attempt.to_string();
+        message.session_event = Some(json!({
+            "version":1,"type":"task.result","eventId":attempt,"createdAt":chrono::Utc::now().to_rfc3339(),
+            "sourceSessionId":delivery.execution_session_id,"targetSessionId":peer.session_id,
+            "taskId":task_id,"deliveryId":delivery.id,"attemptId":attempt,
+            "conversation":address,"title":delivery.title,"payload":delivery.result,
+            "statusOnly":status_only,"sameSession":same_session
+        }));
+        Ok(match prepare_existing_delivery(app, manager, message, peer.workspace_path).await {
+            Ok(prepared) => prepared.admit(app, None, || Ok(())).await,
+            Err(outcome) => outcome,
+        })
+    }
+
     pub async fn source_world(
         &self,
         channel: &ChannelCapability,
@@ -256,7 +307,10 @@ impl ChannelOwner {
                 peer.source_display_name = Some(name.clone());
                 router.upsert_peer_session(peer);
                 self.health
-                    .persist_active_sessions_snapshot(router.active_sessions())
+                    .persist_active_sessions_snapshot(
+                        router.active_sessions(),
+                        router.peer_history(),
+                    )
                     .await?;
             }
         }
@@ -545,7 +599,7 @@ mod tests {
             // Compare the two real Rust producers, not duplicated expected
             // strings: Inbox guard consumes this scope and this handoff world.
             let bound = super::super::session_delivery::SessionChannelTarget {
-                adapter: owner.adapter.clone(),
+                session_key: "test-peer".into(),                adapter: owner.adapter.clone(),
                 chat_id: row["inbound"].as_str().unwrap().into(),
                 channel_id: "bot".into(),
                 source_type: source_type.clone(),

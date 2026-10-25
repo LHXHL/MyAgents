@@ -30,6 +30,7 @@ const scope = (mode: "auto" | "tool_only") => ({
     idType: "chat_id",
   },
   sourceType: "private",
+  conversationRef: { channelId: "c", sessionKey: "private:original" },
 });
 const inbound = () =>
   normalizeImInbound({
@@ -77,8 +78,11 @@ describe("channel execution snapshot", () => {
     readScope.mockResolvedValue(mutable);
     const first = (await captureChannelTurn("none"))!;
     mutable.channels[0].mode = "tool_only";
+    mutable.conversationRef.sessionKey = "private:other";
     const second = (await captureChannelTurn("none"))!;
     const owner = { user: "none", assistant: "caller-owned" } as const;
+    expect(first.scope.conversationRef).toEqual({ channelId: "c", sessionKey: "private:original" });
+    expect(second.scope.conversationRef?.sessionKey).toBe("private:other");
     expect(effectiveChannelDelivery(first, owner).mode).toBe("auto");
     expect(effectiveChannelDelivery(second, owner).mode).toBe("tool_only");
     expect(

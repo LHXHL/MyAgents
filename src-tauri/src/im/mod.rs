@@ -1,3 +1,5 @@
+pub(crate) mod channel_send;
+pub(crate) mod task_notification;
 // IM Bot integration module
 // Manages the Telegram Bot lifecycle, routing IM messages to AI Sidecars.
 
@@ -28,6 +30,7 @@ pub mod router;
 pub mod runtime_change;
 pub(crate) mod session_delivery;
 pub(crate) mod state;
+pub(crate) mod team_ai;
 pub mod telegram;
 pub mod types;
 mod util;

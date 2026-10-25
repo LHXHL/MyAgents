@@ -193,7 +193,9 @@ export type InjectedTurnRequest = {
   queueId?: string;
   turnOwner?: TurnOwner;
   onTerminal?: TurnTerminalObserver;
-  /** Fires once after the exact Runtime queue accepts this turn. */
+  /** Fires once when the existing turn queue owns the item, before promotion. */
+  onEnqueued?: (queueId: string) => void;
+  /** Fires once after the exact Runtime dispatch accepts this turn. */
   onDispatched?: (queueId: string, sessionId: string) => Promise<void> | void;
   /** Final authority check at the runtime promotion boundary. */
   beforeDispatch?: DispatchGuard;
@@ -433,7 +435,9 @@ export interface SessionEngine {
     expected: RegisteredAgentSessionOrigin,
   ): Promise<{ success: boolean; metadataExists?: boolean; adoptedLegacyOrigin?: boolean; error?: string }>;
   getCurrentTurnIdentity(): TurnIdentity | null;
+  recordNotificationEvent(id: string, text: string): Promise<void>;
   getExecutionTurnId(): string | null;
+  getNotificationConversation(): { channelId: string; sessionKey: string } | null;
   getActiveImBridgeTurnContext(): ImBridgeTurnContext | null;
   getSessionCompletionTerminal(): SessionCompletionTerminal | null;
   hasQueuedTurnOwnedBy(owner: TurnOwner): boolean;

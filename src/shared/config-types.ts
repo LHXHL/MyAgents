@@ -539,6 +539,8 @@ export type WorkspaceType = 'user' | 'system-preset';
 export type SystemPresetWorkspaceId = 'mino';
 
 export interface Project {
+  /** Product usage; independent from user/system lifecycle and template provenance. */
+  purpose?: 'team-ai';
   id: string;
   name: string;
   path: string;
@@ -993,6 +995,8 @@ export interface AppConfig {
    *  只控制工具箱里的 CLI 工具注册/管理/AI 自动发现；不影响 myagents CLI
    *  本身以及 cron / task / widget / thought 等已发布 CLI 能力。 */
   cliToolRegistryEnabled?: boolean;
+  /** 实验室：显示 Team AI 面板入口。默认关闭；只控制导航，不停用 Agent 或 Channel。 */
+  teamAiPanelEnabled?: boolean;
   /** 隐藏开发者开关：桌面宠物功能门控。默认开；普通用户不可见。 */
   floatingBallDevGate?: boolean;
   /** 隐藏开发者开关：协作空间（MyAgents Space / Cloud Space）。默认开。
@@ -2870,6 +2874,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   showDevTools: false,
   showChatHistoryEntry: false,
   cliToolRegistryEnabled: false, // 默认关闭用户注册 CLI 工具注册表（实验室）
+  teamAiPanelEnabled: false,
   teamSpaceDevGate: true, // 默认开放协作空间；开发者可关闭
   agentNetworkSelfhostDevGate: false,
   spaceEnvironment: 'production',

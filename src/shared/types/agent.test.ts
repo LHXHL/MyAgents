@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { AgentConfig, ChannelConfig } from './agent';
 import {
+  channelExecutionConfigChangeError,
   resolveAgentChannelPermissionMode,
   resolveAgentChannelRuntime,
   resolveEffectiveConfig,
@@ -134,5 +135,20 @@ describe('Agent Channel effective config', () => {
     const ch = channel({ overrides: { permissionMode: 'full-auto' } });
 
     expect(resolveAgentChannelPermissionMode(a, ch)).toBe('fullAgency');
+  });
+});
+
+describe('Channel writers and Team AI peer profiles', () => {
+  const channel = { id: 'c', type: 'telegram', enabled: true, peerProfiles: { k: { runtime: 'builtin', model: 'm' } } };
+
+  it('lets unrelated edits carry existing peer profiles through unchanged', () => {
+    expect(channelExecutionConfigChangeError(channel, { ...channel, name: 'Renamed' })).toBeUndefined();
+  });
+
+  it('rejects a renderer write that would drop or rewrite peer profiles', () => {
+    const { peerProfiles: _dropped, ...rebuilt } = channel;
+    expect(channelExecutionConfigChangeError(channel, rebuilt)).toMatch(/Team AI/);
+    expect(channelExecutionConfigChangeError(channel, { ...channel, peerProfiles: {} })).toMatch(/Team AI/);
+    expect(channelExecutionConfigChangeError(undefined, channel)).toMatch(/Team AI/);
   });
 });

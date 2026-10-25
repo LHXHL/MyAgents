@@ -15,10 +15,7 @@ import { startAndEnableAgentChannel, stopAndDisableAgentChannel } from '@/config
 import ChannelPlatformSelect from '../channels/ChannelPlatformSelect';
 import ChannelWizard from '../channels/ChannelWizard';
 import ChannelDetailView from '../channels/ChannelDetailView';
-import telegramIcon from '../../ImSettings/assets/telegram.png';
-import feishuIcon from '../../ImSettings/assets/feishu.jpeg';
-import dingtalkIcon from '../../ImSettings/assets/dingtalk.svg';
-import { findPromotedByPlatform } from '../../ImSettings/promotedPlugins';
+import { ChannelPlatformIcon, getChannelPlatformLabel } from '../channelPlatform';
 import { resolveChannelDisplayName } from '@/utils/channelDisplayName';
 
 interface AgentChannelsSectionProps {
@@ -31,37 +28,13 @@ interface AgentChannelsSectionProps {
   onInitialAddPlatformConsumed?: () => void;
 }
 
-const PLATFORM_LABELS: Record<string, string> = {
-  telegram: 'Telegram',
-  feishu: '飞书',
-  dingtalk: '钉钉',
-};
-
-function getPlatformLabel(type: string): string {
-  if (type.startsWith('openclaw:')) {
-    const promoted = findPromotedByPlatform(type);
-    if (promoted) return promoted.name;
-    return type.slice('openclaw:'.length);
-  }
-  return PLATFORM_LABELS[type] || type;
-}
-
-function getPlatformIcon(type: string) {
-  if (type === 'telegram') return <img src={telegramIcon} alt="Telegram" className="h-5 w-5" />;
-  if (type === 'feishu') return <img src={feishuIcon} alt="飞书" className="h-5 w-5 rounded" />;
-  if (type === 'dingtalk') return <img src={dingtalkIcon} alt="钉钉" className="h-5 w-5 rounded" />;
-  const promoted = findPromotedByPlatform(type);
-  if (promoted) return <img src={promoted.icon} alt={promoted.name} className="h-5 w-5 rounded" />;
-  return <span className="text-base">💬</span>;
-}
-
 function getChannelStatus(status: AgentStatusData | undefined, channelId: string): ChannelStatusData | undefined {
   return status?.channels.find(ch => ch.channelId === channelId);
 }
 
 // Overlay state machine
-type OverlayState =
-  | null
+/** Where a Channel overlay starts: the platform picker, a platform's wizard, or one Channel's detail. */
+export type ChannelOverlayEntry =
   | { view: 'add'; platform?: ChannelType }
   | { view: 'detail'; channelId: string };
 
@@ -122,10 +95,9 @@ export default function AgentChannelsSection({
   const { t } = useTranslation('settings');
   const toast = useToast();
   const [loading, setLoading] = useState<string | null>(null);
-  const [overlay, setOverlay] = useState<OverlayState>(() => (
+  const [overlay, setOverlay] = useState<ChannelOverlayEntry | null>(() => (
     initialAddPlatform ? { view: 'add', platform: initialAddPlatform } : null
   ));
-  const directEntryRef = useRef(Boolean(initialAddPlatform));
   const isMountedRef = useRef(true);
 
   useEffect(() => {
@@ -175,74 +147,10 @@ export default function AgentChannelsSection({
     }
   }, [agent.id, onAgentChanged, t, toast]);
 
-  // Close overlay and refresh
   const closeOverlay = useCallback(() => {
-    directEntryRef.current = false;
     setOverlay(null);
     onAgentChanged();
   }, [onAgentChanged]);
-
-  // Platform selected → transition to wizard
-  const handlePlatformSelected = useCallback((platform: ChannelType) => {
-    setOverlay({ view: 'add', platform });
-  }, []);
-
-  // Wizard completed → close overlay
-  const handleWizardComplete = useCallback((_channelId: string) => {
-    closeOverlay();
-  }, [closeOverlay]);
-
-  // Wizard cancelled → go back to platform select
-  const handleWizardCancel = useCallback(() => {
-    if (directEntryRef.current) {
-      closeOverlay();
-      return;
-    }
-    setOverlay({ view: 'add' });
-  }, [closeOverlay]);
-
-  // Detail back → close overlay
-  const handleDetailBack = useCallback(() => {
-    closeOverlay();
-  }, [closeOverlay]);
-
-  // Render overlay content based on state
-  const renderOverlayContent = () => {
-    if (!overlay) return null;
-
-    if (overlay.view === 'add' && !overlay.platform) {
-      return (
-        <ChannelPlatformSelect
-          onSelect={handlePlatformSelected}
-          onCancel={closeOverlay}
-        />
-      );
-    }
-
-    if (overlay.view === 'add' && overlay.platform) {
-      return (
-        <ChannelWizard
-          agent={agent}
-          platform={overlay.platform}
-          onComplete={handleWizardComplete}
-          onCancel={handleWizardCancel}
-        />
-      );
-    }
-
-    if (overlay.view === 'detail') {
-      return (
-        <ChannelDetailView
-          agent={agent}
-          channelId={overlay.channelId}
-          onBack={handleDetailBack}
-          onChanged={onAgentChanged}
-        />
-      );
-    }
-
-    return null;
-  };
 
   return (
     <>
@@ -280,7 +188,7 @@ export default function AgentChannelsSection({
             const displayName = resolveChannelDisplayName(
               channel,
               chStatus,
-              getPlatformLabel(channel.type),
+              getChannelPlatformLabel(channel.type),
             );
 
             return (
@@ -289,7 +197,7 @@ export default function AgentChannelsSection({
                 className="flex cursor-pointer items-center gap-3 rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] px-4 py-3 transition-all hover:border-[var(--line-strong)] hover:shadow-sm"
                 onClick={() => setOverlay({ view: 'detail', channelId: channel.id })}
               >
-                <span className="flex-shrink-0">{getPlatformIcon(channel.type)}</span>
+                <span className="flex-shrink-0"><ChannelPlatformIcon type={channel.type} /></span>
                 <div className="flex min-w-0 flex-1 items-center gap-2">
                   <span className="truncate text-sm font-medium text-[var(--ink)]">
                     {displayName}
@@ -330,11 +238,41 @@ export default function AgentChannelsSection({
       </div>
 
       {/* === Unified Overlay Panel === */}
-      {overlay && (
-        <ChannelOverlayPanel onClose={closeOverlay}>
-          {renderOverlayContent()}
-        </ChannelOverlayPanel>
-      )}
+      {overlay && <ChannelOverlay agent={agent} entry={overlay} onClose={closeOverlay} onChanged={onAgentChanged} />}
     </>
+  );
+}
+
+/**
+ * The Channel page on its own: platform picker → wizard, or one Channel's detail.
+ * Settings opens it over the Channels card; Team AI opens it directly, so closing it
+ * returns to wherever it was opened from. A wizard entered directly (with a platform)
+ * closes on cancel; one reached from the picker goes back to the picker.
+ */
+export function ChannelOverlay({ agent, entry, onClose, onChanged }: {
+  agent: AgentConfig;
+  entry: ChannelOverlayEntry;
+  onClose: () => void;
+  onChanged: () => void;
+}) {
+  const [view, setView] = useState<ChannelOverlayEntry>(entry);
+  const startedInWizard = entry.view === 'add' && !!entry.platform;
+  return (
+    <ChannelOverlayPanel onClose={onClose}>
+      {view.view === 'add' && !view.platform && (
+        <ChannelPlatformSelect onSelect={platform => setView({ view: 'add', platform })} onCancel={onClose} />
+      )}
+      {view.view === 'add' && view.platform && (
+        <ChannelWizard
+          agent={agent}
+          platform={view.platform}
+          onComplete={() => onClose()}
+          onCancel={() => (startedInWizard ? onClose() : setView({ view: 'add' }))}
+        />
+      )}
+      {view.view === 'detail' && (
+        <ChannelDetailView agent={agent} channelId={view.channelId} onBack={onClose} onChanged={onChanged} />
+      )}
+    </ChannelOverlayPanel>
   );
 }

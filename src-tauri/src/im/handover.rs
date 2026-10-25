@@ -612,7 +612,7 @@ async fn new_channel_desktop_session_with_binding<R: Runtime>(
         }
     };
     if let Err(error) = health
-        .persist_active_sessions_snapshot(router.active_sessions())
+        .persist_active_sessions_snapshot(router.active_sessions(), router.peer_history())
         .await
     {
         crate::sidecar::session_lifecycle::retire_failed_desktop_transition(
@@ -638,7 +638,7 @@ async fn new_channel_desktop_session_with_binding<R: Runtime>(
         // above, keeping the target binding while its writer is uncertain.
         router.rollback_peer_binding_transition(&transition);
         health
-            .persist_active_sessions_snapshot(router.active_sessions())
+            .persist_active_sessions_snapshot(router.active_sessions(), router.peer_history())
             .await?;
         return Err("Session owners changed before migration committed".to_string());
     }
@@ -815,7 +815,7 @@ pub(super) async fn handover_session_to_channel<R: Runtime>(
             .filter(|s| !s.is_empty())
         {
             Some(explicit_key) => {
-                if !router.has_peer_session(explicit_key) {
+                if !router.knows_peer(explicit_key) {
                     ulog_warn!(
                         "[handover] explicit sessionKey not found in channel router: channel={} key={}",
                         channelId,
@@ -857,7 +857,11 @@ pub(super) async fn handover_session_to_channel<R: Runtime>(
         if prior_before_handover
             .as_ref()
             .map(|peer| peer.session_id.as_str())
-            != Some(expected.as_str())
+            != if expected.is_empty() {
+                None
+            } else {
+                Some(expected.as_str())
+            }
         {
             return Err("Session binding changed; refresh /model".to_string());
         }

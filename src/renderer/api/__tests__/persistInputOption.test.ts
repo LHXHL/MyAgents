@@ -62,6 +62,32 @@ describe('persistInputOptionChange — disk write fanout', () => {
     });
   });
 
+  it('Session-only mode (Team AI) writes the snapshot and live push but no Project/Agent defaults', async () => {
+    const m = makeMocks();
+    const res = await persistInputOptionChange({
+      workspaceId: 'ws-1',
+      agentId: 'agent-1',
+      isExternalRuntime: false,
+      fields: { providerId: 'deepseek', builtinModel: 'deepseek-chat', mcpEnabledServers: ['browser'] },
+      defaultsWriteMode: 'disabled',
+      snapshotWriteMode: 'required',
+      patchProject: m.patchProject,
+      patchAgentConfig: m.patchAgentConfig,
+      patchAgentProjectConfig: m.patchAgentProjectConfig,
+      patchSnapshot: m.patchSnapshot,
+      pushMcpToSidecar: m.pushMcpToSidecar,
+      getAllMcpServers: m.getAllMcpServers,
+      getGlobalMcpEnabled: m.getGlobalMcpEnabled,
+    });
+
+    expect(res.ok).toBe(true);
+    expect(m.patchSnapshot).toHaveBeenCalledWith(expect.objectContaining({ model: 'deepseek-chat', mcpEnabledServers: ['browser'] }));
+    expect(m.patchProject).not.toHaveBeenCalled();
+    expect(m.patchAgentConfig).not.toHaveBeenCalled();
+    expect(m.patchAgentProjectConfig).not.toHaveBeenCalled();
+    expect(m.pushMcpToSidecar).toHaveBeenCalled();
+  });
+
   it('required snapshot mode stops before project/agent writes when the session snapshot fails', async () => {
     const m = makeMocks();
     m.patchSnapshot.mockRejectedValue(new Error('session not materialized'));

@@ -80,6 +80,9 @@ export function channelExecutionConfigChangeError(current: unknown, next: unknow
       }
     }
   }
+  if (JSON.stringify(before?.peerProfiles) !== JSON.stringify(after.peerProfiles)) {
+    return 'Team AI peer settings are managed from the Team AI page.';
+  }
   return undefined;
 }
 
@@ -131,6 +134,10 @@ export interface ChannelConfig {
 
   // Channel tool restrictions; legacy execution fields are read-only migration data.
   overrides?: ChannelOverrides;
+
+  /** Team AI peer birth templates keyed by sessionKey. Written only by the Rust
+   *  Team AI owner; shape defined in `src/server/utils/peer-profile.ts`. */
+  peerProfiles?: Record<string, unknown>;
 
   // Runtime
   setupCompleted?: boolean;

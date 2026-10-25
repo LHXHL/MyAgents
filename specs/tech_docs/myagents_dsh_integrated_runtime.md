@@ -113,6 +113,8 @@ DSH wire revision 在最终编译边界根据实际声明内容（含 Host tool 
 
 DSH 使用 `approval-required`、`workspace-autonomous`、`full-autonomous` 三种产品模式，不复用 Claude SDK 的传参字面量。前两项采用原生 workspace-write sandbox，最后一项为 danger-full-access；受限 Shell 无可用 sandbox 时拒绝执行。权限模式先成为 Session desired state，当前 turn 使用 admission snapshot，下一条 query 前由 `config/apply` 确认 approval/sandbox 的 effective state，失败则不发送该 query。
 
+冷恢复沿用 DSH 原生权限与持久化机制。历史操作均已结束且原生 Inbox 没有待处理输入时，原生 Runtime 可以接纳下一轮的新权限配置，但不能改写历史 operation 的执行身份；策略未变化时保留已有授权。存在未完成操作或原生 Inbox 待处理输入时，必须继续使用其持久化权限配置，不能借恢复过程替换。Host 负责提供 Session 的目标配置和处理结构化失败，不增加另一份权限状态或直接修改原生历史。
+
 Root/child 共享 Session-tree 的精确 grant 与产品交互，但每次调用必须绑定原 generation、operation、Agent 和 tool call。approval 不自动覆盖其他工具或未来无关调用。用户等待不套普通执行 timeout；执行 deadline 从审批完成后开始计算。
 
 AskUser 与权限卡片通过真实 response receipt 结算。选项与自定义文字都保留；无效回答、传输失败或未确认 ACK 不清卡片，也不伪报已回答。迟到回执不能关闭新 request。

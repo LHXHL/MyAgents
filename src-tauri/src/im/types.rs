@@ -782,6 +782,18 @@ impl Default for MessageBufferData {
     }
 }
 
+/// Durable peer membership, separate from the mutable current binding.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PeerSessionHistory {
+    pub session_key: String,
+    pub source_type: ImSourceType,
+    pub source_id: String,
+    pub source_display_name: Option<String>,
+    pub workspace_path: String,
+    pub session_ids: Vec<String>,
+}
+
 /// Health state for persistence (written to im_state.json)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -791,6 +803,8 @@ pub struct ImHealthState {
     pub uptime_seconds: u64,
     pub last_message_at: Option<String>,
     pub active_sessions: Vec<ImActiveSession>,
+    #[serde(default)]
+    pub peer_session_history: Vec<PeerSessionHistory>,
     pub error_message: Option<String>,
     pub restart_count: u32,
     pub buffered_messages: usize,
@@ -805,6 +819,7 @@ impl Default for ImHealthState {
             uptime_seconds: 0,
             last_message_at: None,
             active_sessions: Vec::new(),
+            peer_session_history: Vec::new(),
             error_message: None,
             restart_count: 0,
             buffered_messages: 0,
@@ -1211,6 +1226,12 @@ pub struct ChannelConfigRust {
     // Overrides
     #[serde(default)]
     pub overrides: Option<ChannelOverrides>,
+
+    /// Team AI peer birth templates keyed by Router sessionKey. Node owns the
+    /// value shape (`src/server/utils/peer-profile.ts`); Rust stores it opaquely
+    /// and writes it only through `team_ai::write_peer_profile` (sync / clear / invalid-birth cleanup).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub peer_profiles: std::collections::BTreeMap<String, serde_json::Value>,
 
     // Legacy root-level AI fields (written by /provider command before v0.1.45 bc06386 fix).
     // Only used as fallback in to_im_config when overrides + agent are both missing.
@@ -1823,6 +1844,7 @@ mod tests {
             group_permissions: vec![],
             group_activation: None,
             overrides: None,
+            peer_profiles: Default::default(),
             provider_id: None,
             provider_env_json: None,
             model: None,

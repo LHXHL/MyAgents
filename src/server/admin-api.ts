@@ -4034,13 +4034,19 @@ emits a warning when you do):
                                           offset/Z required; offset MUST be
                                           +HH:MM, not +HH)
 
-IM / desktop notification (forward to a bot configured via
-\`myagents im channels\` — without --notificationBotChannelId the task runs
-silently to disk, even if you set --notificationDesktop):
-  --notificationBotChannelId <id>  IM bot id (see 'myagents im channels')
-  --notificationBotThread <chat>   Override bot routing thread / channel id
-  --notificationDesktop true|false Desktop notification toggle (default: true)
-  --notificationEvents done,blocked,endCondition  Comma-separated events filter
+IM / desktop notification:
+  From an active Channel conversation, omitted IM target returns to that exact Channel + sessionKey (ordinary and Team AI alike). During a Task, it inherits that execution's frozen policy, including off. GUI/global/external CLI without context defaults to off.
+  --notificationTarget off|current|<JSON>  Explicit target; current requires an exact host conversation
+  --notificationTargetFile <path>          Read the same JSON target from a file
+  Targets: {"type":"conversation","channelId":"…","sessionKey":"…"};
+           {"type":"recent-private","scope":"channel","channelId":"…"};
+           {"type":"recent-private","scope":"agent","agentId":"…"}
+  --notificationDesktop true|false        Independent desktop toggle
+  --notificationEvents execution,done,blocked,endCondition  Events; [] subscribes to none
+  Legacy --notificationBotChannelId/--notificationBotThread remain accepted; thread was never used as an exact destination. Do not mix old and new target flags.
+  Inspect effective notification + notificationDeliveries using task get.
+  task notification <taskId> --deliveryId <id> --action retry|resend|cancel
+  retry never repeats a sent/unknown notification; resend explicitly accepts possible duplicates. Neither reruns the business Task.
 
 Per-task RUNTIME overrides (all optional; omit to inherit workspace defaults):
   --runtime            Override runtime (${RUNTIMES_ENUM_LINE})
@@ -4082,7 +4088,7 @@ Options for 'update' <taskId>:
   Notification semantics: --notification* flags MERGE with the existing
   config (CLI sends only provided fields; the Task owner merges them under
   its authoritative write lock). So
-  '--notificationDesktop false' preserves botChannelId / botThread / events.
+  '--notificationDesktop false' preserves the IM target and events.
   To clear bot routing entirely, recreate the task — empty values are
   rejected at the CLI boundary to catch typos.
 
@@ -4562,7 +4568,7 @@ Commands:
   wake [--text <text>]                Trigger a heartbeat wake (IM session only)
   readme                              Full reference + when-to-use guidance
 
-Use 'myagents im channels' to discover bot ids for --notificationBotChannelId
+Use 'myagents im channels' to discover channels; --notificationTarget selects off, current, a conversation, or a recent-private scope.
 on 'myagents task create-direct / update'.
 
 Read recorded visible Session history: myagents session get <sessionId>
@@ -5981,7 +5987,7 @@ function withTaskAgentReceipt(
           mode: boundSession ? 'bound-session' : 'execution-session',
           summary: boundSession
             ? 'Execution results stay in the Task bound Session and are not copied into Task comments automatically.'
-            : 'Execution results stay in Task execution Sessions and run history; they are not pushed back to the creating Session or copied into Task comments automatically.',
+            : 'Execution results stay in Task execution Sessions and run history. notification selects the reporting conversation; its current Session prepares the report. Task comments require an explicit write.',
           inspectTaskCommand: `myagents task get ${taskId} --json`,
           inspectRunsCommand: `myagents task runs ${taskId} --limit 5 --full --json`,
           inspectCommentsCommand: `myagents task comments ${taskId} --limit 50 --json`,
@@ -6047,6 +6053,12 @@ export async function handleTaskList(payload: {
     };
   }
   return mgmtError(resp, 'Failed to list tasks');
+}
+
+export async function handleTaskNotification(payload: Record<string, unknown>): Promise<AdminResponse> {
+  return wrapMgmtResponse(await managementApi('/api/task/notification/operate', 'POST', {
+    taskId: payload.taskId, deliveryId: payload.deliveryId, action: payload.action,
+  }));
 }
 
 export async function handleTaskGet(payload: {

@@ -22,7 +22,8 @@ vi.mock('../SessionStore', () => ({ getSessionMetadata: mocks.get, updateSession
 vi.mock('../session-engine', () => ({ queryRuntimeModels: mocks.models, getSessionEngine: () => ({ getCurrentSessionContext: mocks.context, applyModelSelection: mocks.apply }) }));
 vi.mock('../admin-api', () => ({ commitAgentModelSelection: mocks.commit }));
 vi.mock('../sse', () => ({ broadcast: mocks.broadcast }));
-import { handleImModelRoute, imSnapshotObservation } from './im-model-selection';
+import { composeSidecarRequestHandler, resolveSidecarComposition } from '../sidecar-composition';
+import { handleImModelRoute, imSnapshotObservation, modelContext } from './im-model-selection';
 
 const env = { providerId: 'alpha', baseUrl: 'https://alpha.example/v1', apiProtocol: 'anthropic', apiKey: 'isolated-test-key' };
 let metadata: SessionMetadata;
@@ -185,5 +186,50 @@ describe('private IM Session model owner', () => {
   it('refuses unproven legacy metadata without promoting it from current defaults', async () => {
     metadata.configSnapshotAt = undefined;
     expect((await choose())!.status).toBe(409); expect(mocks.update).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('Team AI Session-only model surface', () => {
+  it('persists and applies the selected model without updating Agent defaults', async () => {
+    const response = await handleImModelRoute('/api/im/session-model-selection', new Request('http://localhost/api/im/session-model-selection', {
+      method: 'POST', body: JSON.stringify({ agentId: 'a', sessionId: 's', snapshotObservation: imSnapshotObservation(metadata), selection: selection(), allowNewSession: true }),
+    }));
+    expect(await response!.json()).toMatchObject({ success: true, sessionConfig: 'saved' });
+    expect(metadata.model).toBe('two');
+    expect(metadata.permissionMode).toBe('plan');
+    expect(mocks.apply).toHaveBeenCalled();
+    expect(mocks.commit).not.toHaveBeenCalled();
+  });
+  it('preserves Session tool choices in an incompatible target birth', async () => {
+    const response = await handleImModelRoute('/api/im/session-model-selection', new Request('http://localhost/api/im/session-model-selection', {
+      method: 'POST', body: JSON.stringify({ agentId: 'a', sessionId: 's', snapshotObservation: imSnapshotObservation(metadata), selection: selection('codex-sub', 'codex-live'), allowNewSession: true }),
+    }));
+    expect(await response!.json()).toMatchObject({ requiresNewSession: true, birth: { mcpEnabledServers: ['mcp-a'], enabledPluginIds: ['plugin-a'] } });
+    expect(mocks.update).not.toHaveBeenCalled(); expect(mocks.commit).not.toHaveBeenCalled();
+  });
+});
+
+
+it('serves the real Session model catalogue through Global production composition', async () => {
+  const serve=composeSidecarRequestHandler(resolveSidecarComposition('global',false),async request=>(await handleImModelRoute(new URL(request.url).pathname,request))!);
+  const response=await serve(new Request('http://localhost/api/im/model-options?agentId=a&sessionId=s'));
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({runtime:'builtin',reasoningEffort:'high',reasoningEffortChoices:expect.arrayContaining(['high'])});
+  expect(mocks.commit).not.toHaveBeenCalled();
+});
+
+describe('Team AI peer-config base', () => {
+  it('matches a Managed Codex profile to its model through the runtime-backed identity', async () => {
+    const identity = createRuntimeBackedProviderIdentity({ providerId: 'codex-sub', model: 'codex-live' });
+    const context = await modelContext('a', undefined, { runtime: 'codex', runtimeSource: 'managed-provider', providerExecutionIdentity: identity, model: 'codex-live' });
+    expect(context.options.find(option => option.isCurrent)?.selection).toEqual(selection('codex-sub', 'codex-live'));
+  });
+
+  it('resolves the Provider endpoint of the peer config, not the Agent default', async () => {
+    const context = await modelContext('a', undefined, { runtime: 'builtin', providerId: 'beta', model: 'two' });
+    expect(mocks.env).toHaveBeenCalledWith('beta', expect.anything());
+    expect(context.currentEnv).toMatchObject({ providerId: 'beta' });
+    expect(context.options.find(option => option.isCurrent)?.selection).toEqual(selection('beta', 'two'));
   });
 });

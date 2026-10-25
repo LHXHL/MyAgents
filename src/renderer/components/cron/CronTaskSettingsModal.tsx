@@ -1,3 +1,4 @@
+import { isNotificationTargetComplete } from '@/../shared/types/task';
 // Cron Task Settings Modal - Configure scheduled task parameters
 // Redesigned for v0.1.42: adds execution mode (当前对话/新开对话) + ScheduleTypeTabs (3 schedule types)
 import {
@@ -21,6 +22,8 @@ import {
 } from '@/utils/sessionGoalDraft';
 import ScheduleTypeTabs from '@/components/scheduled-tasks/ScheduleTypeTabs';
 import CustomSelect from '@/components/CustomSelect';
+import NotificationConfigEditor from '@/components/task-center/NotificationConfigEditor';
+import type { NotificationConfig } from '@/../shared/types/task';
 import { useDeliveryChannels } from '@/hooks/useDeliveryChannels';
 import { type EndMode, deriveInitialEndMode } from './cronEndMode';
 
@@ -86,6 +89,7 @@ export type CronInitialConfig = {
   intervalMinutes: number;
   endConditions: CronEndConditions;
   runMode: CronRunMode;
+  notification?: NotificationConfig;
   notifyEnabled: boolean;
   schedule?: CronSchedule;
   executionTarget?: ExecutionTarget;
@@ -140,6 +144,7 @@ function CronTaskSettingsForm({
     ? 'single_session'
     : (executionTarget === 'current_session' ? 'single_session' : 'new_session');
 
+  const [notification, setNotification] = useState<NotificationConfig>(initialConfig?.notification ?? { desktop: initialConfig?.notifyEnabled ?? true, version: 1, im: { type: 'off' } });
   const [notifyEnabled, setNotifyEnabled] = useState(initialConfig?.notifyEnabled ?? true);
   const [deliveryBotId, setDeliveryBotId] = useState(initialConfig?.delivery?.botId ?? '');
   const { options: deliveryOptions, hasChannels, resolveDelivery } = useDeliveryChannels(workspacePath);
@@ -190,6 +195,7 @@ function CronTaskSettingsForm({
   // Validation
   const validationErrors = useMemo(() => {
     const errors: string[] = [];
+    if (!isGoalMode && !isNotificationTargetComplete(notification)) errors.push(t('notifications.completeTarget'));
     if (!schedule && intervalMinutes < MIN_CRON_INTERVAL) errors.push(t('cron.settingsModal.validation.intervalTooShort', { min: MIN_CRON_INTERVAL }));
     if (schedule?.kind === 'cron') {
       const parts = schedule.expr.trim().split(/\s+/);
@@ -213,7 +219,7 @@ function CronTaskSettingsForm({
       }
     }
     return errors;
-  }, [schedule, intervalMinutes, endMode, useDeadline, useMaxExecutions, aiCanExit, isAtSchedule, t]);
+  }, [schedule, intervalMinutes, endMode, useDeadline, useMaxExecutions, aiCanExit, isAtSchedule, isGoalMode, notification, t]);
 
   const isValid = validationErrors.length === 0;
 
@@ -240,9 +246,10 @@ function CronTaskSettingsForm({
       notifyEnabled,
       executionTarget,
       schedule: schedule ?? undefined,
-      delivery,
+      delivery: isGoalMode ? delivery : undefined,
+      notification: isGoalMode ? undefined : notification,
     });
-  }, [isValid, taskKind, initialPrompt, schedule, intervalMinutes, runMode, notifyEnabled, deliveryBotId, resolveDelivery, endMode, aiCanExit, useDeadline, deadline, useMaxExecutions, maxExecutions, executionTarget, isAtSchedule, onConfirm]);
+  }, [isValid, isGoalMode, notification, taskKind, initialPrompt, schedule, intervalMinutes, runMode, notifyEnabled, deliveryBotId, resolveDelivery, endMode, aiCanExit, useDeadline, deadline, useMaxExecutions, maxExecutions, executionTarget, isAtSchedule, onConfirm]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -356,6 +363,7 @@ function CronTaskSettingsForm({
           {/* ── 任务通知 ── */}
           <div>
             <SectionHeader icon={BellIcon}>{t('cron.settingsModal.notifications')}</SectionHeader>
+            {!isGoalMode ? <div className="mt-3"><NotificationConfigEditor value={notification} onChange={setNotification} workspacePath={workspacePath} /></div> : (
             <div className="mt-3 space-y-3">
               <div className="flex items-center justify-between rounded-lg border border-[var(--line)] bg-[var(--paper)] px-4 py-3">
                 <span className="text-sm text-[var(--ink)]">{t(isGoalMode ? 'cron.settingsModal.goalNotifyOnStop' : 'cron.settingsModal.notifyOnCompletion')}</span>
@@ -367,7 +375,8 @@ function CronTaskSettingsForm({
                   <CustomSelect value={deliveryBotId} options={deliveryOptions} onChange={setDeliveryBotId} placeholder={t('cron.settingsModal.desktopDefault')} />
                 </div>
               )}
-            </div>
+            </div>)}
+
           </div>
 
           {/* Validation Errors */}

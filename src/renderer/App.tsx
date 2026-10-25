@@ -432,6 +432,7 @@ export default function App({ rendererAttachment = COLD_RENDERER_ATTACHMENT }: {
   // Owned by GlobalSidebar (which renders the single New Agent panel); lifted
   // here so launcher entry points open that same instance.
   const [newAgentPanelOpen, setNewAgentPanelOpen] = useState(false);
+  const [newAgentPurpose, setNewAgentPurpose] = useState<Project['purpose']>();
   const [appVersion, setAppVersion] = useState('');
   useEffect(() => {
     if (isTauriEnvironment()) {
@@ -4733,6 +4734,7 @@ export default function App({ rendererAttachment = COLD_RENDERER_ATTACHMENT }: {
     if (!isTauriEnvironment()) return;
     const ac = new AbortController();
     void listenWithCleanup<{
+      taskId?: string;
       tabId?: string;
       sessionId?: string;
       workspacePath?: string;
@@ -4751,6 +4753,11 @@ export default function App({ rendererAttachment = COLD_RENDERER_ATTACHMENT }: {
             );
           },
         );
+        if (route.type === 'open-task-center') {
+          handleOpenTaskCenter();
+          acknowledgeNotificationTarget({ type: 'task-center', taskId: route.taskId });
+          return;
+        }
         if (route.type === 'select-tab') {
           console.log(
             '[App] notification:click → handleSelectTab',
@@ -4792,6 +4799,7 @@ export default function App({ rendererAttachment = COLD_RENDERER_ATTACHMENT }: {
     );
     return () => ac.abort();
   }, [
+    handleOpenTaskCenter,
     acknowledgeNotificationTarget,
     handleSelectTab,
     tabWorkspaceController,
@@ -4960,15 +4968,19 @@ export default function App({ rendererAttachment = COLD_RENDERER_ATTACHMENT }: {
       taskcenter: taskCenterBinding,
       space: spaceBinding,
       agentnetwork: null,
+      teamai: { onCreate: () => { setNewAgentPurpose('team-ai'); setNewAgentPanelOpen(true); }, onOpenSession: handleOpenSidebarSession,
+        onSelectProject: (tabId, projectId) => tabWorkspaceController.update(tabId, 'teamai', tab => ({ ...tab, projectId })) },
       record: recordBinding,
     }),
     [
       capabilitiesBinding,
       chatBinding,
+      handleOpenSidebarSession,
       launcherBinding,
       recordBinding,
       settingsBinding,
       spaceBinding,
+      tabWorkspaceController,
       taskCenterBinding,
     ],
   );
@@ -4979,7 +4991,9 @@ export default function App({ rendererAttachment = COLD_RENDERER_ATTACHMENT }: {
         <div className="flex h-screen bg-[var(--paper)]" data-app-shell>
           <GlobalSidebar
             newAgentPanelOpen={newAgentPanelOpen}
-            onNewAgentPanelOpenChange={setNewAgentPanelOpen}
+            newAgentPurpose={newAgentPurpose}
+            onTeamAiCreated={project => tabWorkspaceController.open('teamai', { title: t('tabs.teamAi'), projectId: project.id })}
+            onNewAgentPanelOpenChange={(open) => { setNewAgentPanelOpen(open); if (!open) setNewAgentPurpose(undefined); }}
             tabs={tabs}
             activeTab={activeTab}
             activeWorkspacePath={activeWorkspacePath}
@@ -4989,6 +5003,7 @@ export default function App({ rendererAttachment = COLD_RENDERER_ATTACHMENT }: {
             onOpenTaskCenter={handleOpenTaskCenter}
             onCreateTask={handleSidebarCreateTask}
             onOpenSpace={handleOpenSpace}
+            onOpenTeamAi={() => tabWorkspaceController.open('teamai', { title: t('tabs.teamAi') })}
             onOpenAgentNetwork={() => tabWorkspaceController.open('agentnetwork', { title: t('tabs.agentNetwork') })}
             onOpenAppRoute={handleOpenAppRoute}
             onOpenCapabilities={handleOpenCapabilities}

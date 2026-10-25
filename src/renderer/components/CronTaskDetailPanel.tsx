@@ -1,3 +1,4 @@
+import { isNotificationTargetComplete } from '@/../shared/types/task';
 /**
  * CronTaskDetailPanel — Detail + Edit view for a scheduled task.
  * Design language aligned with CronTaskSettingsModal and Agent Settings panels.
@@ -37,7 +38,8 @@ import WorkspaceIcon from './launcher/WorkspaceIcon';
 import { useToast } from './Toast';
 import { useConfig } from '@/hooks/useConfig';
 import ConfirmDialog from './ConfirmDialog';
-import CustomSelect from './CustomSelect';
+import { NotificationConfigEditor } from './task-center/NotificationConfigEditor';
+import type { NotificationConfig } from '@/../shared/types/task';
 import TaskRunHistory from './scheduled-tasks/TaskRunHistory';
 import ScheduleTypeTabs from './scheduled-tasks/ScheduleTypeTabs';
 import * as cronClient from '@/api/cronTaskClient';
@@ -79,15 +81,6 @@ function SectionHeader({ icon: Icon, children }: { icon?: typeof ClockIcon; chil
 
 function DetailTag({ label }: { label: string }) {
     return <span className="rounded-lg border border-[var(--line)] px-2.5 py-1 text-xs text-[var(--ink-muted)]">{label}</span>;
-}
-
-function ToggleSwitch({ enabled, onChange }: { enabled: boolean; onChange: (v: boolean) => void }) {
-    return (
-        <button type="button" role="switch" aria-checked={enabled} onClick={() => onChange(!enabled)}
-            className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors ${enabled ? 'bg-[var(--accent)]' : 'bg-[var(--line-strong)]'}`}>
-            <span className={`pointer-events-none inline-block h-3.5 w-3.5 rounded-full bg-[var(--toggle-thumb)] shadow-sm transition-transform ${enabled ? 'translate-x-4' : 'translate-x-0.5'}`} />
-        </button>
-    );
 }
 
 function Checkbox({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label: string }) {
@@ -153,9 +146,8 @@ export default function CronTaskDetailPanel({ task, botInfo, onClose, onDelete, 
     const [editDeadline, setEditDeadline] = useState(task.endConditions.deadline || '');
     const [editMaxExec, setEditMaxExec] = useState(task.endConditions.maxExecutions ? String(task.endConditions.maxExecutions) : '');
     const [editAiCanExit, setEditAiCanExit] = useState(task.endConditions.aiCanExit);
-    const [editNotify, setEditNotify] = useState(task.notifyEnabled);
-    const [editDeliveryBotId, setEditDeliveryBotId] = useState(task.delivery?.botId ?? '');
-    const { options: deliveryOptions, hasChannels, resolveDelivery, getChannelInfo } = useDeliveryChannels(task.workspacePath);
+    const [editNotification, setEditNotification] = useState<NotificationConfig>(task.notification ?? { version: 1, desktop: task.notifyEnabled, im: { type: 'off' } });
+    const { getChannelInfo } = useDeliveryChannels(task.workspacePath);
     const isAtSchedule = editSchedule?.kind === 'at';
 
     useEffect(() => {
@@ -170,8 +162,8 @@ export default function CronTaskDetailPanel({ task, botInfo, onClose, onDelete, 
         setEditEndMode((task.endConditions.deadline || task.endConditions.maxExecutions) ? 'conditional' : 'forever');
         setEditDeadline(task.endConditions.deadline || '');
         setEditMaxExec(task.endConditions.maxExecutions ? String(task.endConditions.maxExecutions) : '');
-        setEditAiCanExit(task.endConditions.aiCanExit); setEditNotify(task.notifyEnabled);
-        setEditDeliveryBotId(task.delivery?.botId ?? '');
+        setEditAiCanExit(task.endConditions.aiCanExit);
+        setEditNotification(task.notification ?? { version: 1, desktop: task.notifyEnabled, im: { type: 'off' } });
         setIsEditing(true);
     }, [task]);
 
@@ -181,18 +173,6 @@ export default function CronTaskDetailPanel({ task, botInfo, onClose, onDelete, 
             const endConditions: CronEndConditions = isAtSchedule ? { aiCanExit: false }
                 : editEndMode === 'forever' ? { aiCanExit: editAiCanExit }
                 : { deadline: editDeadline ? new Date(editDeadline).toISOString() : undefined, maxExecutions: editMaxExec ? parseInt(editMaxExec, 10) : undefined, aiCanExit: editAiCanExit };
-            // Delivery update logic: set if resolved, clear if user chose default, preserve if unchanged
-            const deliveryFields: { delivery?: import('@/types/cronTask').CronDelivery; clearDelivery?: boolean } = {};
-            if (editDeliveryBotId) {
-                const resolved = resolveDelivery(editDeliveryBotId);
-                if (resolved) {
-                    deliveryFields.delivery = resolved;
-                }
-                // If channel was removed and can't resolve, don't touch delivery (preserve existing)
-            } else {
-                // User explicitly selected "桌面通知" (empty value) — clear delivery
-                deliveryFields.clearDelivery = true;
-            }
             const scheduleFields = editSchedule
                 ? {
                     schedule: editSchedule,
@@ -202,15 +182,14 @@ export default function CronTaskDetailPanel({ task, botInfo, onClose, onDelete, 
             const updatedTask = await cronClient.updateCronTaskFields(task.id, {
                 name: editName.trim() || undefined, prompt: editPrompt.trim(),
                 ...scheduleFields,
-                endConditions, notifyEnabled: editNotify,
-                ...deliveryFields,
+                endConditions, notification: editNotification,
             });
             if (!isMountedRef.current) return;
             onUpdated?.(updatedTask);
             toast.success(t('cron.detail.updateSuccess')); onClose(); // Close to refresh — cron:task-updated event triggers parent list reload
         } catch (err) { if (!isMountedRef.current) return; toast.error(t('cron.detail.updateFailed', { message: err instanceof Error ? err.message : String(err) })); }
         finally { if (isMountedRef.current) setIsSaving(false); }
-    }, [task.id, editName, editPrompt, editSchedule, editInterval, editEndMode, editDeadline, editMaxExec, editAiCanExit, editNotify, editDeliveryBotId, resolveDelivery, isAtSchedule, toast, onClose, onUpdated, t]);
+    }, [task.id, editName, editPrompt, editSchedule, editInterval, editEndMode, editDeadline, editMaxExec, editAiCanExit, editNotification, isAtSchedule, toast, onClose, onUpdated, t]);
 
     const handleDelete = useCallback(async () => {
         setIsDeleting(true); try { await onDelete(task.id); onClose(); } catch { /* caller handles */ } finally { if (isMountedRef.current) { setIsDeleting(false); setShowDeleteConfirm(false); } }
@@ -250,10 +229,11 @@ export default function CronTaskDetailPanel({ task, botInfo, onClose, onDelete, 
     const editErrors = useMemo(() => {
         if (!isEditing) return [];
         const errs: string[] = [];
+        if (!isNotificationTargetComplete(editNotification)) errs.push(t('notifications.completeTarget'));
         if (!editPrompt.trim()) errs.push(t('cron.detail.validation.promptRequired'));
         if (!editSchedule && editInterval < MIN_CRON_INTERVAL) errs.push(t('cron.detail.validation.intervalTooShort', { min: MIN_CRON_INTERVAL }));
         return errs;
-    }, [isEditing, editPrompt, editSchedule, editInterval, t]);
+    }, [isEditing, editPrompt, editSchedule, editInterval, editNotification, t]);
 
     return (
         <>
@@ -344,18 +324,7 @@ export default function CronTaskDetailPanel({ task, botInfo, onClose, onDelete, 
                                 {/* 任务通知 */}
                                 <div>
                                     <SectionHeader icon={BellIcon}>{t('cron.detail.sectionNotifications')}</SectionHeader>
-                                    <div className="mt-2 space-y-3">
-                                        <div className="flex items-center justify-between rounded-lg border border-[var(--line)] bg-[var(--paper)] px-4 py-3">
-                                            <span className="text-sm text-[var(--ink)]">{t('cron.settingsModal.notifyOnCompletion')}</span>
-                                            <ToggleSwitch enabled={editNotify} onChange={setEditNotify} />
-                                        </div>
-                                        {editNotify && hasChannels && (
-                                            <div className="space-y-2">
-                                                <label className="text-sm font-medium text-[var(--ink)]">{t('cron.settingsModal.deliveryChannel')}</label>
-                                                <CustomSelect value={editDeliveryBotId} options={deliveryOptions} onChange={setEditDeliveryBotId} placeholder={t('cron.settingsModal.desktopDefault')} />
-                                            </div>
-                                        )}
-                                    </div>
+                                    <div className="mt-2"><NotificationConfigEditor value={editNotification} onChange={setEditNotification} workspacePath={task.workspacePath} /></div>
                                 </div>
                             </>
                         ) : (
@@ -437,10 +406,12 @@ export default function CronTaskDetailPanel({ task, botInfo, onClose, onDelete, 
                                     <div className="mt-2 flex flex-wrap gap-2">
                                         <DetailTag label={task.notifyEnabled ? t('cron.detail.notificationOn') : t('cron.detail.notificationOff')} />
                                         {(() => {
-                                            if (!task.delivery) return <DetailTag label={t('cron.detail.desktopNotification')} />;
-                                            const info = getChannelInfo(task.delivery.botId);
-                                            if (!info) return <DetailTag label={t('cron.detail.removedChannel', { id: task.delivery.botId })} />;
-                                            return <DetailTag label={`${info.agentName}: ${info.name}`} />;
+                                            const target = task.notification?.im;
+                                            if (!target || target.type === 'off' || target.type === 'current') return <DetailTag label={t('notifications.off')} />;
+                                            if (target.type === 'recent-private' && target.scope === 'agent') return <DetailTag label={t('notifications.recentAgent', { name: target.agentId })} />;
+                                            const info = getChannelInfo(target.channelId);
+                                            const name = info ? `${info.agentName}: ${info.name}` : target.channelId;
+                                            return <DetailTag label={target.type === 'conversation' ? `${name} · ${target.sessionKey}` : t('notifications.recentChannel', { name })} />;
                                         })()}
                                     </div>
                                 </div>

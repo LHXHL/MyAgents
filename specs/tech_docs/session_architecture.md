@@ -80,7 +80,7 @@ DSH 原生会话使用官方 JSONL persistence，Runtime 自己的 coordination 
 - 尚未建立 snapshot 的兼容会话；
 - 独立的 Cloud registered Agent live-follow 场景。
 
-IM/Agent Channel 与桌面一样拥有完整 snapshot；消息、heartbeat、恢复均不回落到最新默认。新 IM Session 仅在出生时采用最高 unattended 权限。私聊 `/model` 经对应 Session Sidecar CAS 保存 snapshot，再经 SessionEngine 应用，并单独提交 Agent 默认；忙时下一轮生效。身份不兼容时主动创建并 handover，默认 reload 不再自动轮换。默认变化仅按既有私聊 binding 投递系统提示。
+IM/Agent Channel 与桌面一样拥有完整 snapshot；消息、heartbeat、恢复均不回落到最新默认。新 IM Session 仅在出生时采用最高 unattended 权限。私聊 `/model` 经对应 Session Sidecar CAS 保存 snapshot，再经 SessionEngine 应用，并单独提交 Agent 默认（Team AI Agent 改为同步该 peer 的专属配置，见 `im_integration_architecture.md`「Team AI 管理投影」）；忙时下一轮生效。身份不兼容时主动创建并 handover，默认 reload 不再自动轮换。默认变化仅按既有私聊 binding 投递系统提示。
 
 `providerRoute` 是 builtin provider/model 的 canonical identity，只持久化 provider 类型、provider id 与 model。API key、base URL、auth mode 和 aliases 始终从当前 `config.json` materialize，不能写入 Session 历史。`providerEnvJson` 只作为旧 Session 的只读兼容输入；新的 snapshot 写入必须使用 `providerRoute` 并移除 legacy env。
 
@@ -350,3 +350,10 @@ Sidecar ready 而 External/DSH Product Session 尚未绑定 workspace owner 时�
 `myagents im send-message` 的其他实际会话目标由 Rust Channel owner 解析为原 Router peer key；同会话继续直接发送。缺少目标 Session 时，复用 `ensure_peer_snapshot` 与 `ensure_sidecar` 建立正常绑定及其配置快照，不能伪造 ImMessage，也不修改入站授权。持有原 peer fence 和 model-work gate 完成 `prepare_existing_delivery` / Inbox ACK，无新增队列或重放记录。
 
 Inbox 的可选 `send.request.channelHandoff` 是宿主数据，目标 admission 与 beforeDispatch 都检查实际 Product Session、连接 UUID、peer ID/ID 类型及私聊/群聊归属；不是从 XML 推导路由。目标 Runtime 沿原 realtime Inbox 队列消费，图片经 SessionEngine.images 进入原图片输入及 transcript，文件沿目标工作区引用持久保留。发送模式由目标本轮冻结；accepted 只表示队列 ACK。不为交接创建 replyBack 元数据，不自动返回整个私聊结果。
+
+
+### Task 结果事件
+
+`task.result` 是本地 Inbox 类型化事件，携带 Task、delivery、attempt、执行 Session 和固定的 `ConversationRef`，不使用 `replyBack` 或网络返回路径。投递记录由 [TaskStore](task_center.md#task-通知策略与投递记录) 管理，Inbox 接纳只表示已排队。
+
+`admitTaskNotification` 复用 `runInjectedTurn` 和对应队列项的真实终态准备通知文本；模型、MCP 与权限仍来自目标 Session，输出交给通知调用方处理，不走普通 IM 自动回复。`automation/task_notification` 来源不触发第二次桌面完成通知。纯状态事件只使用既有 transcript 持久化和回放能力记录 Task 引用，不调用模型。队列繁忙时不改动正在执行轮次的场景，直到 `beforeDispatch` 实际开始处理该项时才应用场景并再次验证通知资格。

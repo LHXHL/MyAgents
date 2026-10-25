@@ -37,6 +37,7 @@ pub struct TaskTriggerCheckNowResult {
 
 #[derive(Debug)]
 struct ActiveTaskExecution {
+    notification_policy: Option<crate::task::NotificationConfig>,
     queue_id: String,
     canceled: bool,
     session_id: Option<String>,
@@ -273,6 +274,7 @@ impl TaskSchedulerController {
 
     pub async fn initialize(&self, handle: AppHandle) {
         *self.app_handle.write().await = Some(handle.clone());
+        crate::task::notification_worker::start(handle.clone());
         let Some(store) = crate::task::get_task_store() else {
             ulog_error!("[task-scheduler] TaskStore is not initialized");
             return;
@@ -1199,6 +1201,12 @@ impl TaskSchedulerController {
     /// batch. Exact queue authority gates the write, so a stop that wins first
     /// prevents later Session dispatch; once published, `/task/stop` can target
     /// the active SessionEngine turn.
+    pub(crate) async fn notification_policy_for_execution(&self, task_id: &str, queue_id: &str, session: &str) -> Result<crate::task::NotificationConfig, String> {
+        let active = self.executions.read().await;
+        let execution = active.get(task_id).filter(|e| !e.canceled && e.queue_id == queue_id && e.session_id.as_deref() == Some(session)).ok_or("Task notification source execution is stale")?;
+        execution.notification_policy.clone().ok_or_else(|| "Task notification execution snapshot unavailable".into())
+    }
+
     pub(crate) async fn bind_execution_session(
         &self,
         task_id: &str,
@@ -1246,6 +1254,7 @@ async fn claim_execution(executions: &ActiveExecutions, task_id: &str) -> Result
     active.insert(
         task_id.to_string(),
         ActiveTaskExecution {
+            notification_policy: None,
             queue_id: queue_id.clone(),
             canceled: false,
             session_id: None,
@@ -1274,6 +1283,7 @@ async fn claim_execution_if_open(
     active.insert(
         task_id.to_string(),
         ActiveTaskExecution {
+            notification_policy: None,
             queue_id: queue_id.clone(),
             canceled: false,
             session_id: None,
@@ -1303,6 +1313,7 @@ async fn claim_detector_invocation(
     active.insert(
         task_id.to_string(),
         ActiveTaskExecution {
+            notification_policy: None,
             queue_id: queue_id.clone(),
             canceled: false,
             session_id: None,
@@ -1339,6 +1350,7 @@ async fn claim_pending_activation(
     active.insert(
         task_id.to_string(),
         ActiveTaskExecution {
+            notification_policy: None,
             queue_id: queue_id.clone(),
             canceled: false,
             session_id: None,
@@ -2699,6 +2711,11 @@ async fn run_one_claimed(
     {
         return Ok(RunDisposition::Stop);
     }
+    {
+        let mut active = executions.write().await;
+        let execution = active.get_mut(task_id).filter(|e| e.queue_id == queue_id && !e.canceled).ok_or("Task execution was replaced")?;
+        execution.notification_policy = Some(task.notification.clone().map(crate::task::notification::migrate_legacy).unwrap_or_default());
+    }
     let started = Instant::now();
     let handle = app_handle
         .read()
@@ -2839,6 +2856,7 @@ async fn run_one_claimed(
             trigger,
             task.status,
             TaskExecutionSettlement {
+                result: outcome.as_ref().and_then(|o| o.output_text.clone()).unwrap_or_default(),
                 success: record.ok,
                 duration_ms: record.duration_ms,
                 session_id: outcome.as_ref().and_then(|value| value.session_id.clone()),
@@ -2925,9 +2943,6 @@ async fn run_one_claimed(
         .await;
     }
 
-    if let (Ok(handle), Some(outcome)) = (handle.as_ref(), outcome.as_ref()) {
-        crate::task_execution::deliver_task_result(handle, &task, outcome).await;
-    }
 
     // Task settlement is now authoritative. Session/Browser retirement is a
     // post-commit lifecycle effect and cannot rewrite the outcome above.
@@ -4245,6 +4260,7 @@ mod tests {
         executions.write().await.insert(
             "task-1".to_string(),
             ActiveTaskExecution {
+                notification_policy: None,
                 queue_id: "queue-1".to_string(),
                 canceled: false,
                 session_id: Some("session-1".to_string()),
@@ -5008,6 +5024,7 @@ mod tests {
                 TaskExecutionTrigger::Scheduled,
                 task.status,
                 TaskExecutionSettlement {
+                    result: String::new(),
                     success: false,
                     duration_ms: 1,
                     session_id: rejected.session_id.clone(),
@@ -5150,4 +5167,21 @@ mod tests {
             assert!(next_execution_at(&task).unwrap().is_some());
         }
     }
+    #[tokio::test]
+    async fn parent_notification_policy_requires_the_exact_live_execution() {
+        let scheduler = TaskSchedulerController::new();
+        scheduler.executions.write().await.insert("parent".into(), ActiveTaskExecution {
+            notification_policy: Some(crate::task::NotificationConfig { desktop: false, im: Some(crate::task::notification::NotificationTarget::Off), events: Some(vec![]), ..Default::default() }),
+            queue_id: "q1".into(), canceled: false, session_id: Some("B".into()), pending_session_birth: None,
+            state: TaskExecutionState::Running, error: None, detector: None,
+        });
+        let policy = scheduler.notification_policy_for_execution("parent", "q1", "B").await.unwrap();
+        assert!(!policy.desktop); assert_eq!(policy.events, Some(vec![]));
+        for (task, queue, session) in [("other", "q1", "B"), ("parent", "q2", "B"), ("parent", "q1", "A")] {
+            assert!(scheduler.notification_policy_for_execution(task, queue, session).await.is_err());
+        }
+        scheduler.executions.write().await.get_mut("parent").unwrap().canceled = true;
+        assert!(scheduler.notification_policy_for_execution("parent", "q1", "B").await.is_err());
+    }
+
 }

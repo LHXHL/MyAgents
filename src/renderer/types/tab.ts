@@ -1,3 +1,4 @@
+import type { TeamAiTab } from '@/features/team-ai/tabContract';
 import type { AgentNetworkTab } from '@/features/agent-network/tabContract';
 // Builtin-edition Tab model and shared constructors.
 
@@ -31,7 +32,7 @@ export type { RecordTab } from '@/features/record/tabContract';
 
 /** Closed union for the builtin MyAgents edition. Downstream editions extend
  * their own closed union and composition explicitly. */
-export type Tab = LauncherTab | ChatTab | SettingsTab | CapabilitiesTab | TaskCenterTab | SpaceTab | RecordTab | AgentNetworkTab;
+export type Tab = LauncherTab | ChatTab | SettingsTab | CapabilitiesTab | TaskCenterTab | SpaceTab | RecordTab | AgentNetworkTab | TeamAiTab;
 
 export type TabKind = Tab['view'];
 export type TabOf<K extends TabKind> = Extract<Tab, { view: K }>;

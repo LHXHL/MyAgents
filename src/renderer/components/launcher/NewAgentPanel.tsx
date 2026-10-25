@@ -84,6 +84,7 @@ interface TemplateEdit {
 }
 
 interface NewAgentPanelProps {
+  purpose?: Project['purpose'];
   onClose: () => void;
   /** Fired after the workspace is registered, right before the panel closes. */
   onCreated: (project: Project) => void;
@@ -122,7 +123,7 @@ async function folderLeaf(path: string): Promise<string> {
   return splitPathForDisplay(path).leaf || path;
 }
 
-export default memo(function NewAgentPanel({ onClose, onCreated }: NewAgentPanelProps) {
+export default memo(function NewAgentPanel({ onClose, onCreated, purpose }: NewAgentPanelProps) {
   const { t } = useTranslation('launcher');
   const toast = useToast();
   const { projects, addProject } = useConfig();
@@ -373,6 +374,7 @@ export default memo(function NewAgentPanel({ onClose, onCreated }: NewAgentPanel
       let project: Project;
       if (draft.kind === 'local') {
         project = await addProject(draft.folderPath, {
+          purpose,
           displayName,
           icon: draft.icon || undefined,
           onExisting: 'reject',
@@ -394,6 +396,7 @@ export default memo(function NewAgentPanel({ onClose, onCreated }: NewAgentPanel
           throw new Error('Template has no source path');
         }
         project = await addProject(destPath, {
+          purpose,
           displayName,
           icon: draft.icon || undefined,
           templateId: template.id,
@@ -416,7 +419,7 @@ export default memo(function NewAgentPanel({ onClose, onCreated }: NewAgentPanel
         setError(t('newAgentPanel.errors.createFailed', { message: errorMessage(err) }));
       }
     }
-  }, [addProject, busy, canCreate, draft, onClose, onCreated, t, template]);
+  }, [addProject, busy, canCreate, draft, onClose, onCreated, purpose, t, template]);
 
   // ---------- user templates ----------
 
