@@ -140,7 +140,21 @@ myagents task run <taskId> --json
 
 创建、`get`、`run`、`rerun` 的 JSON 结果都提供固定的 `data.receipt`：从这里读取 `taskId`、`status`、`statusMeaning`、`changed`、`nextExecutionAt`、瞬时 `executionState` 和 `resultAccess`，不要猜测不同命令的旧字段层级。`Running` 只表示 scheduler enabled；重复或并发 `task run` 已经 Running 的 Task 会成功返回 `changed: false`，不会创建第二次派发，也不应重试。`start`、`stop` 的既有回执仍包含权威状态与 `nextExecutionAt`。首次从 Todo 启用用 `task run`；暂停后恢复用 `task start`；终态重新派发用 `task rerun`。不要通过目录时间或猜测名称寻找刚创建的 Task。
 
-`resultAccess` 只解释现有结果通道：`single-session` 的结果留在绑定 Session；`new-session` 的结果留在各次执行 Session 和 `task runs` 历史。系统不会把执行结果自动推回创建 Task 的 Session，也不会把普通 assistant 输出自动复制为 Task 评论；需要沉淀到本地时间线时由 Agent 显式调用 `task comment`。
+`resultAccess` 只解释现有结果通道：`single-session` 的结果留在绑定 Session；`new-session` 的结果留在各次执行 Session 和 `task runs` 历史。通知回报位置由 `notification` 决定：通过 Channel 对话创建时默认回到原聊天的当前 Session；执行 Task 中创建后续 Task 则继承本次执行的通知策略，包括 off。普通 assistant 输出不会自动复制为 Task 评论，需要沉淀到本地时间线时显式调用 `task comment`。
+
+## 通知与结果回报
+
+执行 Session 与通知收件人是两个独立选择。普通 Agent 和 Team AI 都默认回发起的 Channel + sessionKey；GUI 或无宿主上下文的 CLI 默认关闭 IM。创建后从 `task get` 核对最终规则、来源和可用性，不能从 prompt 中猜来源 ID。
+
+需要覆盖默认时用 `--notificationTarget off`、`--notificationTarget current`，或 `--notificationTargetFile target.json`。文件内容例如：
+
+```json
+{"type":"conversation","channelId":"实际连接 ID","sessionKey":"该连接已知聊天的 sessionKey"}
+```
+
+固定某连接最近私聊用 `{"type":"recent-private","scope":"channel","channelId":"..."}`；明确允许跨平台跟随同 Agent 最近私聊用 `{"type":"recent-private","scope":"agent","agentId":"..."}`。`current` 必须有确定来源，否则报错。`--notificationDesktop false` 只关闭桌面，`--notificationEvents '[]'` 不订阅事件；更新省略字段保持原值。
+
+Task 结果由目标聊天当前 Session 转述，自动通知遵守 `auto/tool_only`。`task get` 的 `notificationDeliveries` 是投递状态，排队不等于已发。失败用 `task notification <taskId> --deliveryId <id> --action retry` 重试回报；unknown/partial 先核对目标，只有明确接受可能重复时才 `resend`；`cancel` 取消该条回报。以上操作均不重跑 Task。改规则只影响后续产生的回报。
 
 ## 治理
 

@@ -3057,6 +3057,18 @@ export function setRuntimeSessionId(id: string): void {
  * Called from index.ts when an external runtime session is reopened from history.
  * Sets lastRuntimeSessionId so sendExternalMessage uses resume instead of new session.
  */
+export async function recordExternalNotificationEvent(id: string, text: string): Promise<void> {
+  const sessionId = getExternalSessionId();
+  if (!sessionId) throw new Error('Notification target Session is unavailable');
+  const message = getExternalSessionMessagesSnapshot().find(item => item.id === id)
+    ?? { id, role: 'user' as const, content: text, timestamp: new Date().toISOString() };
+  if (!getExternalSessionMessagesSnapshot().some(item => item.id === id)) pushExternalSessionMessage(message);
+  await persistExternalUserMessageAppend(sessionId, id, '[task-notification] Cannot record status event');
+  const writer = getActiveSessionTranscript(sessionId)?.writer;
+  if (writer && !(await writer.flush())) throw new Error('Could not persist notification status event');
+  broadcast('chat:message-replay', createLiveUserMessageReplay(sessionId, message));
+}
+
 export async function restoreExternalSessionState(
   sessionId: string,
   workspacePath: string,
@@ -12021,3 +12033,6 @@ function applyUnifiedEvent(event: UnifiedEvent): void {
       break;
   }
 }
+
+// Frozen current-turn projection exposed through the runtime facade.
+export { getExternalChannelSnapshot } from './external-session/turn-lifecycle';

@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { channelMessageSchema } from '../shared/channelMessage';
 /**
  * myagents — Self-Configuration CLI for MyAgents
@@ -2713,28 +2714,19 @@ function printTaskDetail(task: Record<string, unknown>): void {
     if (end.aiCanExit === false) console.log(`  AI can exit:    no (must run to end conditions)`);
   }
 
-  // Notification — for unattended modes (recurring / scheduled / loop), the
-  // absence of a bot channel is decision-relevant: the task runs to disk but
-  // nothing reaches the user's IM. Surface this even when `notification` is
-  // None so CLI users don't have to grep `management_api.rs` to learn the
-  // mechanism exists (issue #205 gap #6).
   const notif = task.notification as Record<string, unknown> | undefined;
-  const unattended = mode === 'recurring' || mode === 'scheduled' || mode === 'loop';
-  if (notif) {
-    console.log('\nNotification:');
-    console.log(`  Desktop:        ${notif.desktop !== false ? 'on' : 'off'}`);
-    if (notif.botChannelId) {
-      console.log(`  Bot channel:    ${notif.botChannelId}`);
-    } else if (unattended) {
-      console.log('  Bot channel:    (not set — IM push disabled; set --notificationBotChannelId via `task update`)');
-    }
-    if (Array.isArray(notif.events) && (notif.events as string[]).length > 0) {
-      console.log(`  Events:         ${(notif.events as string[]).join(', ')}`);
-    }
-  } else if (unattended) {
-    console.log('\nNotification:');
-    console.log('  Desktop:        on (default)');
-    console.log('  Bot channel:    (not set — IM push disabled; set --notificationBotChannelId via `task update`)');
+  console.log('\nNotification:');
+  console.log(`  Desktop:        ${notif?.desktop !== false ? 'on' : 'off'}`);
+  console.log(`  IM target:      ${JSON.stringify(notif?.im ?? { type: 'off' })}`);
+  console.log(`  Default source: ${notif?.source ?? 'default'}`);
+  if (notif?.error) console.log(`  Unavailable:    ${notif.error}`);
+  if (Array.isArray(notif?.events)) console.log(`  Events:         ${notif.events.join(', ') || '(none)'}`);
+  const destination = task.notificationDestination as { label?: string; availability?: string; reason?: string } | undefined;
+  if (destination) console.log(`  Destination:    ${destination.label} (${destination.availability})${destination.reason ? ` — ${destination.reason}` : ''}`);
+  const notifications = task.notificationDeliveries as Array<Record<string, unknown>> | undefined;
+  if (notifications?.length) {
+    const latest = notifications[notifications.length - 1];
+    console.log(`  Latest:         ${latest.state} (${latest.id})${latest.error ? ` — ${latest.error}` : ''}`);
   }
 
   // Sessions + source Record
@@ -3465,7 +3457,7 @@ const PUBLISHED_ADMIN_ROUTES = new Set([
   'cc-plugin/list', 'cc-plugin/show', 'cc-plugin/install', 'cc-plugin/uninstall', 'cc-plugin/enable', 'cc-plugin/disable',
   'skill/list', 'skill/info', 'skill/add', 'skill/remove', 'skill/enable', 'skill/disable', 'skill/sync',
   'config/list', 'config/get', 'config/set', 'config/unset',
-  'task/list', 'task/get', 'task/comments', 'task/comment', 'task/create-direct', 'task/create-attached', 'task/run',
+  'task/list', 'task/get', 'task/notification', 'task/comments', 'task/comment', 'task/create-direct', 'task/create-attached', 'task/run',
   'task/run-now', 'task/rerun', 'task/trigger/validate', 'task/trigger/test', 'task/check-now',
   'task/reset-checkpoint', 'task/update', 'task/update-status', 'task/start', 'task/stop', 'task/runs', 'task/append-session', 'task/archive', 'task/delete',
   'thought/list', 'thought/create', 'record/list', 'record/create', 'record/get', 'record/delete',
@@ -5886,6 +5878,13 @@ export function buildRequestBody(
       };
     }
     if (action === 'get') return { id: requirePositional(rest[0] ?? (flags.id as string | undefined), 'task-id', 'task get', 'id') };
+    if (action === 'notification') {
+      const taskId = requirePositional(rest[0] ?? (flags.id as string | undefined), 'task-id', 'task notification', 'id');
+      const deliveryId = requireNonEmptyStringFlag(flags.deliveryId, 'deliveryId', 'task notification');
+      const operation = requireNonEmptyStringFlag(flags.action, 'action', 'task notification');
+      if (!['retry', 'resend', 'cancel'].includes(operation)) throw new Error('--action must be retry, resend (may duplicate), or cancel');
+      return { taskId, deliveryId, action: operation };
+    }
     if (action === 'comments') {
       const limit = flags.limit === undefined ? undefined : Number(flags.limit);
       if (
@@ -6968,19 +6967,30 @@ function buildTaskEndConditions(
 function buildNotificationFromFlags(
   flags: Record<string, unknown>,
 ): Record<string, unknown> | undefined {
+  const target = flags.notificationTarget;
+  const targetFile = flags.notificationTargetFile;
   const channel = flags.notificationBotChannelId;
   const thread = flags.notificationBotThread;
   const desktop = flags.notificationDesktop;
   const events = flags.notificationEvents;
   if (
-    channel === undefined
+    target === undefined && targetFile === undefined
+    && channel === undefined
     && thread === undefined
     && desktop === undefined
     && events === undefined
   ) {
     return undefined;
   }
-  const out: Record<string, unknown> = {};
+  const out: Record<string, unknown> = { version: 1 };
+  if (target !== undefined || targetFile !== undefined) {
+    if (channel !== undefined || thread !== undefined || (target !== undefined && targetFile !== undefined)) throw new Error('Do not mix new/legacy notification targets or target and targetFile');
+    const raw = targetFile !== undefined ? readFileSync(String(targetFile), 'utf8') : target;
+    if (typeof raw !== 'string') throw new Error('--notificationTarget requires off, current, or a JSON target');
+    const parsed = raw === 'off' || raw === 'current' ? { type: raw } : JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Notification target must be an object');
+    out.im = parsed;
+  }
   if (desktop !== undefined) {
     // Accept `true` / `false` strings (CLI parser leaves un-quoted bools as
     // strings) and any truthy/falsy value; explicit `false` MUST disable.
@@ -7028,16 +7038,7 @@ function buildNotificationFromFlags(
           '--notificationEvents must be a comma-separated string (e.g. done,blocked,endCondition)',
       });
     }
-    const eventsList = events.split(',').map(s => s.trim()).filter(Boolean);
-    if (eventsList.length === 0) {
-      // Empty list would silently mean "subscribe to nothing" — almost
-      // certainly a typo (`--notificationEvents=,,,` or empty string).
-      return exitAgentCliError(flags, {
-        code: 'NOTIFICATION_EVENTS_INVALID',
-        error:
-          '--notificationEvents resolved to an empty list. Pass at least one event (e.g. done,blocked,endCondition) or omit the flag to use the default set.',
-      });
-    }
+    const eventsList = events === '[]' ? [] : events.split(',').map(s => s.trim()).filter(Boolean);
     out.events = eventsList;
   }
   return out;

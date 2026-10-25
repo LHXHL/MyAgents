@@ -13,6 +13,7 @@ export type SessionEventType =
   | 'watch.error'
   | 'space.issue_delivery'
   | 'task.comment'
+  | 'task.result'
   | 'network.return_unavailable';
 
 export type SourceNotification = 'auto' | 'none';
@@ -107,6 +108,19 @@ export interface TaskCommentEvent extends SessionEventBase {
   };
 }
 
+export interface TaskResultEvent extends SessionEventBase {
+  type: 'task.result';
+  taskId: string;
+  deliveryId: string;
+  attemptId: string;
+  targetSessionId: string;
+  conversation: { channelId: string; sessionKey: string };
+  title: string;
+  payload: string;
+  statusOnly: boolean;
+  sameSession: boolean;
+}
+
 /** Local App transport notification; never accepted as a remote return event. */
 export interface NetworkReturnUnavailableEvent extends SessionEventBase {
   type: 'network.return_unavailable';
@@ -117,7 +131,7 @@ export interface NetworkReturnUnavailableEvent extends SessionEventBase {
   payload: string;
 }
 
-export type SessionEvent = NetworkReturnUnavailableEvent | SendRequestEvent | SendResultEvent | WatchEvent | SpaceIssueDeliveryEvent | TaskCommentEvent;
+export type SessionEvent = TaskResultEvent | NetworkReturnUnavailableEvent | SendRequestEvent | SendResultEvent | WatchEvent | SpaceIssueDeliveryEvent | TaskCommentEvent;
 type RenderableSessionEvent = Exclude<SessionEvent, SpaceIssueDeliveryEvent | TaskCommentEvent>;
 
 const HTML_ESCAPE_MAP: Record<string, string> = {
@@ -216,6 +230,8 @@ function renderOpenTag(event: RenderableSessionEvent): string {
     event.type === 'network.return_unavailable' ? attr('reason', event.reason) : null,
     event.type === 'network.return_unavailable' ? attr('request_event_id', event.requestEventId) : null,
     event.type === 'network.return_unavailable' ? attr('watch_id', event.watchId) : null,
+    event.type === 'task.result' ? attr('task_id', event.taskId) : null,
+    event.type === 'task.result' ? attr('delivery_id', event.deliveryId) : null,
     attr('created_at', event.createdAt),
   ].filter(Boolean);
 
@@ -224,6 +240,8 @@ function renderOpenTag(event: RenderableSessionEvent): string {
 
 function summaryForEvent(event: RenderableSessionEvent): string {
   switch (event.type) {
+    case 'task.result':
+      return 'MyAgents returned a Task result to this conversation. Explain the result to the user. The host will deliver your final response: do not call IM sending tools, rerun the Task, or reply to its execution Session. Preserve the Task/result reference for follow-up.';
     case 'network.return_unavailable':
       return 'MyAgents could not deliver the remote result after connection recovery ended. This notification does not determine whether the remote task succeeded or failed.';
     case 'send.request':

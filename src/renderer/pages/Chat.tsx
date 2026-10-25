@@ -2433,6 +2433,7 @@ export default function Chat({
             runMode: launchMessage.cron.runMode,
             notifyEnabled: launchMessage.cron.notifyEnabled,
             schedule: launchMessage.cron.schedule,
+            notification: launchMessage.cron.notification,
             delivery: launchMessage.cron.delivery,
             model: cronExecution.model,
             permissionMode: cronPermissionMode,
@@ -2533,6 +2534,7 @@ export default function Chat({
               runMode: launchMessage.cron.runMode,
               notifyEnabled: launchMessage.cron.notifyEnabled,
               schedule: launchMessage.cron.schedule,
+              notification: launchMessage.cron.notification,
               delivery: launchMessage.cron.delivery,
               model: cronExecution.model,
               permissionMode: cronPermissionMode,
@@ -4753,6 +4755,7 @@ export default function Chat({
                 runtime: cronExecution.runtime,
                 runtimeConfig: cronExecution.runtimeConfig,
                 schedule: cron.config.schedule,
+                notification: cron.config.notification,
                 delivery: cron.config.delivery,
               });
               setCronCardTask(created.task);

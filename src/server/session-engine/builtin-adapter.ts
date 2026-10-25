@@ -26,6 +26,8 @@ import {
   isBuiltinWaitingForUser,
   getQueueStatus,
   getCurrentTurnIdentity as getBuiltinCurrentTurnIdentity,
+  getCurrentChannelSnapshot,
+  recordNotificationEvent,
   getCurrentImBridgeTurnContext,
   getDispatchedTurnIdentity as getBuiltinDispatchedTurnIdentity,
   hasQueuedTurnByOwner as hasBuiltinQueuedTurnByOwner,
@@ -386,6 +388,10 @@ export function createBuiltinSessionEngine(): SessionEngine {
       return getBuiltinCurrentTurnIdentity();
     },
 
+    recordNotificationEvent,
+
+    getNotificationConversation() { return getCurrentChannelSnapshot()?.scope.conversationRef ?? null; },
+
     getExecutionTurnId() { return getBuiltinDispatchedTurnIdentity()?.queueId ?? null; },
 
     getActiveImBridgeTurnContext() {
@@ -742,8 +748,6 @@ export function createBuiltinSessionEngine(): SessionEngine {
 
     async runInjectedTurn(request: InjectedTurnRequest): Promise<InjectedTurnResult> {
       const deadline = Date.now() + request.timeoutMs;
-      await setInteractionScenario(request.scenario);
-      getAndClearLastAgentError();
       const queueId = request.queueId ?? randomUUID();
       let observedOutcome: TurnTerminalOutcome | undefined;
       let resolveTerminal!: (outcome: TurnTerminalOutcome) => void;
@@ -754,8 +758,17 @@ export function createBuiltinSessionEngine(): SessionEngine {
       if (routed.error) {
         return { success: false, enqueued: false, error: routed.error, status: routed.status };
       }
+      const prior = request.beforeDispatch ?? acceptInjectedTurnDispatch;
+      const promoted: DispatchGuard = async () => {
+        const result = await prior();
+        if (!result.accepted) return result;
+        await setInteractionScenario(request.scenario);
+        getAndClearLastAgentError();
+        return result;
+      };
+      promoted.cancel = () => prior.cancel?.();
       const beforeDispatch = createScheduledDispatchGuard({
-        preceding: request.beforeDispatch ?? acceptInjectedTurnDispatch,
+        preceding: promoted,
         requiredSystemSkill: request.requiredSystemSkill,
         requireNativeSystemSkill: skill => requireCurrentBuiltinSkill(skill),
       });
@@ -806,6 +819,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
         beforeDispatch.cancel?.();
         return { success: false, enqueued: false, error: enqueueResult.error, status: 503 };
       }
+      request.onEnqueued?.(queueId);
       const dispatchAcceptance = enqueueResult.dispatchAcceptance
         ? await waitForDeadline(enqueueResult.dispatchAcceptance, Math.max(0, deadline - Date.now()))
         : null;

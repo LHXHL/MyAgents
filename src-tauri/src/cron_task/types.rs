@@ -126,6 +126,8 @@ pub enum CronSchedule {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CronTask {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notification: Option<crate::task::NotificationConfig>,
     pub id: String,
     pub workspace_path: String,
     pub session_id: String,
@@ -228,6 +230,8 @@ pub struct CronTask {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CronTaskConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notification: Option<crate::task::NotificationConfig>,
     pub workspace_path: String,
     pub session_id: String,
     pub prompt: String,

@@ -7746,6 +7746,22 @@ export function getLastBuiltinAssistantText(): string {
   return '';
 }
 
+export async function recordNotificationEvent(id: string, text: string): Promise<void> {
+  const existing = getMessages().find(message => message.id === id);
+  const message: MessageWire = existing ?? { id, role: 'user', content: text, timestamp: new Date().toISOString() };
+  if (!existing) appendMessage(message);
+  // A prior persistence failure may have left the message only in memory.
+  // Idempotent retries must still cross the durable transcript boundary.
+  await persistMessagesToStorage();
+  const writer = getBuiltinProductContent()?.writer;
+  if (writer && !(await writer.flush())) throw new Error('Could not persist notification status event');
+  broadcast('chat:message-replay', createLiveUserMessageReplay(sessionId, message));
+}
+
+export function getCurrentChannelSnapshot() {
+  return peekPendingOutputOwner()?.sourceItem?.channelSnapshot ?? null;
+}
+
 export function getCurrentTurnIdentity(): TurnIdentity | null {
   return getBuiltinCurrentTurnIdentity()
     ?? getPromotedTurnIdentity()

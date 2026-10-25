@@ -56,9 +56,9 @@ Telegram、钉钉、飞书由 MyAgents 桌面应用直接提供配置向导并�
 
 ## IM 中的媒体与结果
 
-Agent 在 IM Session 中可以发送图片、视频或文件，但只允许来自当前 Workspace、MyAgents scratch 或明确安全临时目录的文件。普通桌面 Session 调用 IM media 命令会得到“No IM context”，这是作用域边界，不是产品故障。
+Agent 可通过现有 IM 命令发送文本与当前平台支持的附件，文件必须通过工作区/安全路径校验。当前绑定位置可以直接发送；不同位置通过目标会话 handoff 接续。没有默认绑定的桌面或后台 Session，可以显式指定所属 Agent 的 Channel 和目标，并提供转交正文与背景；不能把“没有默认绑定”理解为所有发送能力均不可用。
 
-Task、Goal 和 heartbeat 的结果需要回到触发它们的正确 Channel/peer。用户看到“任务执行了但发给了另一个聊天”属于实际路由异常，应转 support。
+Task 的执行 Session、结果保存位置和通知目标是不同配置。普通 Agent 和 Team AI 在 Channel 聊天中创建 Task，默认保存发起的 Channel + sessionKey；结果回到该聊天当前绑定的 Session 转述。显式目标可覆盖，GUI/无上下文 CLI 默认关闭 IM；当前 Task 中创建后续 Task 则继承本次通知策略。固定 Channel 最近私聊与 Agent 跨平台最近私聊是两个明确选项。Task 回报独立于 Heartbeat；排队接纳不等于平台送达，详情里的投递回执用于查看/重试/取消。Goal、普通回复和 heartbeat 保持各自规则。详见 `automation.md`。
 
 ## AI 小助理
 

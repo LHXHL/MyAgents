@@ -17,6 +17,7 @@ import { resolveAgentWorkspaceProjections } from '../../shared/agentWorkspaceIde
 const AUTO_CHAT_ID = '_auto_';
 
 export interface DeliveryChannelInfo {
+  agentId: string;
   botId: string;
   chatId: string;
   platform: string;
@@ -104,7 +105,17 @@ export function useDeliveryChannels(currentWorkspacePath?: string) {
     const otherGroups: ChannelGroup[] = [];
 
     // Collect entries and sort by agentId for stable ordering
-    const sortedEntries = Object.entries(statuses).sort(([a], [b]) => a.localeCompare(b));
+    const projected = { ...statuses };
+    for (const agent of agents) {
+      const live = projected[agent.id];
+      projected[agent.id] = {
+        ...live, agentId: agent.id, agentName: live?.agentName ?? agent.name,
+        channels: [...(live?.channels ?? []), ...(agent.channels ?? [])
+          .filter(ch => !live?.channels.some(item => item.channelId === ch.id))
+          .map(ch => ({ channelId: ch.id, channelType: ch.type, name: ch.name, status: 'stopped' }))],
+      } as (typeof statuses)[string];
+    }
+    const sortedEntries = Object.entries(projected).sort(([a], [b]) => a.localeCompare(b));
 
     for (const [agentKey, agentStatus] of sortedEntries) {
       if (agentStatus.channels.length === 0) continue;
@@ -126,6 +137,7 @@ export function useDeliveryChannels(currentWorkspacePath?: string) {
         const statusColor = ch.status === 'online' ? 'text-[var(--success)]' : 'text-[var(--ink-muted)]';
 
         map.set(ch.channelId, {
+          agentId,
           botId: ch.channelId,
           chatId: AUTO_CHAT_ID,
           platform: ch.channelType,
@@ -179,5 +191,5 @@ export function useDeliveryChannels(currentWorkspacePath?: string) {
     return channelMap.get(botId);
   }, [channelMap]);
 
-  return { options, hasChannels, loading, resolveDelivery, getChannelInfo };
+  return { options, hasChannels, loading, resolveDelivery, getChannelInfo, channels: [...channelMap.values()] };
 }

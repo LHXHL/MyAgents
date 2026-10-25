@@ -6,6 +6,7 @@ import CronTaskSettingsModal, { type CronInitialConfig } from './CronTaskSetting
 
 vi.mock('@/hooks/useDeliveryChannels', () => ({
   useDeliveryChannels: () => ({
+    channels: [],
     options: [],
     hasChannels: false,
     resolveDelivery: vi.fn(),

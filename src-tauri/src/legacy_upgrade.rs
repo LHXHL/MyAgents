@@ -38,6 +38,8 @@ fn notification_from_cron(cron: &cron_task::CronTask) -> task::NotificationConfi
             "blocked".to_string(),
             "endCondition".to_string(),
         ]),
+        version: None,
+        ..Default::default()
     }
 }
 

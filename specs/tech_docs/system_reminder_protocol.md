@@ -70,9 +70,11 @@ Space IssueDelivery 在这层通用 envelope 内还有独立的 Registered Agent
 
 因此 `turnCount` 可以统计所有持久 user turn，`humanQueryCount` 只统计真人输入，而 preview/search/detail 只展示 visible 内容；三者不应为了数值一致而复用同一个 classifier。
 
-Cron 结果投送 IM session 时使用 `HEARTBEAT` builder：task metadata 和结果留在 hidden
-payload，`[System]收到来自系统投送的信息` 是唯一 visible tail。完整 wire shape 由
-`src/server/utils/cron-event-relay.ts` 与测试拥有，不在本文复制模板。
+Task（含 Cron 兼容入口）的当前结果通知通过既有 Inbox 的本地 `task.result` 事件进入目标
+Session；`renderSessionEventPrompt` 使用 `myagents-session-event` envelope 携带 Task、delivery
+及结果关联。Task 通知由 TaskStore 管理，转述采用 caller-owned 输出，不再进入 Heartbeat
+pending/wake 通路。普通 Heartbeat 保持原协议；`cron-event-relay` 仅保留旧 heartbeat 请求
+中 cron event payload 的兼容格式，不是当前 Task 通知入口。
 
 ## 前端展示规则
 
@@ -102,7 +104,7 @@ payload，`[System]收到来自系统投送的信息` 是唯一 visible tail。�
 
 | Tag | Badge | 主要生产入口 |
 |-----|-------|--------------|
-| `HEARTBEAT` | Heartbeat / 心跳感知 | 普通 heartbeat、Cron 结果转述投送 |
+| `HEARTBEAT` | Heartbeat / 心跳感知 | 普通 heartbeat；保留旧 cron event payload 的兼容格式，当前 Task 通知不使用它 |
 | `CRON_TASK` | Cron task / 定时任务 | Cron task 执行 prompt |
 | `FLOATING_BALL_CONTEXT` | Floating context / 浮球上下文 | 浮球消息上下文注入 |
 | `myagents-space-issue` | Space issue | Agent 提及 | `src/shared/agentMentions.ts::composeQueryReminder`，调用方 SessionEngine facade | 单 leading envelope 内的 `<AGENT_MENTIONS>`；正文保留完整代号，不自动执行协作 |
@@ -136,7 +138,8 @@ payload，`[System]收到来自系统投送的信息` 是唯一 visible tail。�
 | 浮球消息 | `src/shared/systemReminder.ts::buildFloatingBallContextReminder`，调用方 `src/renderer/floating-ball/useFloatingSession.ts` 提供 typed context，SessionEngine facade 组合 | `<system-reminder><FLOATING_BALL_CONTEXT>...</FLOATING_BALL_CONTEXT></system-reminder>` + 用户文本 |
 | Agent 提及 | `src/shared/agentMentions.ts::composeQueryReminder`，调用方 SessionEngine facade | 单 leading envelope 内的 `<AGENT_MENTIONS>`；正文保留完整代号，不自动执行协作 |
 | Space IssueDelivery | `src-tauri/src/space_cloud/delivery.rs::build_space_issue_delivery_message_for_locale` | `<system-reminder><myagents-space-issue>…</myagents-space-issue></system-reminder>` + 本地化可见提示 |
-| Cron 结果投送 IM session | `src/server/utils/cron-event-relay.ts::buildCronEventRelayMessage` | `<system-reminder><HEARTBEAT>...</HEARTBEAT></system-reminder>` + `[System]收到来自系统投送的信息` |
+| Task 结果回到聊天 | `src/server/inbox/session-event.ts::renderSessionEventPrompt`，调用方 `session-engine/task-notification.ts` | 既有 `<myagents-session-event type="task.result">` envelope；只接受本地宿主事件，复用原展示协议，不新增 badge |
+| 旧 heartbeat cron payload 兼容 | `src/server/utils/cron-event-relay.ts::buildCronEventRelayMessage` | `<system-reminder><HEARTBEAT>...</HEARTBEAT></system-reminder>` + `[System]收到来自系统投送的信息`；当前 TaskStore 通知不调用此路径 |
 
 command Trigger 命中时仍使用 `CRON_TASK` 这一兼容 tag；builder 在 hidden payload 中追加规范化 `<activation-event>`，只包含 event id/kind/time、reason code 与 untrusted handoff。Detector checkpoint、stderr、命令路径和 harness error 永不进入 Session。handoff 来自外部事实，必须被 XML escape 并明确作为不可信上下文；它不能覆盖 `task.md`、消息 role 或 Session/Runtime 配置。没有 Activation Event 的 always Task 保持原 reminder wire shape。
 
@@ -201,7 +204,12 @@ Space 的内部 trust boundary 不改变通用 reminder wire protocol：Cloud �
   envelope。
 - 如果影响标题/预览/搜索跳转，补对应 helper 的单测。
 
-Cron 结果投送 IM session 的回归样例见：
+当前 Task 结果转述及原 session-event envelope 的回归见：
+
+- `src/server/session-engine/task-notification.unit.test.ts`
+- `src/server/inbox/session-event.unit.test.ts`
+
+旧 heartbeat cron payload 与其显示兼容的回归样例见：
 
 - `src/server/utils/cron-event-relay.unit.test.ts`
 - `src/renderer/components/Message.proseContext.test.tsx`

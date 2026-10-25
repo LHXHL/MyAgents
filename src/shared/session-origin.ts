@@ -19,6 +19,7 @@ export type OriginSurface =
   | 'external_link'
   | 'cron'
   | 'task_run'
+  | 'task_notification'
   | 'memory_update'
   | 'channel_message'
   | 'channel_heartbeat'
@@ -80,6 +81,7 @@ const ORIGIN_SURFACES: readonly OriginSurface[] = [
   'external_link',
   'cron',
   'task_run',
+  'task_notification',
   'memory_update',
   'channel_message',
   'channel_heartbeat',

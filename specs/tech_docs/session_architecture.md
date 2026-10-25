@@ -350,3 +350,8 @@ Sidecar ready 而 External/DSH Product Session 尚未绑定 workspace owner 时�
 `myagents im send-message` 的其他实际会话目标由 Rust Channel owner 解析为原 Router peer key；同会话继续直接发送。缺少目标 Session 时，复用 `ensure_peer_snapshot` 与 `ensure_sidecar` 建立正常绑定及其配置快照，不能伪造 ImMessage，也不修改入站授权。持有原 peer fence 和 model-work gate 完成 `prepare_existing_delivery` / Inbox ACK，无新增队列或重放记录。
 
 Inbox 的可选 `send.request.channelHandoff` 是宿主数据，目标 admission 与 beforeDispatch 都检查实际 Product Session、连接 UUID、peer ID/ID 类型及私聊/群聊归属；不是从 XML 推导路由。目标 Runtime 沿原 realtime Inbox 队列消费，图片经 SessionEngine.images 进入原图片输入及 transcript，文件沿目标工作区引用持久保留。发送模式由目标本轮冻结；accepted 只表示队列 ACK。不为交接创建 replyBack 元数据，不自动返回整个私聊结果。
+
+
+### Task 结果事件
+
+`task.result` 是本地 Inbox typed event，携带 Task/delivery/attempt、执行 Session 和固定 ConversationRef，禁止 replyBack/network return。Rust TaskStore 拥有意图和回执；Inbox 的接纳只代表已排队。`admitTaskNotification` 通过现有 runInjectedTurn 与准确 queue terminal 准备结果；目标模型/MCP/权限仍来自该 Session，caller-owned 输出不走普通 IM 镜像，automation/task_notification origin 不生成第二次桌面完成通知。纯状态用原 transcript 持久化/回放能力写入 Task 引用，不触发模型。执行队列繁忙时不提前改动正在运行轮次的场景；现有 beforeDispatch 在实际 promotion 阶段应用场景并验证通知资格。

@@ -137,6 +137,7 @@ export type InboxInjector = (
     scenario?: InteractionScenario;
     queueId?: string;
     beforeDispatch?: DispatchGuard;
+    taskNotification?: import('./session-event').TaskResultEvent;
     channelHandoff?: { eventId: string; targetSessionId: string; handoff: ChannelHandoff };
   },
 ) => Promise<InboxAdmissionResult>;
@@ -181,13 +182,18 @@ export async function handleInboxDrain(
         throw new Error('Invalid Channel handoff transport identity');
       }
       const channelHandoff = handoff ? { eventId: msg.messageId, targetSessionId: msg.toSessionId, handoff: channelHandoffSchema.parse(handoff) } : undefined;
+      const taskNotification = msg.sessionEvent?.type === 'task.result' ? msg.sessionEvent : undefined;
+      if (taskNotification && (msg.kind !== 'event' || msg.replyBack || msg.networkReturn
+        || msg.messageId !== taskNotification.attemptId || msg.toSessionId !== taskNotification.targetSessionId)) {
+        throw new Error('Invalid Task notification transport identity');
+      }
       const prompt = buildSessionEventPrompt(msg);
       const meta = buildTurnMeta(msg);
       const allowLazySessionMaterialization =
         msg.kind === 'event'
         && (msg.sessionEvent?.type === 'space.issue_delivery' || msg.sessionEvent?.type === 'task.comment');
       const scenario = scenarioForInboxMessage(msg);
-      const result = await injector(prompt, meta, { allowLazySessionMaterialization, scenario, channelHandoff });
+      const result = await injector(prompt, meta, { allowLazySessionMaterialization, scenario, channelHandoff, taskNotification });
       // PRD 0.2.18 cross-review fix (Codex):
       // enqueueUserMessage's `queued` flag is "queued behind other turns" not
       // "accepted vs rejected". On the idle direct-send path it returns

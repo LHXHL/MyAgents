@@ -372,7 +372,37 @@
       "connecting": "Connecting",
       "error": "Error",
       "offline": "Offline"
-    }
+    },
+    "off": "No IM notification",
+    "conversation": "Specific conversation",
+    "recentChannel": "Latest private chat in {{name}}",
+    "recentAgent": "Follow {{name}} across channels",
+    "unavailable": "Unavailable · {{id}}",
+    "group": "Group",
+    "private": "Private",
+    "chooseChannel": "Choose a channel",
+    "choosePeer": "Choose a conversation",
+    "loadingPeers": "Loading conversations…",
+    "noPeers": "No known conversations on this channel",
+    "futureOnly": "Changes apply to future notifications. Queued notifications keep their original destination.",
+    "latestDelivery": "Latest delivery",
+    "retry": "Retry notification",
+    "resend": "Send again",
+    "cancel": "Cancel notification",
+    "resendWarning": "The platform may already have accepted this notification. Sending again may duplicate it; the task itself will not run again.",
+    "states": {
+      "waiting": "Waiting for destination",
+      "preparing": "Preparing reply",
+      "prepared": "Ready to send",
+      "sending": "Sending",
+      "sent": "Sent",
+      "suppressed": "Suppressed",
+      "failed": "Failed",
+      "unknown": "Unconfirmed",
+      "partial": "Partially sent",
+      "cancelled": "Cancelled"
+    },
+    "completeTarget": "Choose a notification Channel and conversation"
   },
   "cron": {
     "untitledTask": "Untitled task",
@@ -641,7 +671,15 @@
       "weekly": "Weekly",
       "monthly": "Monthly"
     },
-    "weekdays": ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+    "weekdays": [
+      "Mon",
+      "Tue",
+      "Wed",
+      "Thu",
+      "Fri",
+      "Sat",
+      "Sun"
+    ],
     "monthDay": "Day {{day}}",
     "every": "Every",
     "intervalSuffix": "minutes (minimum {{min}} minutes)",

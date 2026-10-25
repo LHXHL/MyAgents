@@ -39,12 +39,18 @@ Task 是任务身份、状态、调度和执行审计的统一权威。一个 Ta
 
 ```text
 Record → 与 AI 对齐 → 创建 Task → todo
-      → 手动 run 或到点触发 → running → verifying → done → archived
+      → run 启用 → running（等待触发或正在执行）→ done → archived
                                       ↘ blocked / stopped
 blocked / stopped / done / archived → rerun → todo
 ```
 
 Task 的具体状态转换由产品约束；不要用直接改文件跳过状态机。Task 级 Runtime 覆盖只影响该 Task，不会改掉 Agent 默认配置。
+
+### 从私聊创建后会发生什么
+
+Task 默认属于当前工作区，不会因为由私聊发起就自动固定到该私聊 Session。需要延续当前上下文时，Agent 显式选择 `single-session` 并绑定当前 Session；选择 `new-session` 或省略 runMode 时，每次 AI 执行使用新 Session。固定 Session 绑定的是具体 Session ID，私聊 `/new` 不会自动迁移该 Task。
+
+执行结果保存在绑定 Session 或各次执行 Session/Task 运行历史中，不会自动复制到 Task 评论。通过 Channel 对话创建时，普通 Agent 与 Team AI 默认回原 Channel + sessionKey；回报交给该聊天当前绑定的 Session 转述，换绑不停止原任务。Task 执行中创建后续 Task 默认继承本次执行的通知策略。GUI 和无上下文 CLI 默认关闭 IM。可明确关闭、指定聊天、固定 Channel 最近私聊或选择 Agent 跨平台最近私聊。桌面开关独立，普通 Task 默认开启，显示受系统权限影响。详情可查看投递状态及重试/重发/取消；这些操作不重跑任务，unknown/partial 重发可能重复。Task 回报不再依赖 Heartbeat 巡检。
 
 ### 智能创建、评论与通知
 

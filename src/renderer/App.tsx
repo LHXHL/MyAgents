@@ -4734,6 +4734,7 @@ export default function App({ rendererAttachment = COLD_RENDERER_ATTACHMENT }: {
     if (!isTauriEnvironment()) return;
     const ac = new AbortController();
     void listenWithCleanup<{
+      taskId?: string;
       tabId?: string;
       sessionId?: string;
       workspacePath?: string;
@@ -4752,6 +4753,11 @@ export default function App({ rendererAttachment = COLD_RENDERER_ATTACHMENT }: {
             );
           },
         );
+        if (route.type === 'open-task-center') {
+          handleOpenTaskCenter();
+          acknowledgeNotificationTarget({ type: 'task-center', taskId: route.taskId });
+          return;
+        }
         if (route.type === 'select-tab') {
           console.log(
             '[App] notification:click → handleSelectTab',
@@ -4793,6 +4799,7 @@ export default function App({ rendererAttachment = COLD_RENDERER_ATTACHMENT }: {
     );
     return () => ac.abort();
   }, [
+    handleOpenTaskCenter,
     acknowledgeNotificationTarget,
     handleSelectTab,
     tabWorkspaceController,

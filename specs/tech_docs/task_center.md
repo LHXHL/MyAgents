@@ -77,7 +77,7 @@ timer handle 只负责“何时触发”。真正的 AI Turn 是独立执行作�
 - `cron run-now` 是兼容的 manual trigger：Running/Stopped Task 可执行，不启用 scheduler，不改变原 schedule/status；其他终态必须先走 rerun。
 - `lastExecutedAt` 记录任何执行；`lastScheduledAt` 只记录 timer tick。Recurring 的下一次触发只使用后者，因此 manual run 不会移动调度锚点。
 
-每次执行前都重新读取 `task.md`，用户修改会在下一次执行生效。Runtime terminal 返回后，scheduler 先在 TaskStore 单次原子写中提交 `executionCount`、执行时间、`lastExecution`、连续 scheduled 失败次数与可选终态；然后才写事件、通知、`cron_runs` 和释放 Session owner。运行历史继续写 `cron_runs/<taskId>.jsonl`，只作为查询/审计投影，Task Center 的最近执行不得从中反向拼接。Browser Host retire、Sidecar drain、通知或审计写入失败都不能改判已经结算的 Task outcome。
+每次执行前都重新读取 `task.md`，用户修改会在下一次执行生效。Runtime terminal 返回后，scheduler 先在 TaskStore 单次原子写中提交 `executionCount`、执行时间、`lastExecution`、连续 scheduled 失败次数、可选终态与合并通知意图；然后才发桌面通知、处理 IM 回报、写 `cron_runs` 和释放 Session owner。运行历史继续写 `cron_runs/<taskId>.jsonl`，只作为查询/审计投影，Task Center 的最近执行不得从中反向拼接。Browser Host retire、Sidecar drain、通知或审计写入失败都不能改判已经结算的 Task outcome。
 
 普通 Task 不再按 `dispatchOrigin` 选择不同的内容 executor。Scheduler 对 direct、AI 讨论后创建及 legacy provenance 都构造同一份完整 `task.md` 首轮 query；Agent 使用工作区、Skill 和工具自行执行与验证。Task status/outcome 仍由 TaskApplication/scheduler 裁决，Agent 不通过内容型 Skill 重写生命周期。
 
@@ -141,7 +141,9 @@ Drawer 的正文／评论阅读区独占评论导航滚动：通知定位、回�
 
 Gardener / Molt 的系统任务文本由 `memory_evolution` 生成。Scheduler 在 Task control guard 内、启动 timer 前通过 TaskStore 的 managed prompt 写入口收敛已有 `task.md`（仅 prompt，不改 Task row），覆盖 App 恢复、后续启动与 run-now 准入，失败沿既有调度错误路径处理，不执行旧文本。普通 Task 不参与；Task ID、运行配置、计划与历史不变。已安装的 Skill 通过现有 `SYSTEM_SKILLS_VERSION` 升级，启动同步先于 scheduler 恢复。
 
-memory update、memory evolution、Agent heartbeat 等内部定时工作也写入带 `managedKind` 的隐藏 Task，由同一个 Task scheduler 执行。普通 Task Center 列表默认过滤 managed Task，但 Session/history/audit 保留。`memory_auto_update_batch` 是遍历多个候选存量 Session 的调度器，本身不拥有持久 Session binding：Task row 使用现有 schema 的非固定绑定形态 `runMode=new-session` 且不写 `preselectedSessionId`，但该 `managedKind` 明确绕过 Session Engine，不会为调度器新建 Session；实际运行时才在 queue authority 下逐个绑定存量 Session 并发送 Memory Update query。历史 single-session 行由配置 reconcile 原位归一。Memory Gardener / Molt 才是实际创建新 Session 执行 Skill 的独立 managed Task。
+memory update、memory evolution 写入带 `managedKind` 的隐藏 Task，由同一个 Task scheduler 执行。普通 Task Center 列表默认过滤 managed Task，但 Session/history/audit 保留。`memory_auto_update_batch` 是遍历多个候选存量 Session 的调度器，本身不拥有持久 Session binding：Task row 使用现有 schema 的非固定绑定形态 `runMode=new-session` 且不写 `preselectedSessionId`，但该 `managedKind` 明确绕过 Session Engine，不会为调度器新建 Session；实际运行时才在 queue authority 下逐个绑定存量 Session 并发送 Memory Update query。历史 single-session 行由配置 reconcile 原位归一。Memory Gardener / Molt 才是实际创建新 Session 执行 Skill 的独立 managed Task。
+
+Agent heartbeat 当前不属于 managed Task：由 IM Agent lifecycle 启停专用 timer/wake loop，经 `resolve_agent_heartbeat_route` 选择 private target，再交给 Channel 的 HeartbeatRunner。不要将它与上述记忆维护的 Task 调度路径混同；参见 `im/config_store.rs`、`im/commands.rs` 与 [IM 架构](im_integration_architecture.md)。
 
 Evo configure 的 runtime/config 是完整目标配置，不是 Task PATCH：指定 runtime 却未指定 config 时，以 `{}` 显式替换旧配置；取消 runtime override 时清除两者。普通 Task PATCH 的省略字段仍表示保留。已有 Gardener / Molt 在 Task control guard 内重读、校验合并后的执行路由，再停止和原位更新；校验失败不先停任务。这样从 Codex managed-provider 切回 builtin 或同 runtime 移除配置时，不会继承不兼容配置，也不会丢失 Task ID 和历史记录。
 
@@ -214,7 +216,8 @@ Goal 是 Session 状态，不是 Task execution mode：
 - 不创建 Task、不占用 Task status/schedule 字段。
 - Task 与 Goal 可在同一 Session 共存；Task scheduler 不感知 Goal。
 - Goal turn 的 completion descriptor 保留 `{ kind: 'goal', id: goalId }` owner；generic Session completion 被抑制，Goal terminal/outbox/notification 继续由 Goal domain lifecycle 负责。
-- Task 需要持续执行时，由 prompt 中的 AI 在当前 Session 调 `myagents goal create`；Task 模型不增加 Task→Goal 编排字段。
+- 在用户已明确要求使用 Goal 的前提下，Task 中的 AI 可在当前 Session 调 `myagents goal create`；Task 模型不增加 Task→Goal 编排字段。这是 API 可用的组合路径，不表示 Task 等待该 Goal 完成或停止 Task 会同时取消 Goal。
+- 默认系统提示词要求显式选择 Goal Mode，且只在 desktop / 私聊场景注入 Goal guidance，不在群聊或 cron/headless 场景默认注入。该曝光/行为规则不等同于 API 按场景硬禁止创建；要支持默认自主使用，应先对齐产品规则和 `system-prompt-cli-tools.ts`。
 
 详见 [`session_architecture.md`](session_architecture.md) 的“Goal 与跨 Session 协作”。
 
@@ -247,3 +250,16 @@ A deleted ordinary Task remains readable through get, comments, comment paginati
 and runs. TaskStore decides this read identity; the Cron scheduling projection is not a
 read authority. Comment insertion still rejects deleted Tasks. CLI schedule flags select
 recurring/scheduled mode when omitted, rather than leaving accepted schedule fields unused.
+
+
+### Task 通知策略与投递记录
+
+`task::notification` 是策略规范化和 Task 行内通知记录的 owner。`TaskApplication` 创建时按显式目标 → 当前执行冻结的父 Task 策略 → 宿主轮次 ConversationRef → off 解析；desktop/events 独立继承。普通 Agent 与 Team AI 同规则，GUI/无上下文 CLI 不猜来源。Management API 校验 Sidecar generation 与父 Task/queue/Session 身份，Node 只接纳内部调用的 SessionEngine 冻结轮次投影，移除调用者伪造上下文。
+
+版本 1 的 `notification.im` 是 off / conversation(channelId,sessionKey) / recent-private(channel|agent) 互斥联合。current 只作输入便利值。旧 botChannelId 唯一归属 Agent 时保留 Agent 自动范围，独立 Bot 保留连接范围；botThread 不激活为精确地址，缺失/歧义保留可见诊断。未知版本使 TaskStore 只读，避免有损重写。新 Cron GUI/DTO 直传 canonical notification，旧 delivery/notifyEnabled 只在兼容边界转换，局部更改不覆盖其余字段。
+
+一次执行的 execution + 终态在原 TaskStore 事务中合并为一条 `notificationDeliveries` 记录，冻结当时策略/结果；桌面独立尽力发送，不重放。IM 作业可从 TaskStore 重建，不拥有业务调度。最多 32 条 pending、32 条 retained terminal，单份结果/准备文本限 64 KiB；超限产生可见失败，保留执行 Session，不挤掉待发、不重跑业务。
+
+记录使用一个 deliveryId 和每次 attemptId；attemptId 同时是转述 queueId。状态为 waiting/preparing/prepared/sending/sent/suppressed/failed/unknown/partial/cancelled。平台调用前先提交准备文本；恢复 preparing/sending 为 unknown，明确 retry 不接受 unknown/partial，显式 resend 才允许重复风险。迟到回执必须匹配当前 attempt 和目标 Session。删除在原事务取消未发送记录，Stop/Rerun/归档不冒充投递撤销；已经交给平台的发送不可收回。
+
+`notification_worker` 解析并冻结聊天，复用 ChannelOwner peer fence 与 Inbox prepare/owner 生命周期；TaskResultEvent 经 SessionEngine.runInjectedTurn caller-owned 转述，真实 terminal 回写 TaskStore。转述无业务 Task turnOwner，analytics origin 为 automation/task_notification，抑制通用完成 toast；不会增加执行次数/启动 Goal/replyBack。排队确认与准备完成分开，排队后换绑在 beforeDispatch 拒绝并重新解析同一聊天，开始后不换收件人。B 已是目标当前 Session 时复用输出；纯状态仅记录事件并确定性发送。目标 auto/tool_only 控制整个自动回报链。平台发送复用 IM channel_send 的分段和 receipt，unknown/partial 不自动重发。

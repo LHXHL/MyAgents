@@ -29,7 +29,6 @@ pub use commands::{
     cmd_get_unmigrated_legacy_cron_tasks, cmd_get_workspace_cron_tasks, cmd_is_task_executing,
     cmd_start_cron_task, cmd_stop_cron_task, cmd_update_cron_task_fields,
 };
-pub(crate) use delivery::deliver_cron_result_to_bot;
 pub use delivery::{deliver_task_notification_to_bot, deliver_task_notification_to_bot_checked};
 pub use init_recovery::initialize_cron_manager;
 pub use manager::{get_cron_task_manager, CronTaskManager};

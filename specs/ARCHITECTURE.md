@@ -163,7 +163,7 @@ Session 首屏恢复先取得 REST snapshot，再接续 revision 连续的 SSE�
 
 Task、Goal 与 Agent Channel 都复用 Product Session 和同一 Runtime queue，但拥有独立的业务状态：
 
-- TaskStore/Scheduler 拥有 schedule、execution claim、状态与审计；Task 只在执行期持有 `SidecarOwner::Task`。
+- TaskStore/Scheduler 拥有 schedule、execution claim、状态与审计；Task 只在执行期持有 `SidecarOwner::Task`。通知策略与有界投递记录由 TaskStore 与执行结果原子提交，可重建处理作业复用 ChannelOwner / Inbox / SessionEngine；回报按 Channel + sessionKey 定位，独立于业务重跑与 Heartbeat 巡检。
 - SessionGoalManager 拥有 Goal 状态、continuation、deadline 和当前 Turn fence；Goal 不创建 Task。
 - Agent/IM owner 持有 channel binding 与 delivery lifecycle；已有 Session 继续服从自己的 birth snapshot。
 - BackgroundCompletion 只在前台 owner 离开而已接纳工作仍需结算时保活。

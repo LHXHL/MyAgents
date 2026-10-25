@@ -1477,6 +1477,11 @@ async function routeAdminApi(
     delete payload.localSessionId;
   }
 
+  if (route === 'task/create-direct' || route === 'cron/create' || route === 'cron/add' || route === 'task/update' || route === 'cron/update') {
+    const { taskNotificationContext } = await import('./session-engine/task-notification');
+    payload = taskNotificationContext(getSessionEngine(), payload, caller);
+  }
+
   // Lazy-load admin-api (~150ms on first hit, cached thereafter)
   const api = await getAdminApi();
 
@@ -1838,6 +1843,7 @@ async function routeAdminApi(
     return await api.handleTaskList(
       payload as Parameters<typeof api.handleTaskList>[0],
     );
+  if (route === 'task/notification') return await api.handleTaskNotification(payload);
   if (route === 'task/get')
     return await api.handleTaskGet(
       payload as Parameters<typeof api.handleTaskGet>[0],
@@ -11835,6 +11841,10 @@ description: >
                 if (!originBinding.success) {
                   return { queued: false, error: originBinding.error };
                 }
+              }
+              if (options?.taskNotification) {
+                const { admitTaskNotification } = await import('./session-engine/task-notification');
+                return admitTaskNotification(engine, options.taskNotification, text, sessionMeta?.agentDir ?? currentAgentDir ?? process.cwd());
               }
               let images: import('./runtimes/types').ImagePayload[] | undefined;
               let beforeDispatch = options?.beforeDispatch;

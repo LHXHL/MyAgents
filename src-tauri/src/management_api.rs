@@ -32,6 +32,7 @@ use crate::thought;
 use crate::{ulog_debug, ulog_error, ulog_info, ulog_warn};
 
 mod channel_messaging;
+mod task_notifications;
 use channel_messaging::{channel_context_handler, send_channel_message_handler};
 
 /// Global management API port (set once at startup)
@@ -253,6 +254,9 @@ pub async fn start_management_api() -> Result<u16, String> {
         // Task Center (v0.1.69) — HTTP surface for the `myagents task` CLI.
         .route("/api/task/list", get(task_list_handler))
         .route("/api/task/get", get(task_get_handler))
+        .route("/api/task/notification/terminal", post(task_notifications::terminal))
+        .route("/api/task/notification/authorize", post(task_notifications::authorize))
+        .route("/api/task/notification/operate", post(task_notifications::operate))
         .route("/api/task/create-direct", post(task_create_direct_handler))
         .route(
             "/api/task/create-attached",
@@ -1801,6 +1805,8 @@ async fn grok_bearer_handler(
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CreateCronRequest {
+    notification: Option<task::NotificationConfig>,
+    notification_context: Option<task_notifications::SourceContext>,
     name: Option<String>,
     schedule: Option<CronSchedule>,
     message: String,
@@ -1933,6 +1939,7 @@ impl From<CronTask> for CronTaskSummary {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct UpdateCronRequest {
+    notification_context: Option<task_notifications::SourceContext>,
     task_id: String,
     patch: serde_json::Value,
 }
@@ -2046,7 +2053,7 @@ async fn remove_mcp_references_handler(
     )
 }
 
-async fn create_cron_handler(Json(req): Json<CreateCronRequest>) -> Json<serde_json::Value> {
+async fn create_cron_handler(headers: HeaderMap, Json(req): Json<CreateCronRequest>) -> Json<serde_json::Value> {
     let manager = cron_task::get_cron_task_manager();
 
     if matches!(&req.schedule, Some(CronSchedule::Loop)) {
@@ -2071,6 +2078,7 @@ async fn create_cron_handler(Json(req): Json<CreateCronRequest>) -> Json<serde_j
     let session_id = uuid::Uuid::new_v4().to_string();
 
     let config = CronTaskConfig {
+        notification: req.notification.or_else(|| req.delivery.is_none().then(|| task::NotificationConfig { desktop_explicit: false, ..Default::default() })),
         workspace_path: req.workspace_path,
         session_id,
         prompt: req.message,
@@ -2100,7 +2108,11 @@ async fn create_cron_handler(Json(req): Json<CreateCronRequest>) -> Json<serde_j
         name: req.name,
     };
 
-    match manager.create_task(config).await {
+    let context = match task_notifications::creation_context(&headers, req.notification_context).await {
+        Ok(context) => context,
+        Err(error) => return Json(serde_json::json!({"ok":false,"error":error})),
+    };
+    match manager.create_task_with_notification_context(config, context).await {
         Ok(task) => {
             // Auto-start the task
             let task_id = task.id.clone();
@@ -2165,7 +2177,7 @@ async fn list_cron_handler(Query(query): Query<ListCronQuery>) -> Json<serde_jso
     Json(serde_json::json!({ "ok": true, "tasks": summaries }))
 }
 
-async fn update_cron_handler(Json(req): Json<UpdateCronRequest>) -> Json<serde_json::Value> {
+async fn update_cron_handler(headers: HeaderMap, Json(req): Json<UpdateCronRequest>) -> Json<serde_json::Value> {
     let manager = cron_task::get_cron_task_manager();
     if let Err(e) = get_ordinary_cron_task(manager, &req.task_id).await {
         return Json(serde_json::json!({
@@ -2174,7 +2186,16 @@ async fn update_cron_handler(Json(req): Json<UpdateCronRequest>) -> Json<serde_j
         }));
     }
 
-    match manager.update_task_fields(&req.task_id, req.patch).await {
+    let mut patch = req.patch;
+    let validation = async {
+        let task = task::get_task_store().ok_or("Task store unavailable")?.get(&req.task_id).await.ok_or("Task not found")?;
+        let mut input = cron_task::manager::task_update_from_cron_patch(&task, patch.clone())?;
+        task_notifications::validate_update(&headers, req.notification_context, &mut input).await?;
+        if let Some(notification) = input.notification { patch["notification"] = serde_json::to_value(notification).map_err(|error| error.to_string())?; }
+        Ok::<_, String>(())
+    }.await;
+    if let Err(error) = validation { return Json(serde_json::json!({"ok":false,"error":error})); }
+    match manager.update_task_fields(&req.task_id, patch).await {
         Ok(updated) => {
             // Issue #115 — return the enriched task so callers can echo
             // the post-update `nextExecutionAt` + tz. CLI uses this to
@@ -3972,6 +3993,7 @@ async fn task_get_handler(Query(q): Query<TaskGetQuery>) -> Json<serde_json::Val
             Json(serde_json::json!({
                 "ok": true,
                 "task": task::TaskWithDocs {
+                    notification_destination: im::task_notification::describe_policy(t.notification.as_ref()),
                     task: t,
                     docs,
                     execution_state: execution.as_ref().map(|value| value.state),
@@ -4017,6 +4039,8 @@ fn task_error_response_value(
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct TaskCreateDirectApiRequest {
+    #[serde(default)]
+    notification_context: Option<task_notifications::SourceContext>,
     #[serde(flatten)]
     input: task::TaskCreateDirectInput,
     #[serde(default)]
@@ -4028,6 +4052,7 @@ struct TaskCreateDirectApiRequest {
 }
 
 async fn task_create_direct_handler(
+    headers: HeaderMap,
     Json(mut req): Json<TaskCreateDirectApiRequest>,
 ) -> Json<serde_json::Value> {
     if let Some(candidate_path) = req.task_md_file.as_deref() {
@@ -4047,11 +4072,16 @@ async fn task_create_direct_handler(
         Ok(application) => application,
         Err(error) => return task_application_error_response(error),
     };
+    let context = match task_notifications::creation_context(&headers, req.notification_context).await {
+        Ok(context) => context,
+        Err(error) => return Json(serde_json::json!({"ok":false,"error":error})),
+    };
     match application
-        .create_direct_with_origin(
+        .create_direct_with_context(
             req.input,
             req.actor.unwrap_or(task::TransitionActor::User),
             req.source.or(Some(task::TransitionSource::Cli)),
+            context,
         )
         .await
     {
@@ -4079,7 +4109,17 @@ async fn task_create_attached_handler(
     }
 }
 
-async fn task_update_handler(Json(input): Json<task::TaskUpdateInput>) -> Json<serde_json::Value> {
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TaskUpdateApiRequest {
+    #[serde(flatten)]
+    input: task::TaskUpdateInput,
+    notification_context: Option<task_notifications::SourceContext>,
+}
+async fn task_update_handler(headers: HeaderMap, Json(request): Json<TaskUpdateApiRequest>) -> Json<serde_json::Value> {
+    let mut input = request.input;
+    if let Err(error) = task_notifications::validate_update(&headers, request.notification_context, &mut input).await { return Json(serde_json::json!({"ok":false,"error":error})); }
+
     let application = match crate::task_application::TaskApplication::from_globals() {
         Ok(application) => application,
         Err(error) => return task_application_error_response(error),
@@ -4129,6 +4169,7 @@ async fn task_update_handler(Json(input): Json<task::TaskUpdateInput>) -> Json<s
             Json(serde_json::json!({
                 "ok": true,
                 "task": task::TaskWithDocs {
+                    notification_destination: im::task_notification::describe_policy(task.notification.as_ref()),
                     task,
                     docs,
                     execution_state: execution.as_ref().map(|value| value.state),
@@ -6228,6 +6269,7 @@ mod tests {
 
         let response = task_lifecycle_success_response(
             crate::task::TaskProjection {
+                notification_destination: serde_json::Value::Null,
                 task,
                 execution_state: None,
                 execution_error: None,

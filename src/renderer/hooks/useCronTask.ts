@@ -41,6 +41,7 @@ export interface CronTaskState {
     /** Execution target: current_session (legacy) or new_task (standalone) */
     executionTarget?: 'current_session' | 'new_task';
     /** Where to deliver execution results (IM channel) */
+    notification?: import('@/../shared/types/task').NotificationConfig;
     delivery?: CronDelivery;
     /** Per-task MCP enable list — see `CronTaskConfig.mcpEnabledServers`. */
     mcpEnabledServers?: string[];
@@ -150,6 +151,7 @@ export function useCronTask(options: UseCronTaskOptions) {
         runtimeConfig: config.runtimeConfig,
         schedule: config.schedule,
         executionTarget: config.executionTarget,
+        notification: config.notification,
         delivery: config.delivery,
         mcpEnabledServers: config.mcpEnabledServers,
       },
@@ -289,6 +291,7 @@ export function useCronTask(options: UseCronTaskOptions) {
         runtime: currentConfig.runtime,
         runtimeConfig: currentConfig.runtimeConfig,
         schedule: currentConfig.schedule,
+        notification: currentConfig.notification,
         delivery: currentConfig.delivery,
         // This initializes MCP only when the Task creates a Session. A
         // pre-existing Session keeps its own MCP authority.
@@ -702,6 +705,7 @@ export function useCronTask(options: UseCronTaskOptions) {
         runtime: task.runtime,
         runtimeConfig: task.runtimeConfig,
         schedule: task.schedule,
+        notification: task.notification,
         delivery: task.delivery,
         executionTarget: recoveredExecutionTarget,
         mcpEnabledServers: task.mcpEnabledServers,

@@ -824,6 +824,7 @@ pub fn run() {
             task::cmd_task_create_attached,
             task::cmd_task_list,
             task::cmd_task_get,
+            task::cmd_task_notification_operate,
             task::cmd_task_trigger_validate,
             task::cmd_task_trigger_test,
             task::cmd_task_check_now,

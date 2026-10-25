@@ -61,6 +61,10 @@ impl CronTaskManager {
     }
 
     pub async fn create_task(&self, config: CronTaskConfig) -> Result<CronTask, String> {
+        self.create_task_with_notification_context(config, Default::default()).await
+    }
+
+    pub(crate) async fn create_task_with_notification_context(&self, config: CronTaskConfig, context: crate::task::notification::CreationContext) -> Result<CronTask, String> {
         let input = task_input_from_cron_config(config)?;
         let application = crate::task_application::TaskApplication::from_globals()
             .map_err(|error| error.to_string())?;
@@ -71,7 +75,7 @@ impl CronTaskManager {
                 .map_err(|error| error.to_string())?
         } else {
             application
-                .create_direct(input)
+                .create_direct_with_context(input, crate::task::TransitionActor::User, Some(crate::task::TransitionSource::Cli), context)
                 .await
                 .map_err(|error| error.to_string())?
         };
@@ -223,6 +227,7 @@ impl CronTaskManager {
         // not a failed update that leaves the scheduler stopped.
         let input = task_update_from_cron_patch(&task, patch)?;
         crate::task::validate_task_update_execution_routing(&task, &input)?;
+        store.validate_notification_update(&input).await?;
         let was_running = task.status == crate::task::TaskStatus::Running;
         if was_running {
             store
@@ -312,6 +317,7 @@ fn task_store() -> Result<&'static Arc<crate::task::TaskStore>, String> {
 pub(super) fn task_input_from_cron_config(
     config: CronTaskConfig,
 ) -> Result<crate::task::TaskCreateDirectInput, String> {
+    if config.notification.is_some() && config.delivery.is_some() { return Err("Do not mix notification and legacy delivery".into()); }
     let run_mode = match config.run_mode {
         RunMode::SingleSession => crate::task::TaskRunMode::SingleSession,
         RunMode::NewSession => crate::task::TaskRunMode::NewSession,
@@ -429,16 +435,18 @@ pub(super) fn task_input_from_cron_config(
             .into_iter()
             .map(|id| format!("bot:{id}"))
             .collect(),
-        notification: Some(crate::task::NotificationConfig {
+        notification: config.notification.or_else(|| Some(crate::task::NotificationConfig {
             desktop: config.notify_enabled,
             bot_channel_id: config.delivery.as_ref().map(|value| value.bot_id.clone()),
             bot_thread: config.delivery.map(|value| value.chat_id),
             events: None,
-        }),
+            version: None,
+            ..Default::default()
+        })),
     })
 }
 
-fn task_update_from_cron_patch(
+pub(crate) fn task_update_from_cron_patch(
     task: &crate::task::Task,
     patch: serde_json::Value,
 ) -> Result<crate::task::TaskUpdateInput, String> {
@@ -561,37 +569,19 @@ fn task_update_from_cron_patch(
         })
         .transpose()?
         .unwrap_or(false);
-    if notify_enabled.is_some() || source.contains_key("delivery") || clear_delivery {
-        let desktop = notify_enabled
-            .or_else(|| task.notification.as_ref().map(|value| value.desktop))
-            .unwrap_or(true);
-        let (bot_channel_id, bot_thread) = if clear_delivery {
-            (None, None)
-        } else if let Some(value) = source.get("delivery") {
-            let delivery = serde_json::from_value::<CronDelivery>(value.clone())
-                .map_err(|error| format!("invalid delivery: {error}"))?;
-            (Some(delivery.bot_id), Some(delivery.chat_id))
-        } else {
-            task.notification
-                .as_ref()
-                .map(|notification| {
-                    (
-                        notification.bot_channel_id.clone(),
-                        notification.bot_thread.clone(),
-                    )
-                })
-                .unwrap_or((None, None))
-        };
-        target.insert(
-            "notification".to_string(),
-            serde_json::to_value(crate::task::NotificationConfig {
-                desktop,
-                bot_channel_id,
-                bot_thread,
-                events: None,
-            })
-            .map_err(|error| error.to_string())?,
-        );
+    if let Some(notification) = source.get("notification") {
+        if source.contains_key("delivery") || clear_delivery { return Err("Do not mix notification and legacy delivery".into()); }
+        target.insert("notification".into(), notification.clone());
+    } else if notify_enabled.is_some() || source.contains_key("delivery") || clear_delivery {
+        let mut patch = serde_json::Map::new();
+        if let Some(desktop) = notify_enabled { patch.insert("desktop".into(), serde_json::json!(desktop)); }
+        if clear_delivery { patch.insert("botChannelId".into(), serde_json::Value::Null); }
+        else if let Some(value) = source.get("delivery") {
+            let delivery = serde_json::from_value::<CronDelivery>(value.clone()).map_err(|e| e.to_string())?;
+            patch.insert("botChannelId".into(), serde_json::json!(delivery.bot_id));
+            patch.insert("botThread".into(), serde_json::json!(delivery.chat_id));
+        }
+        target.insert("notificationPatch".into(), serde_json::Value::Object(patch));
     }
 
     if target.len() == 1 {
@@ -642,6 +632,7 @@ pub(crate) fn task_to_cron(task: &crate::task::Task) -> CronTask {
         .and_then(|dir| fs::read_to_string(dir.join("task.md")).ok())
         .unwrap_or_default();
     CronTask {
+        notification: task.notification.clone(),
         id: task.id.clone(),
         workspace_path: task.workspace_path.clone(),
         session_id: session_id.clone(),
@@ -832,10 +823,9 @@ mod tests {
         .unwrap();
 
         assert_eq!(update.interval_minutes, Some(30));
-        let notification = update.notification.unwrap();
+        let notification = update.notification_patch.unwrap().apply(None).unwrap();
         assert!(notification.desktop);
-        assert_eq!(notification.bot_channel_id, None);
-        assert_eq!(notification.bot_thread, None);
+        assert_eq!(notification.im, Some(crate::task::notification::NotificationTarget::Off));
     }
 
     #[test]
@@ -965,10 +955,10 @@ mod tests {
             task_update_from_cron_patch(&task(), serde_json::json!({ "notifyEnabled": false }))
                 .unwrap();
 
-        let notification = update.notification.unwrap();
+        let prior = crate::task::NotificationConfig { im: Some(crate::task::notification::NotificationTarget::RecentPrivate { target: crate::task::notification::RecentPrivate::Agent { agent_id: "agent-1".into() } }), ..Default::default() };
+        let notification = update.notification_patch.unwrap().apply(Some(prior.clone())).unwrap();
         assert!(!notification.desktop);
-        assert_eq!(notification.bot_channel_id.as_deref(), Some("bot-1"));
-        assert_eq!(notification.bot_thread.as_deref(), Some("chat-1"));
+        assert_eq!(notification.im, prior.im);
     }
 
     #[test]
@@ -1001,6 +991,20 @@ mod tests {
         .expect_err("invalid one-shot timestamps must fail at ingress");
 
         assert!(error.contains("invalid at schedule"), "got: {error}");
+    }
+    #[test]
+    fn canonical_fixed_channel_survives_cron_create_projection_and_update() {
+        let notification: crate::task::NotificationConfig = serde_json::from_value(serde_json::json!({
+            "version":1,"desktop":false,"im":{"type":"recent-private","scope":"channel","channelId":"fixed"},"events":[]
+        })).unwrap();
+        let mut config = config("new_session", serde_json::json!({"kind":"every","minutes":60}));
+        config.notification = Some(notification.clone());
+        let input = task_input_from_cron_config(config).unwrap();
+        assert_eq!(input.notification, Some(notification.clone()));
+        let mut task = task(); task.notification = input.notification;
+        let update = task_update_from_cron_patch(&task, serde_json::json!({"notification":notification})).unwrap();
+        assert_eq!(update.notification, task.notification);
+        assert!(update.notification_patch.is_none());
     }
 
     #[test]

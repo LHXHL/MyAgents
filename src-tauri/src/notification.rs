@@ -265,6 +265,8 @@ mod macos_notifications {
 #[serde(rename_all = "camelCase")]
 pub struct NotificationNavigation {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tab_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
@@ -289,6 +291,7 @@ impl NotificationNavigation {
         workspace_path: Option<String>,
     ) -> Option<Self> {
         let navigation = Self {
+            task_id: None,
             tab_id: clean_optional_string(tab_id),
             session_id: clean_optional_string(session_id),
             workspace_path: clean_optional_string(workspace_path),
@@ -319,6 +322,12 @@ impl NotificationNavigation {
         Self::new(tab_id, Some(session_id), Some(workspace_path))
     }
 
+    pub fn for_task(task_id: String) -> Self {
+        Self { task_id: Some(task_id), tab_id: None, session_id: None, workspace_path: None,
+            cloud_notification_id: None, cloud_target: None, cloud_is_announcement: None,
+            cloud_origin_key: None, cloud_origin_account_key: None }
+    }
+
     pub fn for_cloud(
         notification_id: String,
         target: crate::space_cloud::notifications::NotificationTarget,
@@ -328,6 +337,7 @@ impl NotificationNavigation {
     ) -> Option<Self> {
         let notification_id = clean_optional_string(Some(notification_id))?;
         Some(Self {
+            task_id: None,
             tab_id: None,
             session_id: None,
             workspace_path: None,
@@ -361,6 +371,8 @@ fn clean_optional_string(value: Option<String>) -> Option<String> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NotificationClickPayload {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tab_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -888,6 +900,7 @@ fn emit_click<R: Runtime>(app: &AppHandle<R>, navigation: Option<NotificationNav
     if let Err(e) = app.emit(
         "notification:click",
         NotificationClickPayload {
+            task_id: navigation.task_id,
             tab_id: navigation.tab_id,
             session_id: navigation.session_id,
             workspace_path: navigation.workspace_path,
@@ -1019,6 +1032,9 @@ mod session_completion_tests {
             None,
             "session-inbox",
             "session_send",
+        )));
+        assert!(!is_generic_session_completion_eligible(&terminal(
+            "task-relay", "relay-attempt", None, "automation", "task_notification",
         )));
         assert!(!is_generic_session_completion_eligible(&terminal(
             "task",

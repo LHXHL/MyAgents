@@ -770,6 +770,13 @@ describe('myagents CLI Sidecar capability diagnostics', () => {
 });
 
 describe('myagents CLI Task notification updates', () => {
+  it('accepts exact targets, explicit off/current, empty events and receipt-only operations', () => {
+    for (const target of ['off', 'current', '{"type":"conversation","channelId":"c","sessionKey":"group:one"}']) {
+      expect(buildRequestBody('task', 'update', ['t'], { notificationTarget: target, notificationEvents: '[]' })).toMatchObject({ notificationPatch: { version: 1, events: [], im: target.startsWith('{') ? JSON.parse(target) : { type: target } } });
+    }
+    expect(() => buildRequestBody('task', 'update', ['t'], { notificationTarget: 'off', notificationBotChannelId: 'c' })).toThrow();
+    expect(buildRequestBody('task', 'notification', ['t'], { deliveryId: 'd', action: 'cancel' })).toEqual({ taskId: 't', deliveryId: 'd', action: 'cancel' });
+  });
   it('sends only provided notification fields in the single update mutation', () => {
     expect(buildRequestBody('task', 'update', ['task-1'], {
       notificationDesktop: 'false',
@@ -777,6 +784,7 @@ describe('myagents CLI Task notification updates', () => {
     })).toEqual({
       id: 'task-1',
       notificationPatch: {
+        version: 1,
         desktop: false,
         botChannelId: 'bot-b',
       },

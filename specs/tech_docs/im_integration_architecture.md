@@ -296,7 +296,7 @@ Agent可以有多个Channel，后台结果不能广播到全部Channel。`lastAc
 3. 只有完全没有历史时，才在online Channels中选择最近private session；
 4. wake必须携带exact target，per-Channel runner不得再次猜测。
 
-pending Task/Cron delivery持久化target session key，并由同一Channel queue按序ACK。没有valid private target时只保留领域执行历史，不把事件塞入任意旧Bot queue。
+Task/Cron 通知已从 Heartbeat 的内存 pending 队列迁出，改由 TaskStore 保存待发记录并经 Inbox / SessionEngine 转述，详见下方「Task 通知」。上述最近私聊路由仍供 Heartbeat 使用；Task 只有显式 Agent 自动策略复用其选址判断，不复用 wake 或 pending 队列。入队成功仍不等于平台已接受消息。
 
 ### 9.2 Goal
 
@@ -395,3 +395,10 @@ Channel 路由使用 Adapter 已验证的协议身份；OpenClaw 从注册后的
 
 
 在线 Channel 的 capability/context projection 与 handoff world 同取 Adapter 的已注册协议身份；配置安装 ID 只负责安装与生命周期，离线 capability 保留现有配置投影。精确 live binding 查询同时返回同一快照中的 Adapter，避免另一次扫描拼接身份。Inbox 准入只核对 Product Session、连接 UUID、peer ID/ID 类型与私聊/群聊归属；platform 是环境描述，不是第二套绑定身份，旧消息中的平台别名不构成错投。无需模型填写 Session ID、平台或已有绑定的连接 ID。
+
+
+### Task 通知的稳定地址与发送 owner
+
+Task 自动回报使用 `ConversationRef { channelId, sessionKey }`；sessionKey 在连接内代表私聊/群聊，不能单独作为跨连接地址。`im::task_notification` 复用现有配置、health、ChannelOwner 和 Router，不新增聊天存储。固定 Channel 的 recent-private 只读该连接；Agent scope 明确允许跨连接，复用现有精确 private target 优先级，但不进入 Heartbeat pending/wake 通路。首次解析后 TaskStore 冻结地址与连接归属；离线等待、不改投其他联系人，归属变化失败。
+
+转述前通过 ChannelOwner 的 peer fence 初始化当前 Session，复用 Inbox delivery lease；排队中的 beforeDispatch 再检查当前绑定，换绑仅使该次旧队列项失效。Task 通知的 caller-owned 输出由 TaskStore receipt 保存，IM owner 的 `channel_send` 统一按平台能力分段发送并返回已接受片数/消息 ID。普通 ReplyRouter、显式 handoff、Heartbeat 与 Goal 的生命周期不改变。未知/部分成功必须人工确认后明确重发，不能重跑 Task 来重试通知。

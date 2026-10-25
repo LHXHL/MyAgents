@@ -9,7 +9,7 @@ pub(super) struct ChannelContextRequest {
     sidecar_id: String,
 }
 
-fn caller(
+pub(super) fn caller(
     headers: &HeaderMap,
     sidecar: &str,
 ) -> Result<crate::sidecar::SessionProcessSource, String> {
@@ -259,58 +259,7 @@ fn validate_media_capability(
     Ok(())
 }
 
-// Adapter APIs still expose String errors. Only their explicit API rejection
-// prefixes prove non-acceptance; transport, parse and opaque plugin failures
-// remain unknown. Do not infer safety to retry from a generic exception.
-fn failure_status(error: &str) -> &'static str {
-    if error.starts_with("Feishu API error code ")
-        || error.starts_with("API error ")
-        || error.starts_with("DingTalk API HTTP 4")
-        || error.starts_with("Token request ")
-        || error.starts_with("Image upload error ")
-        || error.starts_with("File upload error ")
-    {
-        "failed"
-    } else {
-        "unknown"
-    }
-}
-
-#[derive(Default)]
-struct SendProgress {
-    ids: Vec<String>,
-    accepted: usize,
-}
-
-async fn send_text(
-    adapter: &im::AnyAdapter,
-    target: &ChannelTarget,
-    transport: &str,
-    text: &str,
-) -> Result<SendProgress, (SendProgress, String)> {
-    let mut progress = SendProgress::default();
-    for chunk in im::adapter::split_message(text, adapter.max_message_length()) {
-        let result = match adapter {
-            im::AnyAdapter::Feishu(feishu) => {
-                feishu
-                    .send_channel_content(target, Some(&chunk), None)
-                    .await
-            }
-            im::AnyAdapter::Dingtalk(dingtalk) => {
-                dingtalk.send_text_message(transport, &chunk).await
-            }
-            _ => adapter.send_message_returning_id(transport, &chunk).await,
-        };
-        match result {
-            Ok(id) => {
-                progress.accepted += 1;
-                progress.ids.extend(id);
-            }
-            Err(error) => return Err((progress, error)),
-        }
-    }
-    Ok(progress)
-}
+use crate::im::channel_send::{failure_status, send_text, SendProgress};
 
 pub(super) async fn send_channel_message_handler(
     headers: HeaderMap,
@@ -438,7 +387,7 @@ async fn execute(headers: &HeaderMap, request: SendRequest) -> Result<Value, Str
     let mut stopped = false;
     let mut accepted = 0;
     if let Some(text) = text {
-        match send_text(adapter, &target, &transport, &text).await {
+        match send_text(adapter, &target, &transport, &text, None).await {
             Ok(progress) => {
                 accepted += progress.accepted;
                 items.push(
@@ -463,7 +412,7 @@ async fn execute(headers: &HeaderMap, request: SendRequest) -> Result<Value, Str
                 // Captions are accepted text chunks on Feishu. Preserve their
                 // receipts even when the subsequent attachment fails.
                 let caption_result = if let Some(caption) = attachment.caption.as_deref() {
-                    match send_text(adapter, &target, &transport, caption).await {
+                    match send_text(adapter, &target, &transport, caption, None).await {
                         Ok(sent) => {
                             progress = sent;
                             Ok(())
@@ -662,6 +611,7 @@ mod tests {
             &target,
             "staff",
             "hello",
+            None,
         )
         .await;
         assert!(

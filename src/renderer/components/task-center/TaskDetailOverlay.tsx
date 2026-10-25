@@ -7,7 +7,6 @@ import { useTranslation } from "react-i18next";
 import {
   ActivityIcon,
   ArchiveIcon,
-  BellIcon,
   HelperIcon,
   SuccessIcon,
   EditIcon,
@@ -19,6 +18,7 @@ import {
   TrashIcon,
   CloseIcon,
 } from '@/components/icons';
+import { TaskNotificationSummary } from './TaskNotificationSummary';
 import ConfirmDialog from "@/components/ConfirmDialog";
 import OverlayBackdrop from "@/components/OverlayBackdrop";
 import {
@@ -27,7 +27,6 @@ import {
   type DropdownMenuSection,
 } from "@/components/ui/DropdownMenu";
 import { useCloseLayer } from "@/hooks/useCloseLayer";
-import { useAgentStatuses } from "@/hooks/useAgentStatuses";
 import { useConfig } from "@/hooks/useConfig";
 import { useToast } from "@/components/Toast";
 import { listenWithCleanup } from "@/utils/tauriListen";
@@ -265,6 +264,7 @@ export function TaskDetailOverlay({
     };
     for (const evt of [
       "task:status-changed",
+      "task:updated",
       "task:session-appended",
       "task:session-rebound",
       "task:trigger-checked",
@@ -689,7 +689,7 @@ export function TaskDetailOverlay({
                 />
               )}
               <hr className="my-5 border-[var(--line-subtle)]" />
-              <NotificationSummary task={task} />
+              <TaskNotificationSummary task={task} onChanged={next => setTask(current => current.id === next.id ? next : current)} />
             </aside>
 
             {showMobileProperties && (
@@ -722,7 +722,7 @@ export function TaskDetailOverlay({
                   />
                 )}
                 <hr className="my-5 border-[var(--line-subtle)]" />
-                <NotificationSummary task={task} />
+                <TaskNotificationSummary task={task} onChanged={next => setTask(current => current.id === next.id ? next : current)} />
               </aside>
             )}
           </div>
@@ -1120,54 +1120,6 @@ function TriggerMetric({
       >
         {value}
       </dd>
-    </div>
-  );
-}
-
-/** NotificationSummary — read-only one-liner ("桌面 ✓ · 飞书·公司群").
- *  v0.1.69 preview polish: no inline edit button — the overlay's
- *  top-level "编辑" is the only edit entry across the whole preview. */
-function NotificationSummary({ task }: { task: Task }) {
-  const { t } = useTranslation("task");
-  const { statuses } = useAgentStatuses();
-  const cfg = task.notification;
-  const desktop = cfg?.desktop !== false;
-  const botChannelId = cfg?.botChannelId ?? null;
-  const channelLabel = useMemo(() => {
-    if (!botChannelId) return null;
-    for (const agent of Object.values(statuses)) {
-      for (const ch of agent.channels) {
-        if (ch.channelId === botChannelId) {
-          return `${agent.agentName} · ${ch.name ?? ch.channelType}`;
-        }
-      }
-    }
-    return t("detail.unknownChannel", { id: botChannelId });
-  }, [botChannelId, statuses, t]);
-
-  return (
-    <div>
-      <div className="mb-1.5 flex items-center gap-1.5 text-sm font-semibold text-[var(--ink)]">
-        <BellIcon className="h-3.5 w-3.5" />
-        {t("detail.notification")}
-      </div>
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-        <span
-          className={desktop ? "text-[var(--ink)]" : "text-[var(--ink-muted)]"}
-        >
-          {t("detail.desktopNotification")}{" "}
-          {desktop
-            ? `✓ ${t("detail.desktopOn")}`
-            : `✗ ${t("detail.desktopOff")}`}
-        </span>
-        {channelLabel ? (
-          <span className="text-[var(--ink)]">IM Bot: {channelLabel}</span>
-        ) : (
-          <span className="text-[var(--ink-muted)]/70">
-            {t("detail.noBot")}
-          </span>
-        )}
-      </div>
     </div>
   );
 }

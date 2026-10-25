@@ -90,6 +90,8 @@ fn latest_run(
 fn memory_evolution_notification() -> NotificationConfig {
     NotificationConfig {
         desktop: false,
+        im: Some(task::notification::NotificationTarget::Off),
+        source: Some("explicit".into()),
         ..Default::default()
     }
 }

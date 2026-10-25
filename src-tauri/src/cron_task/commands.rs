@@ -216,6 +216,7 @@ pub async fn cmd_update_cron_task_fields(
     interval_minutes: Option<u32>,
     end_conditions: Option<EndConditions>,
     notify_enabled: Option<bool>,
+    notification: Option<crate::task::NotificationConfig>,
     model: Option<String>,
     permission_mode: Option<String>,
     delivery: Option<CronDelivery>,
@@ -253,6 +254,7 @@ pub async fn cmd_update_cron_task_fields(
             serde_json::to_value(&ec).unwrap_or(serde_json::Value::Null),
         );
     }
+    if let Some(config) = notification { patch.insert("notification".into(), serde_json::to_value(config).map_err(|error| error.to_string())?); }
     if let Some(ne) = notify_enabled {
         patch.insert("notifyEnabled".to_string(), serde_json::Value::Bool(ne));
     }

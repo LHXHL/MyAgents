@@ -212,6 +212,23 @@ impl<'a> TaskApplication<'a> {
         actor: crate::task::TransitionActor,
         source: Option<crate::task::TransitionSource>,
     ) -> Result<Task, TaskApplicationError> {
+        self.create_direct_with_context(input, actor, source, Default::default()).await
+    }
+
+    pub async fn create_direct_with_context(
+        &self, mut input: TaskCreateDirectInput, actor: crate::task::TransitionActor,
+        source: Option<crate::task::TransitionSource>, context: crate::task::notification::CreationContext,
+    ) -> Result<Task, TaskApplicationError> {
+        let mut config = crate::task::notification::normalize_create(input.notification.take(), &context).map_err(TaskApplicationError::mutation)?;
+        if config.source.as_deref() != Some("parent-task") { crate::task::notification::freeze_channel_owner(&mut config).map_err(TaskApplicationError::mutation)?; }
+        if let Some(app) = crate::logger::get_app_handle() {
+            let agents = app.try_state::<crate::im::ManagedAgents>();
+            let bots = app.try_state::<crate::im::ManagedImBots>();
+            crate::im::task_notification::validate_target(config.im.as_ref().unwrap_or(&Default::default()), context.selection_scope(&config), agents.as_deref(), bots.as_deref()).await.map_err(TaskApplicationError::mutation)?;
+        } else if !matches!(config.im, None | Some(crate::task::notification::NotificationTarget::Off)) {
+            return Err(TaskApplicationError::mutation("Channel owner unavailable".into()));
+        }
+        input.notification = Some(config);
         let task = self
             .tasks
             .create_direct_with_origin(input, actor, source)
@@ -263,6 +280,11 @@ impl<'a> TaskApplication<'a> {
             .update(input)
             .await
             .map_err(TaskApplicationError::mutation)
+    }
+
+    pub async fn operate_notification(&self, task_id: &str, delivery_id: &str, action: &str) -> Result<crate::task::notification::NotificationDelivery, TaskApplicationError> {
+        self.ordinary_task(task_id).await?;
+        self.tasks.operate_notification(task_id, delivery_id, action).await.map_err(TaskApplicationError::mutation)
     }
 
     pub async fn append_session_ordinary(
