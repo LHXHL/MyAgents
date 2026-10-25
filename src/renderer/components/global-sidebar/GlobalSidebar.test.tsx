@@ -1872,7 +1872,7 @@ describe('Agent network and Space navigation', () => {
     expect(onOpenAgentNetwork).toHaveBeenCalledOnce();
     fireEvent.pointerEnter(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.more')) }));
     expect(await screen.findByRole('menuitem', { name: String(i18n.t('app:globalSidebar.team')) })).toBeVisible();
-    expect(screen.getAllByRole('menuitem').map(item => item.textContent)).toEqual([String(i18n.t('app:globalSidebar.team')), '聊天机器人 Bot', 'Team AI']);
+    expect(screen.getAllByRole('menuitem').map(item => item.textContent)).toEqual([String(i18n.t('app:globalSidebar.team')), '聊天机器人 Bot']);
     expect(screen.queryByRole('menuitem', { name: String(i18n.t('app:globalSidebar.agentNetwork')) })).not.toBeInTheDocument();
     fireEvent.click(more);
     expect(more).toHaveAttribute('aria-expanded', 'true');

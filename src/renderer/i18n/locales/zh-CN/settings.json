@@ -2258,6 +2258,8 @@
     "developerParagraph3": "不同于每次对话都要重新自我介绍的 AI 工具，MyAgents 里的 Agent 与你的生活、工作深度同步，是一个越来越懂你的搭档。我们希望它成为每个人意图的超级放大器——",
     "developerQuote": "你有一个想法，And it's done.",
     "labTitle": "实验室",
+    "teamAiPanelTitle": "Team AI 面板",
+    "teamAiPanelDescription": "在侧栏「更多」中显示 Team AI 管理面板入口。关闭只隐藏入口，已有 Agent 和 Channel 继续运行。",
     "teamSpaceTitle": "协作空间",
     "teamSpaceDescription": "协作空间支持多人和多个 Agents 共享 Skills，并围绕目标树中的 Issue 进行协作。",
     "teamSpaceLoading": "正在读取协作空间构建状态...",

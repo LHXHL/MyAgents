@@ -375,10 +375,10 @@ function SidebarMore({ expanded, activeView, teamSpaceAvailable, onTeam, onBot, 
           className="flex h-9 w-full items-center gap-2 rounded-md px-3 text-sm text-[var(--ink)] hover:bg-[var(--hover-bg)] focus:bg-[var(--hover-bg)]">
           <MessageIcon className="h-4 w-4 text-[var(--ink-muted)]" /><span className="global-sidebar-label">{t('sidebar.nav.bots', { ns: 'settings' })}</span>
         </button>
-        <button type="button" role="menuitem" onClick={() => { close(); onTeamAi?.(); }}
+        {onTeamAi && <button type="button" role="menuitem" onClick={() => { close(); onTeamAi(); }}
           className="flex h-9 w-full items-center gap-2 rounded-md px-3 text-sm text-[var(--ink)] hover:bg-[var(--hover-bg)] focus:bg-[var(--hover-bg)]">
           <AtIcon className="h-4 w-4 text-[var(--ink-muted)]" /><span className="global-sidebar-label">{t('tabs.teamAi')}</span>
-        </button>
+        </button>}
       </div>
     </Popover>
   </div>;
@@ -1279,7 +1279,7 @@ export default memo(function GlobalSidebar({
             label={t('globalSidebar.agentNetwork')}
             onClick={() => onOpenAgentNetwork?.()}
           />
-          <SidebarMore onTeamAi={onOpenTeamAi} key={activeView ?? 'launcher'} expanded={expanded} activeView={activeView}
+          <SidebarMore onTeamAi={config.teamAiPanelEnabled === true ? onOpenTeamAi : undefined} key={activeView ?? 'launcher'} expanded={expanded} activeView={activeView}
             teamSpaceAvailable={teamSpaceAvailable} onTeam={onOpenSpace} onBot={() => onOpenSettings('agent')} />
         </nav>
 
