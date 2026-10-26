@@ -230,13 +230,13 @@ V1 保留 user append、成功 terminal/附件/finalization gate 内提交 assis
 
 ### 6.2 realtime 与 turn-boundary queue
 
-desktop response mode 决定 busy 时尝试 same-turn steer 还是排到 turn boundary。是否可 steer 由 `AgentRuntime` 静态能力与当前 process generation 的动态 target共同决定，不硬编码 Runtime 名称。
+Desktop 与 IM 手动输入共用 AppConfig 的 `chatQueueResponseMode`，决定 busy 时尝试 same-turn steer 还是排到 turn boundary。是否可 steer 由 `AgentRuntime` 静态能力与当前 process generation 的动态 target共同决定，不硬编码 Runtime 名称。
 
 native steer 明确返回“未接收”时，同一个 operation 可以按原 admission order降级到 turn-boundary queue；timeout、process exit 等不确定错误不能自动重放。same-turn steer 不应用新的 model/permission/reasoning snapshot。
 
 SessionEngine 的可信 Inbox ingress 固定 realtime，不读取手动 query 设置，也不根据正文的 `system-reminder` 标签判断来源。原 operation queue 在 running 时选择可实时消费的输入，可越过等待下一轮的手动消息与配置 operation；配置仍只在 boundary 生效。同消费时机的输入保持接纳顺序。builtin 使用 SDK async queue，DSH 使用 `turn/followUp`，Codex 使用 `turn/steer`；native 消费回执才上屏并关联到实际轮次，RPC ack 不能代替消费确认。多个同轮已消费的请求各自保留 Inbox 回复关联，共享 terminal 结果；reply/watch notification 不注册自动回复。
 
-IM、Task 的直接执行与 scheduled turn 保持 turn-level admission。Task Comment 等通过 Inbox 投递的事件遵循 Inbox 策略。用户显式 force-start、取消与 Stop 都由 operation queue 按 exact queue id重排或结算，不能清除无关后续项。
+Task 的直接执行、scheduled turn 以及 Goal 等显式 `turnBoundaryOnly` 工作保持 turn-level admission；IM 不因渠道来源而强制等待下一轮。Task Comment 等通过 Inbox 投递的事件遵循 Inbox 策略。用户显式 force-start、取消与 Stop 都由 operation queue 按 exact queue id重排或结算，不能清除无关后续项。IM 的同轮请求归属与结束通知见 [IM 入站与执行边界](im_integration_architecture.md#41-并发与-backpressure)。
 
 ### 6.3 配置变更
 

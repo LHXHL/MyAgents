@@ -7,6 +7,9 @@ import type { ChannelInbound } from '../../session-core/channel-context';
 import type { ChannelDeliveryMode } from '../../../shared/channelContext';
 
 let activeRequestId: string | null = null;
+// Native-consumed IM inputs share one turn and one visible answer. The first
+// request keeps response transport; every joined request still needs a terminal.
+const activeRequestIds = new Set<string>();
 const currentTurnInboxMetas: InboxTurnMeta[] = [];
 
 const currentTurnAttachmentHints: string[] = [];
@@ -16,6 +19,7 @@ const pendingExternalInteractiveRequests = new Map<string, ExternalPendingIntera
 
 export function resetExternalInteractiveState(): void {
   activeRequestId = null;
+  activeRequestIds.clear();
   currentTurnInboxMetas.length = 0;
   currentTurnAttachmentHints.length = 0;
   pendingPermissionSuggestions.clear();
@@ -50,11 +54,25 @@ export function getExternalImBridgeTurnContext(): import('../../session-core/im-
 }
 
 export function setExternalActiveRequestId(requestId: string | null | undefined): void {
+  activeRequestIds.clear();
   activeRequestId = requestId ?? null;
+  if (activeRequestId) activeRequestIds.add(activeRequestId);
+}
+
+export function appendExternalActiveRequest(requestId: string | undefined): void {
+  if (!requestId) return;
+  activeRequestId ??= requestId;
+  activeRequestIds.add(requestId);
+  imRequestRegistry.setStatus(requestId, 'running');
+}
+
+export function hasExternalActiveRequest(requestId: string): boolean {
+  return activeRequestIds.has(requestId);
 }
 
 export function clearExternalActiveRequestId(): void {
   activeRequestId = null;
+  activeRequestIds.clear();
 }
 
 /** Pattern B — emit per-request IM event. Subscribers in /api/im/chat filter
@@ -63,14 +81,21 @@ export function fireExternalImCallback(type: ImEventType, data: unknown): void {
   if (activeRequestId !== null) {
     imEventBus.emit(activeRequestId, type, data);
   }
+  if (type === 'complete' || type === 'error' || type === 'cancelled' || type === 'activity') {
+    for (const requestId of activeRequestIds) {
+      if (requestId !== activeRequestId) {
+        imEventBus.emit(requestId, type, type === 'activity' ? data : { finalPayloads: [] });
+      }
+    }
+  }
 }
 
 export function finalizeExternalActiveRequest(status: 'completed' | 'failed'): void {
-  if (activeRequestId) {
-    imRequestRegistry.setStatus(activeRequestId, status);
-    imRequestRegistry.unregister(activeRequestId);
+  for (const requestId of activeRequestIds) {
+    imRequestRegistry.setStatus(requestId, status);
+    imRequestRegistry.unregister(requestId);
   }
-  activeRequestId = null;
+  clearExternalActiveRequestId();
 }
 
 /** Settle one admitted-but-not-yet-running IM request by its own trace id. */

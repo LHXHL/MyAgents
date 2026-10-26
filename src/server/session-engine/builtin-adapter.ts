@@ -1,4 +1,5 @@
 import { broadcast } from "../sse";
+import { normalizeChatQueueResponseMode } from '../../shared/config-types';
 import { applySessionModelSelection } from '../agent-session';
 import { questionAnswersAsText } from '../../shared/types/askUserQuestion';
 import { retryDesktopRequest } from './retry';
@@ -505,7 +506,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
           queueId: request.queueId,
           turnOwner: request.turnOwner,
           onTerminal: request.onTerminal,
-          ...(request.turnBoundaryOnly ? { queueResponseModeOverride: 'turn' as const } : {}),
+          queueResponseModeOverride: request.turnBoundaryOnly ? 'turn' : normalizeChatQueueResponseMode(loadConfig().chatQueueResponseMode),
           beforeDispatch: request.beforeDispatch,
           channelDelivery: IM_CHANNEL_DELIVERY,
           channelPrimaryReminder: request.channelPrimaryReminder,

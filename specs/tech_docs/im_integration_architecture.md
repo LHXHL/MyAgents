@@ -137,6 +137,10 @@ Sidecar暂时不可用时，普通入站消息可以进入bounded durable buffer
 
 IM Channel 的串行边界只到**入站接管**：上一条消息进入 Rust bounded ingress 后，下一条即可继续；不得等待模型 terminal 或平台回复完成。SessionEngine / Runtime 是执行排队、追加输入与交互回答的唯一调度 owner。原生 Channel 直接遵循这一规则；Lark、企微、微信和 QQ 的插件私有队列在目标代码片段匹配时，通过加载期兼容变换接入相同 admission scope。目标缺失时保留上游队列并记录 warning，不能假定已解除串行等待；匹配边界见 [Plugin Bridge 的消息流转章节](plugin_bridge_architecture.md#阶段-4消息流转)。未来需要严格逐项完成的工作流应显式定义工作流依赖，不能由“邮件”等 transport 类型隐式推断。
 
+普通 Desktop 与 IM 手动输入共用 `chatQueueResponseMode` 和 Runtime 实际 steer 能力；该偏好属于 AppConfig，不是 Session 独立快照。Builtin IM 也读取同一偏好；Goal、工具面 replacement 等显式 `turnBoundaryOnly` 约束优先，Inbox 仍固定 realtime。外部 Runtime 的多个 IM 输入只有在 native consumption receipt 后才加入当前 turn 的 request 集合：第一条请求保留唯一可见回复，其余请求在同一终态收到空 `finalPayloads`，各自释放 ReplySlot/lease。没有文本输出的显式空 terminal 是结算回执，原生与 OpenClaw 通道均不制造第二条占位回复；未提供 `finalPayloads` 的 legacy terminal 保留原行为。未确认消费的输入不取得当前 turn 的回复权，取消由未消费输入 owner 裁决，明确未接纳继续复用原 queue identity 等下一轮。
+
+IM 请求的结束通知在所属 operation 上只消费一次；Runtime 停止后先结束未确认消费的 IM 请求，再释放临时上下文。DSH 已持久化的 input journal 仍由原生回执核对，用于恢复消息投影，不延续已停止请求的回复占用。实时输入在串行发送中尚未开始原生投递时，也可按 requestId 撤销。
+
 ### 4.2 Session key 与 owner
 
 private和group使用不同、稳定的peer session key。每个binding记录Product Session id、workspace和当前Sidecar信息；Sidecar真正的存活权由`SidecarOwner::Agent(sessionKey)`表达。

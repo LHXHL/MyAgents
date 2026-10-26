@@ -535,6 +535,8 @@ import {
   finalizeExternalActiveRequest,
   finalizeExternalQueuedImRequest,
   fireExternalImCallback,
+  appendExternalActiveRequest,
+  hasExternalActiveRequest,
   getExternalActiveRequestId,
   getExternalChannelInbound,
   getExternalImBridgeTurnContext,
@@ -1091,8 +1093,10 @@ function finalizeRejectedExternalOperation(
     ).catch(error => console.error('[inbox] rejected input reply failed:', error));
   }
   if (item.context.requestId) {
+    const requestId = item.context.requestId;
+    item.context.requestId = undefined;
     finalizeExternalQueuedImRequest(
-      item.context.requestId,
+      requestId,
       terminal,
       terminal === 'cancelled'
         ? buildImCancelledPayload()
@@ -1100,6 +1104,8 @@ function finalizeRejectedExternalOperation(
     );
   }
   if (item.context.onTerminal) {
+    const onTerminal = item.context.onTerminal;
+    item.context.onTerminal = undefined;
     const outcome =
       terminal === 'cancelled'
         ? {
@@ -1114,7 +1120,7 @@ function finalizeRejectedExternalOperation(
             assistantMessagePresent: false,
             error: reason,
           };
-    void Promise.resolve(item.context.onTerminal(outcome)).catch((error) => {
+    void Promise.resolve(onTerminal(outcome)).catch((error) => {
       console.error(
         '[external-session] queued turn terminal observer failed:',
         error,
@@ -1144,8 +1150,15 @@ function clearPendingRealtimeSteeredUserMessagesWithCancellation(): void {
             input.clientUserMessageId ===
             pending.operation.userProjection.message.id,
         )
-      )
+      ) {
+        // Stop retires the transport request even when native input truth
+        // still needs reconciliation. Keep its journal/projection untouched;
+        // a recreated input must not inherit a live reply lease from this turn.
+        if (pending.operation.context.requestId) {
+          finalizeRejectedExternalOperation(pending.operation, 'cancelled', 'Session stopped before input consumption was confirmed');
+        }
         continue;
+      }
       markExternalUserMessageRetracted(pending.operation);
       broadcast('queue:cancelled', { queueId: pending.queueId });
       finalizeRejectedExternalOperation(pending.operation, 'cancelled', 'Session stopped before input consumption was confirmed');
@@ -1197,7 +1210,7 @@ function takePendingRealtimeSteeredUserMessage(
 function surfaceRealtimeSteeredUserMessage(
   entry: PendingRealtimeSteeredUserMessage,
 ): Promise<boolean> {
-  if (entry.operation.inputSource === 'inbox' && (isExternalTurnCompleted()
+  if ((entry.operation.inputSource === 'inbox' || entry.operation.context.requestId) && (isExternalTurnCompleted()
     || entry.executionTurnId !== getExternalExecutionTurnId())) {
     // A receipt arriving after its turn retired cannot lend that request to a successor.
     markExternalUserMessageRetracted(entry.operation);
@@ -1207,6 +1220,7 @@ function surfaceRealtimeSteeredUserMessage(
   }
   const userMsg = entry.operation.userProjection.message;
   setExternalTurnActivityFacts(entry.activityFacts);
+  appendExternalActiveRequest(entry.operation.context.requestId);
   appendExternalTurnInboxMeta(entry.operation.context.inboxMeta);
   entry.operation.context.inboxMeta = undefined;
   // Native consumption transfers reply/projection authority from queue to turn,
@@ -1286,7 +1300,7 @@ function surfaceAcceptedRealtimeSteeredUserMessage(
 function finalizeUnconfirmedRealtimeSteeredUserMessage(
   entry: PendingRealtimeSteeredUserMessage,
 ): Promise<boolean> {
-  if (entry.operation.context.asyncQuestionReply || entry.operation.inputSource === 'inbox') {
+  if (entry.operation.context.asyncQuestionReply || entry.operation.inputSource === 'inbox' || entry.operation.context.requestId) {
     // A steer RPC ack says transport succeeded, not that this answer was consumed.
     markExternalUserMessageRetracted(entry.operation);
     broadcast('queue:cancelled', { queueId: entry.queueId });
@@ -6409,6 +6423,7 @@ async function steerExternalMessage(input: {
   generation: number;
 }): Promise<ExternalRealtimeSteerDispatch> {
   const userMsg = input.operation.userProjection.message;
+  if (input.operation.userProjection.retracted) return { result: { queued: false } };
   const active = getExternalActiveSteerPair();
   if (!active) {
     return deferRealtimeOperationToTurnBoundary(input);
@@ -6433,6 +6448,7 @@ async function steerExternalMessage(input: {
   const guarded = await evaluateExternalDispatchGuard(
     input.context.beforeDispatch,
   );
+  if (input.operation.userProjection.retracted) return { result: { queued: false } };
   if (!guarded.accepted) {
     broadcast('queue:cancelled', { queueId: input.queueId });
     return { result: { queued: false, error: guarded.error } };
@@ -6469,6 +6485,7 @@ async function steerExternalMessage(input: {
   }
   const originalUserContent = userMsg.content;
   const channelRuntimeText = await prepareExternalChannelInput(input.text, input.context, true);
+  if (input.operation.userProjection.retracted) return { result: { queued: false } };
   userMsg.content = decoratePreparedExternalChannelInput(String(userMsg.content), input.context);
   const admission = Promise.withResolvers<void>();
   let dshIntentPersisted = false;
@@ -6656,7 +6673,7 @@ function enqueueExternalQueuedMessage(
   model: string | undefined,
   context: ExternalSendContext,
   deliveryMode: 'realtime' | 'turn' = 'turn',
-  inputSource?: 'desktop' | 'inbox',
+  inputSource?: 'desktop' | 'im' | 'inbox',
 ): {
   queued: boolean;
   queueId?: string;
@@ -6876,12 +6893,13 @@ export function enqueueExternalSendForInbox(
   return enqueueExternalQueuedMessage(text, images, undefined, undefined, context, 'realtime', 'inbox');
 }
 
-export function enqueueExternalSendForDesktop(
+function enqueueExternalManualInput(
   text: string,
   images: ImagePayload[] | undefined,
   permissionMode: string | undefined,
   model: string | undefined,
   context: ExternalSendContext,
+  inputSource: 'desktop' | 'im',
 ): {
   queued: boolean;
   queueId?: string;
@@ -6950,6 +6968,8 @@ export function enqueueExternalSendForDesktop(
       permissionMode,
       model,
       context,
+      'turn',
+      inputSource,
     );
     if (!queued.queued || !queued.queueId) return queued;
     scheduleExternalQueueDrainAfterDirectAdmission();
@@ -6983,7 +7003,7 @@ export function enqueueExternalSendForDesktop(
       userMessage: createExternalUserMessage(text, images, context.sessionId),
       surfaceMode: 'queue-started',
       deliveryMode: 'realtime',
-      inputSource: 'desktop',
+      inputSource,
       queueId,
     });
     broadcast('queue:added', {
@@ -7026,7 +7046,7 @@ export function enqueueExternalSendForDesktop(
       .catch((err) => {
         markExternalUserMessageRetracted(operation);
         if (isExternalQueueGenerationStaleError(err)) {
-          return { queued: false };
+          return { queued: false } satisfies ExternalSendResult;
         }
         throw err;
       });
@@ -7038,7 +7058,12 @@ export function enqueueExternalSendForDesktop(
       canCancel: false,
       canForceExecute: false,
       userMessageId: operation.userProjection.message.id,
-      dispatch,
+      dispatch: dispatch.then((result: ExternalSendResult) => {
+        if (!result.queued && inputSource === 'im') {
+          finalizeRejectedExternalOperation(operation, 'failed', result.error ?? 'Runtime rejected realtime input');
+        }
+        return result;
+      }),
     };
   }
 
@@ -7098,7 +7123,7 @@ export function enqueueExternalSendForDesktop(
       throw err;
     })
     .finally(scheduleExternalQueueDrainAfterDirectAdmission);
-  if (!context.beforeDispatch) {
+  if (inputSource === 'desktop' && !context.beforeDispatch) {
     surfaceExternalUserMessageAsReplay(operation, context.sessionId);
   }
   return {
@@ -7117,77 +7142,19 @@ export function enqueueExternalSendForDesktop(
   };
 }
 
-/**
- * External IM admission follows the same turn-boundary queue as Desktop, but
- * never steers into the active turn. A busy request returns as soon as this
- * owner has accepted the operation; its request-scoped terminal remains bound
- * to the queued context until the drain starts or rejects it.
- */
-export function enqueueExternalSendForIm(
-  text: string,
-  images: ImagePayload[] | undefined,
+/** Desktop and IM human queries share one timing/capability admission policy. */
+export function enqueueExternalSendForDesktop(
+  text: string, images: ImagePayload[] | undefined,
+  permissionMode: string | undefined, model: string | undefined,
   context: ExternalSendContext,
-): {
-  queued: boolean;
-  queueId?: string;
-  userMessageId: string;
-  dispatch: Promise<ExternalSendResult>;
-} {
-  if (
-    externalSessionMutationInFlight ||
-    hasPendingDshNativeWork() ||
-    hasExternalSendInFlight() ||
-    shouldQueueExternalOperation(getExternalLifecycleState(), {
-      responseMode: 'turn',
-      canSteerActiveTurn: false,
-    })
-  ) {
-    return enqueueExternalTurnBoundaryOperation(
-      text,
-      images,
-      context.permissionMode,
-      context.model,
-      context,
-    );
-  }
+): ReturnType<typeof enqueueExternalManualInput> {
+  return enqueueExternalManualInput(text, images, permissionMode, model, context, 'desktop');
+}
 
-  const runtimeConfig = captureExternalRuntimeConfigSnapshot(
-    context.model,
-    context.permissionMode,
-    context,
-  );
-  const sendContext = applySnapshotToExternalSendContext(
-    { ...context, queueId: context.queueId ?? nextExternalQueueId() },
-    runtimeConfig,
-  );
-  const operation = createExternalMessageOperation({
-    text,
-    images,
-    context: sendContext,
-    runtimeConfig,
-    userMessage: createExternalUserMessage(text, images, context.sessionId),
-  });
-  const generation = getExternalOperationGeneration();
-  const dispatch = runExternalMessageOperation(
-    text,
-    images,
-    runtimeConfig.permissionMode,
-    runtimeConfig.model,
-    sendContext,
-    operation,
-    undefined,
-    generation,
-  )
-    .catch((error) => {
-      if (isExternalQueueGenerationStaleError(error)) return { queued: false };
-      throw error;
-    })
-    .finally(scheduleExternalQueueDrainAfterDirectAdmission);
-  return {
-    queued: true,
-    userMessageId: operation.userProjection.message.id,
-    dispatch,
-  };
+export function enqueueExternalSendForIm(
+  text: string, images: ImagePayload[] | undefined, context: ExternalSendContext,
+): ReturnType<typeof enqueueExternalManualInput> {
+  return enqueueExternalManualInput(text, images, context.permissionMode, context.model, context, 'im');
 }
 
 /**
@@ -7484,6 +7451,7 @@ export async function cancelExternalQueueItem(
     if (entry) {
       markExternalUserMessageRetracted(entry.operation);
       broadcast('queue:cancelled', { queueId });
+      finalizeRejectedExternalOperation(entry.operation, 'cancelled', 'Input cancelled before native consumption');
     }
     return { cancelledText: visibleDesktopMirrorText(pending.text) };
   }
@@ -7850,12 +7818,27 @@ export async function cancelExternalImRequest(
   requestId: string,
   _reason: string = 'user',
 ): Promise<{ aborted: boolean; mode: 'running' | 'queued' | 'unknown' }> {
-  if (getExternalActiveRequestId() === requestId && isExternalSessionActive()) {
+  if (hasExternalActiveRequest(requestId) && isExternalSessionActive()) {
     console.log(
       `[external-session] cancelExternalImRequest requestId=${requestId} mode=running`,
     );
     const stopped = await stopExternalSession({ preserveQueue: true });
     return { aborted: stopped, mode: stopped ? 'running' : 'unknown' };
+  }
+  const pendingInput = pendingRealtimeSteeredUserMessages.find(entry => entry.operation.context.requestId === requestId);
+  if (pendingInput) {
+    const cancelled = await cancelExternalQueueItem(pendingInput.queueId);
+    if (cancelled) return { aborted: true, mode: 'queued' };
+    // Some runtimes can cancel only the active turn, not one steered input.
+    // Its request remains owned here until native consumption; cancellation
+    // must still stop that execution instead of leaving an uncancellable IM.
+    if (hasExternalActiveRequest(requestId) || (
+      pendingRealtimeSteeredUserMessages.includes(pendingInput)
+      && !getExternalActiveRuntime()?.cancelSteeredMessage
+    )) {
+      const stopped = await stopExternalSession({ preserveQueue: true });
+      return { aborted: stopped, mode: stopped ? 'running' : 'unknown' };
+    }
   }
   const queued = cancelExternalQueuedMessageByRequestId(requestId);
   if (queued) {
@@ -7883,6 +7866,19 @@ export async function cancelExternalImRequest(
     // acceptance settles only after the promotion/guard has stopped dispatch,
     // so /api/im/cancel cannot emit a competing terminal first.
     await reserved.dispatchAcceptance;
+    return { aborted: true, mode: 'queued' };
+  }
+  const inFlight = getExternalPendingMessageOperations().find(operation =>
+    operation.context.requestId === requestId && operation.deliveryMode === 'realtime'
+    && !operation.userProjection.inTranscript && !operation.userProjection.retracted,
+  );
+  if (inFlight && !pendingInput) {
+    // A chained steer can be admitted before its predecessor's RPC resolves.
+    // Retraction is owned by that exact operation and checked before native IO.
+    markExternalUserMessageRetracted(inFlight);
+    inFlight.context.beforeDispatch?.cancel?.();
+    broadcast('queue:cancelled', { queueId: inFlight.queueId });
+    finalizeRejectedExternalOperation(inFlight, 'cancelled', 'Input cancelled before native dispatch');
     return { aborted: true, mode: 'queued' };
   }
   return { aborted: false, mode: 'unknown' };

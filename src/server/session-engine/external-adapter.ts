@@ -519,6 +519,7 @@ export function createExternalSessionEngine(): SessionEngine {
           turnOwner: request.turnOwner,
           onTerminal: request.onTerminal,
           beforeDispatch: request.beforeDispatch,
+          turnBoundaryOnly: request.turnBoundaryOnly,
           channelDelivery: IM_CHANNEL_DELIVERY,
           channelPrimaryReminder: request.channelPrimaryReminder,
         },
@@ -529,9 +530,9 @@ export function createExternalSessionEngine(): SessionEngine {
         sent.userMessageId,
       );
 
-      // A queueId means the existing external turn-boundary queue has taken
-      // ownership. Return admission immediately; the request-scoped terminal
-      // and Goal lifecycle stay attached to the queued operation until drain.
+      // A queueId means the external input owner has taken responsibility for
+      // queueing or steering. Return admission immediately; native consumption
+      // and the request-scoped terminal are observed independently of ingress.
       if (sent.queueId) {
         return {
           success: true,

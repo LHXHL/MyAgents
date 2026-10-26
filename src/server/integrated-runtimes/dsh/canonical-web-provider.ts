@@ -14,6 +14,7 @@ export const DSH_CANONICAL_WEB_ADAPTER_ID = 'myagents-host-canonical-web-v1';
 
 const MAX_PROVIDER_RESPONSE_BYTES = 2 * 1_024 * 1_024;
 const ZHIPU_WEB_SEARCH_ENDPOINT = 'https://open.bigmodel.cn/api/paas/v4/web_search';
+const DEEPSEEK_WEB_SEARCH_ENDPOINT = 'https://api.deepseek.com/v1/tools/search';
 const MAX_UTILITY_TOKENS = 4_096;
 const MAX_SEARCH_TOKENS = 32_000;
 const MAX_SEARCH_USES = 5;
@@ -355,7 +356,7 @@ export class DshCanonicalWebProvider implements DshCanonicalWebProviderPort {
           || input.profile.baseUrl !== OFFICIAL_DEEPSEEK_ANTHROPIC_BASE_URL) {
           throw new DshCanonicalWebError('web_search_unavailable', 'Native DeepSeek search binding is invalid');
         }
-        return await this.runAnthropicCompatibleSearch(input);
+        return await this.runDeepSeekNativeSearch(input);
       }
       if (input.profile.api === 'anthropic-messages') {
         return await this.runAnthropicCompatibleSearch(input);
@@ -464,6 +465,43 @@ export class DshCanonicalWebProvider implements DshCanonicalWebProviderPort {
       if (error instanceof DshCanonicalWebError) throw error;
       throw new DshCanonicalWebError('utility_model_failed', 'Provider utility request failed', { cause: error });
     }
+  }
+
+  private async runDeepSeekNativeSearch(input: ProviderInput & SearchInput): Promise<Record<string, unknown>> {
+    const domains = normalizeDomains(input);
+    const query = [input.query.trim(),
+      ...(domains.allowed?.length ? [domains.allowed.map(domain => `site:${domain}`).join(' OR ')] : []),
+      ...(domains.blocked?.map(domain => `-site:${domain}`) ?? []),
+    ].join(' ');
+    // The dedicated API counts Unicode characters, not UTF-16 code units.
+    // Never silently truncate a query or drop its domain restrictions.
+    if (!query.trim() || [...query].length > 128) {
+      throw new DshCanonicalWebError('provider_search_failed', 'DeepSeek Search query including domain filters must contain 1–128 characters; shorten the query.');
+    }
+    const startedAt = performance.now();
+    const response = await this.client.request(DEEPSEEK_WEB_SEARCH_ENDPOINT, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${input.apiKey}`, 'content-type': 'application/json' },
+      body: jsonBytes({ query, count: 8, need_content: false }),
+      signal: input.signal,
+    });
+    const payload = parseJsonResponse(response, 'provider_search_failed');
+    if (payload.error || !Array.isArray(payload.results)) {
+      throw new DshCanonicalWebError('provider_search_failed', 'DeepSeek Search response is invalid');
+    }
+    const seen = new Set<string>();
+    const results = payload.results.flatMap(value => {
+      const item = object(value, 'DeepSeek Search result');
+      if (typeof item.url !== 'string' || typeof item.title !== 'string') {
+        throw new DshCanonicalWebError('provider_search_failed', 'DeepSeek Search result is invalid');
+      }
+      const result = boundedResult({ ...item, snippet: typeof item.summary === 'string' && item.summary.trim() ? item.summary : item.snippet }, domains);
+      if (!result || seen.has(result.url)) return [];
+      seen.add(result.url);
+      return [result];
+    });
+    // Search has request-based billing; there is no auxiliary model token usage.
+    return searchOutput(input.query, results, undefined, 1, startedAt, false);
   }
 
   private async runAnthropicCompatibleSearch(

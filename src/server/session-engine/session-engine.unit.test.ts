@@ -2446,6 +2446,13 @@ describe('session-engine selector and adapters', () => {
       { model: 'model-two', reasoningEffort: 'high' }, { source: 'message-snapshot' });
   });
 
+  it.each(['turn', 'realtime'])('applies the manual query preference to builtin IM: %s', async mode => {
+    mocks.state.useExternal = false;
+    mocks.loadConfig.mockReturnValueOnce({ chatQueueResponseMode: mode });
+    await getSessionEngine().enqueueImMessage({ message: 'IM', requestId: 'manual-im', sessionId: 'sid', workspacePath: '/workspace', scenario: { type: 'im', platform: 'feishu', sourceType: 'private' } });
+    expect(mocks.enqueueUserMessage.mock.calls.at(-1)?.[11]).toMatchObject({ queueResponseModeOverride: mode });
+  });
+
   it('passes metadataBirthPending into external IM admission', async () => {
     mocks.state.useExternal = true;
 

@@ -147,7 +147,7 @@ export interface ExternalMessageOperation {
   admissionOrder: number;
   /** Consumption phase chosen at admission; Inbox can join the active turn. */
   deliveryMode: 'realtime' | 'turn';
-  inputSource?: 'desktop' | 'inbox';
+  inputSource?: 'desktop' | 'im' | 'inbox';
   queueId: string;
   text: string;
   images?: ImagePayload[];
