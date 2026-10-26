@@ -17,7 +17,7 @@ import {
   createRuntimeBackedProviderIdentity,
   managedCodexProviderPermissionToRuntimePermission,
 } from '../../shared/providerExecution';
-import { createDshBinding } from '../../shared/integrated-runtimes/identity';
+import { createDshBinding, resolveDshPlatformTarget } from '../../shared/integrated-runtimes/identity';
 
 /** Complete Product Session execution snapshots. Desktop, Task and IM share
  * the owned snapshot compiler; IM changes only its birth permission policy.
@@ -103,14 +103,6 @@ interface SessionSnapshotRuntimeOptions {
   managedCodexProviderReady?: boolean;
 }
 
-function dshPlatformTarget(): string {
-  const target = `${process.platform}-${process.arch}`;
-  if (target !== 'darwin-arm64' && target !== 'win32-x64' && target !== 'linux-x64') {
-    throw new Error(`DSH Session binding has no accepted platform target for ${target}`);
-  }
-  return target;
-}
-
 export function snapshotRuntimeIdentity(
   runtime: RuntimeType,
   runtimeSource?: RuntimeSource,
@@ -119,7 +111,7 @@ export function snapshotRuntimeIdentity(
     return {
       runtime,
       runtimeSource: 'integrated',
-      runtimeBinding: createDshBinding(dshPlatformTarget()),
+      runtimeBinding: createDshBinding(resolveDshPlatformTarget(process.platform, process.arch)),
     };
   }
   return {

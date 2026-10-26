@@ -1159,6 +1159,57 @@ function desktopRequest(
 }
 
 describe('Runtime turn analytics', () => {
+  it.each(['fresh', 'orphaned-native'] as const)('creates and resumes an Intel Mac DSH Session from %s state', async (birthState) => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'first Intel answer' },
+      { kind: 'success', text: 'resumed Intel answer' },
+    ], {
+      runtimeType: 'dsh', runtimeSource: 'integrated',
+      config: { defaultProviderId: 'deepseek', providerApiKeys: { deepseek: 'synthetic-test-key' } },
+    });
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('darwin');
+    vi.spyOn(process, 'arch', 'get').mockReturnValue('x64');
+    const sessionId = `dsh-intel-${birthState}`;
+    const workspacePath = join(harness.home, 'workspace');
+    if (birthState === 'orphaned-native') {
+      // Old builds could create a native ID, then reject the Product snapshot.
+      // Reopening after upgrade must not resume that unbound native identity.
+      harness.externalSession.setRuntimeSessionId('old-unbound-native');
+      await expect(harness.externalSession.restoreExternalSessionState(
+        sessionId, workspacePath, { type: 'desktop' },
+      )).resolves.toEqual({ success: true });
+    }
+    const request = (text: string): DesktopMessageRequest => ({
+      ...desktopRequest(sessionId, workspacePath, text),
+      providerRoute: { kind: 'provider', providerId: 'deepseek', model: 'deepseek-flash' },
+      model: 'deepseek-flash', permissionMode: 'full-autonomous',
+    });
+    const first = await harness.engine.sendDesktopMessage(request('first Intel question'));
+    await expect(first.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    const metadata = harness.sessionStore.getSessionMetadata(sessionId);
+    expect(metadata).toMatchObject({
+      runtime: 'dsh', runtimeSource: 'integrated', runtimeSessionId: expect.any(String),
+      runtimeBinding: { family: 'integrated', id: 'dsh', platformTarget: 'darwin-x64' },
+      providerId: 'deepseek', model: 'deepseek-flash',
+    });
+    expect(harness.runtime.startSessionResumeIds).toEqual([undefined]);
+    await harness.externalSession.stopExternalSession();
+    await expect(harness.externalSession.restoreExternalSessionState(
+      sessionId, workspacePath, { type: 'desktop' },
+    )).resolves.toEqual({ success: true });
+    const second = await harness.engine.sendDesktopMessage(request('second Intel question'));
+    await expect(second.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    expect(harness.runtime.startSessionResumeIds).toEqual([undefined, metadata?.runtimeSessionId]);
+    const restored = await harness.sessionStore.getSessionData(sessionId);
+    const answers = restored?.messages.filter(message => message.role === 'assistant').map(message => message.content);
+    expect(answers).toEqual([
+      expect.stringContaining('first Intel answer'),
+      expect.stringContaining('resumed Intel answer'),
+    ]);
+  });
+
   it('carries the DSH desktop Provider through native startup, birth and config adoption', async () => {
     const harness = await createHarness([{ kind: 'success', text: 'selected Provider answer' }], {
       runtimeType: 'dsh', runtimeSource: 'integrated',
