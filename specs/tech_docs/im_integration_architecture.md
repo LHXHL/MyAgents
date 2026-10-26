@@ -133,9 +133,9 @@ platform / Plugin Bridge inbound
   -> ReplyRouter -> platform
 ```
 
-Sidecar暂时不可用时，普通入站消息可以进入bounded durable buffer并在恢复后按peer顺序重放。OpenClaw `requestId/deliveryProtocol`不能写入durable buffer：原Bridge dispatcher只存在于当前进程，无法enqueue时必须立即terminal，不能让已丢失owner的协议请求在重启后重放。
+Sidecar暂时不可用时，普通入站消息可以进入bounded durable buffer并在恢复后按peer顺序重放。OpenClaw `requestId/deliveryProtocol`不能写入durable buffer：原Bridge dispatcher只存在于当前进程，发送前的准备失败或明确拒绝必须立即terminal；enqueue已发出但ACK不确定时保留原请求并按§5.1核对结果，不能让已丢失owner的协议请求在重启后重放。
 
-IM Channel 的串行边界只到**入站接管**：上一条消息进入 Rust bounded ingress 后，下一条即可继续；不得等待模型 terminal 或平台回复完成。SessionEngine / Runtime 是执行排队、追加输入与交互回答的唯一调度 owner。当前原生 Channel、Lark、企微、微信和 QQ 遵循这一规则；插件私有队列由已验证版本的加载期兼容变换接入相同 admission scope。未来需要严格逐项完成的工作流应显式定义工作流依赖，不能由“邮件”等 transport 类型隐式推断。
+IM Channel 的串行边界只到**入站接管**：上一条消息进入 Rust bounded ingress 后，下一条即可继续；不得等待模型 terminal 或平台回复完成。SessionEngine / Runtime 是执行排队、追加输入与交互回答的唯一调度 owner。原生 Channel 直接遵循这一规则；Lark、企微、微信和 QQ 的插件私有队列在目标代码片段匹配时，通过加载期兼容变换接入相同 admission scope。目标缺失时保留上游队列并记录 warning，不能假定已解除串行等待；匹配边界见 [Plugin Bridge 的消息流转章节](plugin_bridge_architecture.md#阶段-4消息流转)。未来需要严格逐项完成的工作流应显式定义工作流依赖，不能由“邮件”等 transport 类型隐式推断。
 
 ### 4.2 Session key 与 owner
 

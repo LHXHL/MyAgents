@@ -211,7 +211,7 @@ promise 仍存活到平台投递结束，但同 chat 的下一条只等待当前
 
 OpenClaw Channel Plugin 是回复渲染 owner：由插件决定是否启用 streaming、CardKit 的创建/更新节奏、静态消息 fallback 与最终收尾。MyAgents 不复制任何平台 SDK 会话，也不根据凭据或插件 ID 推导流式能力；Bridge 只提供 OpenClaw dispatcher 所需的**请求级、有序、可等待传输**。
 
-插件通过 `dispatchReplyWithBufferedBlockDispatcher` 提供 `dispatcherOptions.deliver` 时，同样拥有这次回复的渲染生命周期：Bridge 用现有 request-scoped OpenClaw reply 协议承接，并在 AI terminal 与 renderer delivery 后才结算调用。只有没有 renderer callback 的旧式 buffered 调用走 admission-only 兼容路径；Rust 接管入站消息的 HTTP 200 不等于插件回复完成。
+插件通过 `dispatchReplyWithBufferedBlockDispatcher` 提供 `dispatcherOptions.deliver` 时，同样拥有这次回复的渲染生命周期：Bridge 用现有 request-scoped OpenClaw reply 协议承接，正常在 AI terminal 与 renderer delivery 后结算调用；投递等待超过下述期限时以 `deliveryOutcome: unknown` 收口，不宣称平台发送已完成。只有没有 renderer callback 的旧式 buffered 调用走 admission-only 兼容路径；Rust 接管入站消息的 HTTP 200 不等于插件回复完成。
 
 `deliveryProtocol: "openclaw-reply"` 是本次入站已经成功创建真实 dispatcher 的事实，只能在 pending dispatch 按同一 `requestId` 注册后随该次请求发送。它不是 channel capability，也不能由 `streaming` 配置反推。Rust 将这个值保存在对应 `ReplySlot`，不影响同一 channel 的其他并发请求。
 
@@ -460,7 +460,7 @@ Bridge 消费；Builtin SDK、Managed Codex 与用户原生外部 Runtime 仍保
 | `src/server/plugin-bridge/index.ts` | Bridge HTTP Server + 插件加载入口 |
 | `src/server/plugin-bridge/compat-api.ts` | OpenClaw API 适配（registerChannel/Tool） |
 | `src/server/plugin-bridge/compat-runtime.ts` | Channel Runtime Mock + 消息拦截路由 |
-| `src/server/plugin-bridge/lark-admission.ts` | 官方 Lark 同 chat task 的 admission scope/token owner |
+| `src/server/plugin-bridge/lark-admission.ts` | Lark、企微、微信与 QQ 共用的 Plugin admission scope/token owner |
 | `src/server/plugin-bridge/plugin-compat-patches.ts` | 按目标代码片段匹配的队列、渠道上下文、发送策略与 CLI 兼容变换 |
 | `src/server/plugin-bridge/pending-dispatch.ts` | requestId → OpenClaw dispatcher 的有序传输队列 |
 | `src/server/plugin-bridge/sdk-shim/` | SDK shim 包（入口以 package.json exports 为准） |
