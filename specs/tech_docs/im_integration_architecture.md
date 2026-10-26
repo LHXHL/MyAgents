@@ -133,7 +133,9 @@ platform / Plugin Bridge inbound
   -> ReplyRouter -> platform
 ```
 
-Sidecar暂时不可用时，普通入站消息可以进入bounded durable buffer并在恢复后按peer顺序重放。OpenClaw `requestId/deliveryProtocol`不能写入durable buffer：原Bridge dispatcher只存在于当前进程，无法enqueue时必须立即terminal，不能让已丢失owner的协议请求在重启后重放。
+Sidecar暂时不可用时，普通入站消息可以进入bounded durable buffer并在恢复后按peer顺序重放。OpenClaw `requestId/deliveryProtocol`不能写入durable buffer：原Bridge dispatcher只存在于当前进程，发送前的准备失败或明确拒绝必须立即terminal；enqueue已发出但ACK不确定时保留原请求并按§5.1核对结果，不能让已丢失owner的协议请求在重启后重放。
+
+IM Channel 的串行边界只到**入站接管**：上一条消息进入 Rust bounded ingress 后，下一条即可继续；不得等待模型 terminal 或平台回复完成。SessionEngine / Runtime 是执行排队、追加输入与交互回答的唯一调度 owner。原生 Channel 直接遵循这一规则；Lark、企微、微信和 QQ 的插件私有队列在目标代码片段匹配时，通过加载期兼容变换接入相同 admission scope。目标缺失时保留上游队列并记录 warning，不能假定已解除串行等待；匹配边界见 [Plugin Bridge 的消息流转章节](plugin_bridge_architecture.md#阶段-4消息流转)。未来需要严格逐项完成的工作流应显式定义工作流依赖，不能由“邮件”等 transport 类型隐式推断。
 
 ### 4.2 Session key 与 owner
 
@@ -152,6 +154,14 @@ peer binding 是持久关联，Agent owner 是当前进程的执行租约：重�
 - 命令无需启动目标 Runtime；首条普通消息经标准 ensure 唤醒。
 
 desktop handover、heartbeat、模型选择和 surface migration 复用同一 per-peer fence。桌面主动的不兼容切换仍允许将当前渠道 binding 接管到新 Session，确认框明确告知转移；历史来源 tag 本身不授予 binding 修改权限。
+
+#### 未完成请求与空闲回收
+
+每个 ReplySlot 在注册前，按精确 Session/generation 从 SidecarManager 取得独立 `BackgroundCompletion(im-reply:UUID)` lease；取得失败拒绝准入。lease 覆盖排队、推理、工具和等待用户回答，真实 terminal 或 consumer teardown 完成后释放。UUID 使旧请求的迟到释放不能移除新请求的 owner；空 consumer 不保留 execution lease，也不会阻止桌面空闲迁移。`/new` 只将旧 consumer 标为 retire-when-idle，既有请求 lease 继续负责保活。
+
+30 分钟计时只产生回收候选。collector 锁外取得同一 peer fence，复核 binding/活动时间及 ReplySlot；存在未完成请求即跳过。无 pending 时先把其它 surface 的已接纳执行交给现有 headless BackgroundCompletion，再释放 Agent lease，成功后提交端口投影并停止空 consumer。Router 锁不跨 owner release 或平台 I/O。
+
+consumer 的取消、generation 丢失和 task panic 共用退出收口：短锁摘取 slots，逐 request 清除 interaction，向原 dispatcher 交付中断 terminal，并释放独立 lease；仍存活的 producer 收到显式 cancel。真实执行终态在平台 I/O 前保存在原 ReplySlot；退出发生在投递途中时保留该结果，仅重交幂等的 OpenClaw terminal，原生平台投递结果未知时不重复发送。短暂 SSE 断线只重连，不能当作执行终态。Channel stop 在 Bridge 存活时等待 consumer 收尾；网络不可达或 deadline 到期只记 delivery unknown，不声称提示已送达。
 
 ### 4.3 Session 配置与默认变更
 
@@ -192,6 +202,10 @@ OpenClaw reply：
 -插件拥有CardKit/streaming/static fallback和最终平台delivery，Rust只做有序transport。
 
 每个已注册request必须且只能有一个terminal。命令、白名单拒绝、群激活拒绝等早退也要以空complete或带原因abort结算，不能让dispatcher悬空。
+
+`ImRequestRegistry` 独立于 20,000 项 delta ring 保留最多 200 条、最长 6 小时的 producer terminal receipt。consumer 重连、gap 和既有 15 秒核对周期通过 `/api/im/requests` 核对原 request，不重跑模型。active 继续等待；过期/容量淘汰为 unknown。只有 enqueue 已返回或回执不确定的请求才允许原 registry 封闭缺失 ID，返回“执行状态无法核对”并阻止迟到 POST 再执行。显式取消先于 enqueue 注册到达时，也由同一 registry 留下取消回执，阻止迟到输入启动；已有真实终态保持不变。运行中、排队中及取消尚未完成的 registry entry 不按沉默时长淘汰。状态查询与取消入口在 `src/server/routes/im-request-lifecycle.ts`，仍由既有 SessionEngine 执行取消，不改变客户端停止和排队行为。
+
+enqueue 的未知 HTTP ACK（连接/响应解析失败或 HTTP 5xx）不触发 buffer 重放：保留 slot/lease、核对同一 requestId；5xx 可能发生在 Runtime 已接纳之后，不能推断为拒绝。明确拒绝仍立即收尾。Bridge start/partial 投递失败不会结束执行关联。terminal handoff 是有界、幂等接纳，投递失败与 producer terminal 分别处理。
 
 ### 5.2 Session binding delivery
 

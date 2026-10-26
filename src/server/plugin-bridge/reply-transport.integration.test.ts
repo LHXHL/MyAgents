@@ -188,7 +188,14 @@ describe('Plugin Bridge request-scoped reply transport', () => {
         channel: { id: 'fixture' },
       },
     }));
-    writeFileSync(join(pluginPackageDir, 'index.mjs'), FIXTURE_PLUGIN_SOURCE);
+    // A changed vendor module must not prevent an otherwise working plugin
+    // from starting just because a compatibility patch no longer matches.
+    const vendorDir = join(pluginDir, 'node_modules', '@wecom', 'wecom-openclaw-plugin');
+    mkdirSync(join(vendorDir, 'dist', 'src'), { recursive: true });
+    writeFileSync(join(vendorDir, 'package.json'), JSON.stringify({ type: 'module' }));
+    writeFileSync(join(vendorDir, 'dist', 'src', 'monitor.js'), 'export const upstreamRevision = "next";');
+    writeFileSync(join(pluginPackageDir, 'index.mjs'),
+      `import '@wecom/wecom-openclaw-plugin/dist/src/monitor.js';\n${FIXTURE_PLUGIN_SOURCE}`);
 
     const ingressBodies: Array<Record<string, unknown>> = [];
     const rustServer = createServer((request, response) => {
@@ -239,6 +246,7 @@ describe('Plugin Bridge request-scoped reply transport', () => {
         () => ingressBodies.length === 4 ? ingressBodies : undefined,
         `four fixture ingress messages\n${output}`,
       );
+      expect(output).toContain('wecom context/delivery patch target not found; loading upstream code');
       const streamIngress = ingressBodies.find(body => body.text === 'stream');
       const staticIngress = ingressBodies.find(body => body.text === 'static');
       const errorIngress = ingressBodies.find(body => body.text === 'error');

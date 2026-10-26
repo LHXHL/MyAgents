@@ -1,30 +1,31 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 
-type LarkAdmissionScope = {
+type PluginAdmissionScope = {
   token: symbol;
   admitted: boolean;
   resolveAdmission: () => void;
 };
 
-export type LarkAdmissionExecution<T = unknown> = {
+export type PluginAdmissionExecution<T = unknown> = {
   admission: Promise<void>;
   completion: Promise<T>;
 };
 
-type LarkAdmissionGlobals = typeof globalThis & {
-  __myagentsRunLarkAdmissionScopedTask?: <T>(task: () => Promise<T>) => LarkAdmissionExecution<T>;
+type PluginAdmissionGlobals = typeof globalThis & {
+  __myagentsRunLarkAdmissionScopedTask?: <T>(task: () => Promise<T>) => PluginAdmissionExecution<T>;
   __myagentsCurrentLarkAdmissionToken?: () => symbol | undefined;
+  __myagentsAwaitPluginAdmission?: (task: () => Promise<unknown>, onError: () => void) => Promise<void>;
 };
 
-const admissionStorage = new AsyncLocalStorage<LarkAdmissionScope>();
+const admissionStorage = new AsyncLocalStorage<PluginAdmissionScope>();
 
-function runLarkAdmissionScopedTask<T>(task: () => Promise<T>): LarkAdmissionExecution<T> {
+function runPluginAdmissionScopedTask<T>(task: () => Promise<T>): PluginAdmissionExecution<T> {
   let resolveAdmissionPromise!: () => void;
   const admission = new Promise<void>((resolve) => {
     resolveAdmissionPromise = resolve;
   });
-  const scope: LarkAdmissionScope = {
-    token: Symbol('lark-chat-task'),
+  const scope: PluginAdmissionScope = {
+    token: Symbol('plugin-chat-task'),
     admitted: false,
     resolveAdmission() {
       if (scope.admitted) return;
@@ -41,17 +42,28 @@ function runLarkAdmissionScopedTask<T>(task: () => Promise<T>): LarkAdmissionExe
   return { admission, completion };
 }
 
-/** Install the two structural hooks used by the load-time Lark queue patch. */
-export function installLarkAdmissionRuntimeGlobals(): void {
-  const globals = globalThis as LarkAdmissionGlobals;
-  globals.__myagentsRunLarkAdmissionScopedTask = runLarkAdmissionScopedTask;
+/** Install the two structural hooks used by the load-time plugin queue patches. */
+export function installPluginAdmissionRuntimeGlobals(): void {
+  const globals = globalThis as PluginAdmissionGlobals;
+  globals.__myagentsRunLarkAdmissionScopedTask = runPluginAdmissionScopedTask;
   globals.__myagentsCurrentLarkAdmissionToken = () => admissionStorage.getStore()?.token;
+  globals.__myagentsAwaitPluginAdmission = async (task, onError) => {
+    const execution = runPluginAdmissionScopedTask(task);
+    // Observe detached delivery failures without making input admission wait
+    // for renderer cleanup. Each task retains its own ALS scope and callbacks.
+    void execution.completion.catch(onError);
+    await execution.admission;
+  };
 }
 
 /** Release only the inbound-ordering lease; the plugin task stays alive until delivery completes. */
-export function markCurrentLarkInboundAccepted(): boolean {
+export function markCurrentPluginInboundAccepted(): boolean {
   const scope = admissionStorage.getStore();
   if (!scope) return false;
   scope.resolveAdmission();
   return true;
 }
+
+// Backward-compatible names for the existing Lark compatibility surface.
+export const installLarkAdmissionRuntimeGlobals = installPluginAdmissionRuntimeGlobals;
+export const markCurrentLarkInboundAccepted = markCurrentPluginInboundAccepted;

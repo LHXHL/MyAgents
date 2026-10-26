@@ -27,6 +27,7 @@ export interface PendingDispatchCallbacks {
 export type PendingDispatchResult = {
   queuedFinal: number;
   counts: Record<string, number>;
+  deliveryOutcome?: 'unknown';
 };
 
 type PartialLane = 'answer' | 'reasoning';
@@ -62,6 +63,7 @@ export interface PendingDispatch {
   blockBoundariesAccepted: number;
   finalPayloadsReceived: number;
   registeredAt: number;
+  terminalTimer?: ReturnType<typeof setTimeout>;
   firstPartialAcceptedAt?: number;
   producerTerminalAcceptedAt?: number;
   canonicalFinalAcceptedAt?: number;
@@ -71,6 +73,41 @@ export interface PendingDispatch {
 
 const pendingByRequestId = new Map<string, PendingDispatch>();
 const requestIdByStreamId = new Map<string, string>();
+// Admission receipts are process-local, bounded, and independent of renderer
+// completion. Repeated terminal ACKs must never enqueue a second final.
+const terminalReceipts = new Map<string, { signature: string; acceptedAt: number }>();
+export const TERMINAL_DELIVERY_DEADLINE_MS = 5 * 60_000;
+const RECEIPT_TTL_MS = 6 * 60 * 60 * 1000;
+
+function claimTerminal(requestId: string, outcome: string, payloads: OpenClawReplyPayload[]): PendingDispatch | undefined {
+  const signature = JSON.stringify([outcome, payloads]);
+  const now = Date.now();
+  for (const [id, receipt] of terminalReceipts) {
+    if (now - receipt.acceptedAt > RECEIPT_TTL_MS) terminalReceipts.delete(id);
+  }
+  const receipt = terminalReceipts.get(requestId);
+  if (receipt) {
+    if (receipt.signature !== signature) throw new Error('protocol_terminal_conflict');
+    return undefined;
+  }
+  const dispatch = getOpenDispatch(requestId);
+  terminalReceipts.set(requestId, { signature, acceptedAt: now });
+  while (terminalReceipts.size > 1000) terminalReceipts.delete(terminalReceipts.keys().next().value!);
+  dispatch.terminalTimer = setTimeout(() => {
+    if (dispatch.settled) return;
+    // We cannot cancel arbitrary plugin promises. Stop scheduling further
+    // callbacks and report unknown delivery, without claiming the I/O stopped.
+    dispatch.queue = [];
+    dispatch.deliveryMode = 'tool_only';
+    try { dispatch.callbacks.onDeliveryMode?.('tool_only'); } catch { /* already unknown */ }
+    dispatch.settled = true;
+    cleanupDispatch(dispatch);
+    dispatch.resolve({ queuedFinal: dispatch.acceptedFinals, counts: { final: dispatch.acceptedFinals }, deliveryOutcome: 'unknown' });
+    console.warn(`[pending-dispatch] delivery_unknown requestId=${requestId} reason=renderer_terminal_deadline`);
+  }, TERMINAL_DELIVERY_DEADLINE_MS);
+  dispatch.terminalTimer.unref?.();
+  return dispatch;
+}
 
 function dispatchMissing(identity: string): Error {
   const error = new Error(`protocol_dispatch_missing: ${identity}`);
@@ -85,6 +122,7 @@ function getOpenDispatch(requestId: string): PendingDispatch {
 }
 
 function cleanupDispatch(dispatch: PendingDispatch): void {
+  if (dispatch.terminalTimer) clearTimeout(dispatch.terminalTimer);
   pendingByRequestId.delete(dispatch.requestId);
   for (const streamId of dispatch.streamIds) {
     requestIdByStreamId.delete(streamId);
@@ -342,7 +380,8 @@ export function completePendingDispatch(
   requestId: string,
   finalPayloads: OpenClawReplyPayload[],
 ): void {
-  const dispatch = getOpenDispatch(requestId);
+  const dispatch = claimTerminal(requestId, 'completed', finalPayloads);
+  if (!dispatch) return;
   dispatch.sealed = true;
   dispatch.producerTerminalAcceptedAt = Date.now();
   dispatch.finalPayloadsReceived += finalPayloads.length;
@@ -359,7 +398,8 @@ export function abortPendingDispatch(
   requestId: string,
   terminalPayload: OpenClawReplyPayload,
 ): void {
-  const dispatch = getOpenDispatch(requestId);
+  const dispatch = claimTerminal(requestId, 'aborted', [terminalPayload]);
+  if (!dispatch) return;
   dispatch.sealed = true;
   dispatch.producerTerminalAcceptedAt = Date.now();
   dispatch.finalPayloadsReceived += 1;
@@ -391,8 +431,10 @@ export function clearAllPendingDispatches(): void {
   for (const dispatch of pendingByRequestId.values()) {
     if (dispatch.settled) continue;
     dispatch.settled = true;
+    if (dispatch.terminalTimer) clearTimeout(dispatch.terminalTimer);
     dispatch.reject(new Error('Bridge shutting down'));
   }
   pendingByRequestId.clear();
   requestIdByStreamId.clear();
+  terminalReceipts.clear();
 }

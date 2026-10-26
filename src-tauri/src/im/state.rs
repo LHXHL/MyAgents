@@ -56,7 +56,6 @@ pub(crate) type PeerLocks = Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>;
 /// is no longer active (Sidecar shutdown / peer eviction).
 pub(crate) struct ImConsumerHandle {
     pub(crate) retire_when_idle: event_consumer::CancelFlag,
-    pub(crate) retirement_owner: crate::sidecar::SidecarOwner,
     pub(crate) cancel: event_consumer::CancelFlag,
     pub(crate) reply_router: reply_router::SharedReplyRouter,
     /// Sidecar port the consumer is currently bound to (used to detect Sidecar
@@ -74,8 +73,7 @@ pub(crate) struct ImConsumerHandle {
     /// on every `insert_sidecar`. Match `(sidecar_session_id, sidecar_generation)`
     /// pairs to map broadcast stop events to consumer entries.
     pub(crate) sidecar_generation: u64,
-    /// Join handle is kept alive for the consumer task lifetime; we don't
-    /// await it but holding it ensures the task isn't immediately dropped.
+    /// Kept for lifecycle joining; dropping a Tokio handle does not stop its task.
     pub(crate) _join: tauri::async_runtime::JoinHandle<()>,
 }
 

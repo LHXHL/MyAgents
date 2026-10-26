@@ -16,9 +16,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt};
 use reqwest::Client;
 use serde_json::Value;
+use std::panic::AssertUnwindSafe;
 use tauri::async_runtime::JoinHandle;
 use tokio::sync::Mutex;
 
@@ -51,7 +52,7 @@ pub(super) struct ConsumerLifetime {
     pub cancel: CancelFlag,
     pub retire_when_idle: CancelFlag,
     pub manager: crate::sidecar::ManagedSidecarManager,
-    pub retirement_owner: crate::sidecar::SidecarOwner,
+    pub generation: u64,
 }
 
 pub(super) fn spawn_consumer<A>(
@@ -72,155 +73,302 @@ where
             cancel,
             retire_when_idle,
             manager,
-            retirement_owner,
+            generation,
         } = lifetime;
         let mut last_seq: u64 = 0;
         let mut backoff_ms = RECONNECT_INITIAL_MS;
+        let mut reconcile_tick = tokio::time::interval(Duration::from_secs(15));
+        reconcile_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-        'consume: loop {
-            if retire_when_idle.load(Ordering::SeqCst) && router.lock().await.slot_count() == 0 {
-                cancel.store(true, Ordering::SeqCst);
-                break 'consume;
-            }
-            if cancel.load(Ordering::SeqCst) {
-                ulog_info!(
-                    "[event-consumer] Cancelled (session={})",
-                    &session_label[..session_label.len().min(8)],
-                );
-                break 'consume;
-            }
-
-            // W6 fix: legacy URL had `?session=<id>` but the Sidecar handler
-            // never read it (Sidecar is 1:1 with session). Removed to avoid
-            // misleading future readers.
-            let url = events_url(sidecar_port, last_seq, &initial_replay_request_id);
-
-            let response_result = client
-                .get(&url)
-                .header("Accept", "text/event-stream")
-                .send()
-                .await;
-
-            let response = match response_result {
-                Ok(resp) if resp.status().is_success() => {
-                    backoff_ms = RECONNECT_INITIAL_MS;
-                    resp
-                }
-                Ok(resp) => {
-                    ulog_warn!(
-                        "[event-consumer] /api/im/events returned {} (port={})",
-                        resp.status(),
-                        sidecar_port,
-                    );
-                    sleep_with_cancel(&cancel, backoff_ms).await;
-                    backoff_ms = (backoff_ms * 2).min(RECONNECT_MAX_MS);
-                    continue;
-                }
-                Err(e) => {
-                    ulog_warn!(
-                        "[event-consumer] connect failed: {} (port={}) — retry in {}ms",
-                        e,
-                        sidecar_port,
-                        backoff_ms,
-                    );
-                    sleep_with_cancel(&cancel, backoff_ms).await;
-                    backoff_ms = (backoff_ms * 2).min(RECONNECT_MAX_MS);
-                    continue;
-                }
-            };
-
-            let mut byte_stream = response.bytes_stream();
-            let mut buffer = String::new();
-
-            'inner: loop {
-                if retire_when_idle.load(Ordering::SeqCst) && router.lock().await.slot_count() == 0
-                {
+        let consume = AssertUnwindSafe(async {
+            'consume: loop {
+                if retire_when_idle.load(Ordering::SeqCst) && router.lock().await.slot_count() == 0 {
                     cancel.store(true, Ordering::SeqCst);
                     break 'consume;
                 }
                 if cancel.load(Ordering::SeqCst) {
+                    ulog_info!(
+                        "[event-consumer] Cancelled (session={})",
+                        &session_label[..session_label.len().min(8)],
+                    );
                     break 'consume;
                 }
-                // W8a fix: race the stream read against a periodic cancel
-                // poll. Without this, a quiet stream (no events for tens of
-                // seconds) leaves us blocked on `byte_stream.next()` until
-                // the next byte arrives — flipping `cancel` from outside
-                // takes effect only when the upstream reconnect happens.
-                // 1s tick is fine; bus produces deltas << 1s apart in
-                // active turns, and idle is the case we're optimizing.
-                let chunk_result = tokio::select! {
-                    biased;
-                    _ = tokio::time::sleep(Duration::from_secs(1)) => {
-                        // Tick: check cancel and continue waiting for the next byte.
-                        if cancel.load(Ordering::SeqCst) {
-                            break 'consume;
-                        }
-                        continue 'inner;
+
+                reconcile_requests(&client, sidecar_port, &router, adapter.as_ref(), &on_terminal).await;
+                // W6 fix: legacy URL had `?session=<id>` but the Sidecar handler
+                // never read it (Sidecar is 1:1 with session). Removed to avoid
+                // misleading future readers.
+                let url = events_url(sidecar_port, last_seq, &initial_replay_request_id);
+
+                let response_result = client
+                    .get(&url)
+                    .header("Accept", "text/event-stream")
+                    .send()
+                    .await;
+
+                let response = match response_result {
+                    Ok(resp) if resp.status().is_success() => {
+                        backoff_ms = RECONNECT_INITIAL_MS;
+                        resp
                     }
-                    res = byte_stream.next() => res,
+                    Ok(resp) => {
+                        ulog_warn!(
+                            "[event-consumer] /api/im/events returned {} (port={})",
+                            resp.status(),
+                            sidecar_port,
+                        );
+                        sleep_with_cancel(&cancel, backoff_ms).await;
+                        backoff_ms = (backoff_ms * 2).min(RECONNECT_MAX_MS);
+                        continue;
+                    }
+                    Err(e) => {
+                        ulog_warn!(
+                            "[event-consumer] connect failed: {} (port={}) — retry in {}ms",
+                            e,
+                            sidecar_port,
+                            backoff_ms,
+                        );
+                        sleep_with_cancel(&cancel, backoff_ms).await;
+                        backoff_ms = (backoff_ms * 2).min(RECONNECT_MAX_MS);
+                        continue;
+                    }
                 };
-                match chunk_result {
-                    Some(Ok(chunk)) => {
-                        let bytes_ref: &[u8] = chunk.as_ref();
-                        buffer.push_str(&String::from_utf8_lossy(bytes_ref));
-                        while let Some(pos) = buffer.find("\n\n") {
-                            let event_str: String = buffer.drain(..pos).collect();
-                            buffer.drain(..2);
-                            if event_str.starts_with(':') {
-                                continue;
+
+                let mut byte_stream = response.bytes_stream();
+                let mut buffer = String::new();
+
+                'inner: loop {
+                    if retire_when_idle.load(Ordering::SeqCst) && router.lock().await.slot_count() == 0
+                    {
+                        cancel.store(true, Ordering::SeqCst);
+                        break 'consume;
+                    }
+                    if cancel.load(Ordering::SeqCst) {
+                        break 'consume;
+                    }
+                    // W8a fix: race the stream read against a periodic cancel
+                    // poll. Without this, a quiet stream (no events for tens of
+                    // seconds) leaves us blocked on `byte_stream.next()` until
+                    // the next byte arrives — flipping `cancel` from outside
+                    // takes effect only when the upstream reconnect happens.
+                    // 1s tick is fine; bus produces deltas << 1s apart in
+                    // active turns, and idle is the case we're optimizing.
+                    let chunk_result = tokio::select! {
+                        biased;
+                        _ = tokio::time::sleep(Duration::from_secs(1)) => {
+                            // Tick: check cancel and continue waiting for the next byte.
+                            if cancel.load(Ordering::SeqCst) {
+                                break 'consume;
                             }
-                            let data = extract_data(&event_str);
-                            if data.is_empty() {
-                                continue;
-                            }
-                            let bus_event: Value = match serde_json::from_str(&data) {
-                                Ok(v) => v,
-                                Err(_) => continue,
-                            };
-                            if let Some(seq) = bus_event.get("seq").and_then(|s| s.as_u64()) {
-                                if seq > last_seq {
-                                    last_seq = seq;
+                            continue 'inner;
+                        }
+                        _ = reconcile_tick.tick() => {
+                            reconcile_requests(&client, sidecar_port, &router, adapter.as_ref(), &on_terminal).await;
+                            continue 'inner;
+                        }
+                        res = byte_stream.next() => res,
+                    };
+                    match chunk_result {
+                        Some(Ok(chunk)) => {
+                            let bytes_ref: &[u8] = chunk.as_ref();
+                            buffer.push_str(&String::from_utf8_lossy(bytes_ref));
+                            while let Some(pos) = buffer.find("\n\n") {
+                                let event_str: String = buffer.drain(..pos).collect();
+                                buffer.drain(..2);
+                                if event_str.starts_with(':') {
+                                    continue;
+                                }
+                                let data = extract_data(&event_str);
+                                if data.is_empty() {
+                                    continue;
+                                }
+                                let bus_event: Value = match serde_json::from_str(&data) {
+                                    Ok(v) => v,
+                                    Err(_) => continue,
+                                };
+                                if let Some(seq) = bus_event.get("seq").and_then(|s| s.as_u64()) {
+                                    if seq > last_seq {
+                                        last_seq = seq;
+                                    }
+                                }
+                                // Reconnect and reconcile receipts on a gap. Missing
+                                // deltas alone must never abort an active execution.
+                                if bus_event["type"] == "gap" {
+                                    if let Some(end) = bus_event.pointer("/data/droppedSeqs/1").and_then(Value::as_u64) {
+                                        last_seq = last_seq.max(end);
+                                    }
+                                    break 'inner;
+                                }
+                                let mut router_guard = router.lock().await;
+                                let outcome = router_guard
+                                    .dispatch(&bus_event, adapter.as_ref(), sidecar_port)
+                                    .await;
+                                if let Some(outcome) = outcome {
+                                    let request_id = bus_event
+                                        .get("requestId")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("")
+                                        .to_string();
+                                    let claimed = router_guard.claim_terminal_callback(&request_id);
+                                    drop(router_guard);
+                                    // The terminal callback synchronously acquires its
+                                    // model-work guard before ReplyRouter ownership is
+                                    // released, so proxy reconnect cannot observe a gap.
+                                    if claimed { on_terminal(request_id.clone(), outcome); }
+                                    let mut replies = router.lock().await;
+                                    replies.clear_interactions(&request_id).await;
+                                    replies.unregister(&request_id).await;
                                 }
                             }
-                            let mut router_guard = router.lock().await;
-                            let outcome = router_guard
-                                .dispatch(&bus_event, adapter.as_ref(), sidecar_port)
-                                .await;
-                            if let Some(outcome) = outcome {
-                                let request_id = bus_event
-                                    .get("requestId")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                                    .to_string();
-                                drop(router_guard);
-                                // The terminal callback synchronously acquires its
-                                // model-work guard before ReplyRouter ownership is
-                                // released, so proxy reconnect cannot observe a gap.
-                                on_terminal(request_id.clone(), outcome);
-                                router.lock().await.unregister(&request_id);
-                            }
+                        }
+                        Some(Err(e)) => {
+                            ulog_warn!("[event-consumer] stream error: {} — reconnecting", e);
+                            break 'inner;
+                        }
+                        None => {
+                            ulog_info!("[event-consumer] stream ended — reconnecting");
+                            break 'inner;
                         }
                     }
-                    Some(Err(e)) => {
-                        ulog_warn!("[event-consumer] stream error: {} — reconnecting", e);
-                        break 'inner;
-                    }
-                    None => {
-                        ulog_info!("[event-consumer] stream ended — reconnecting");
-                        break 'inner;
-                    }
+                }
+
+                sleep_with_cancel(&cancel, backoff_ms).await;
+                backoff_ms = (backoff_ms * 2).min(RECONNECT_MAX_MS);
+            }
+        }).catch_unwind();
+        tokio::select! {
+            result = consume => {
+                if result.is_err() {
+                    ulog_warn!("[event-consumer] Consumer failed; settling outstanding replies");
                 }
             }
-
-            sleep_with_cancel(&cancel, backoff_ms).await;
-            backoff_ms = (backoff_ms * 2).min(RECONNECT_MAX_MS);
+            _ = async {
+                loop {
+                    if cancel.load(Ordering::SeqCst)
+                        || !manager.lock().unwrap_or_else(|e| e.into_inner()).is_live(&session_label, generation)
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            } => {}
         }
-        // The BackgroundCompletion lease exists only after retirement. Exact owner
-        // release is harmless when no binding transfer ever installed it.
-        let _ =
-            crate::sidecar::release_session_sidecar(&manager, &session_label, &retirement_owner)
-                .await;
+        cancel.store(true, Ordering::SeqCst);
+        let mut pending = router.lock().await.take_for_shutdown();
+        for request_id in pending.request_ids() {
+            // A live producer must receive explicit cancellation on Channel or
+            // consumer shutdown. An SSE transport error never enters this path.
+            let producer_live = manager
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_live(&session_label, generation);
+            let observed_terminal = pending.producer_terminal(&request_id).cloned();
+            if producer_live && observed_terminal.is_none() {
+                let _ = client
+                    .post(format!("http://127.0.0.1:{sidecar_port}/api/im/cancel"))
+                    .timeout(Duration::from_secs(2))
+                    .json(
+                        &serde_json::json!({"requestId": request_id, "reason": "channel-stopped"}),
+                    )
+                    .send()
+                    .await;
+            }
+            // Terminal admission is bounded; a dead bridge cannot retain an
+            // execution lease forever. Timeout means unknown delivery, not sent.
+            let replay_terminal =
+                observed_terminal.is_none() || pending.uses_idempotent_terminal(&request_id);
+            let terminal = observed_terminal.unwrap_or_else(|| {
+                serde_json::json!({
+                    "requestId": request_id, "type": "error",
+                    "data": {"finalPayloads": [{"text": if producer_live {
+                        "回复连接已中断，已请求停止本轮执行；请在桌面确认状态后重试。"
+                    } else { "会话执行已中断，请重新发送。" }, "isError": true}]}
+                })
+            });
+            // Native platform I/O has no idempotent terminal contract. If it
+            // was interrupted, keep the execution result and do not replay it.
+            let result = if replay_terminal {
+                tokio::time::timeout(
+                    Duration::from_secs(10),
+                    AssertUnwindSafe(pending.dispatch(&terminal, adapter.as_ref(), sidecar_port))
+                        .catch_unwind(),
+                )
+                .await
+                .ok()
+            } else {
+                None
+            };
+            if !matches!(result, Some(Ok(_))) {
+                ulog_warn!(
+                    "[event-consumer] Interrupted reply delivery unknown requestId={}",
+                    request_id
+                );
+            }
+            let claimed = pending.claim_terminal_callback(&request_id);
+            pending.clear_interactions(&request_id).await;
+            pending.unregister(&request_id).await;
+            if !claimed {
+                continue;
+            }
+            let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                on_terminal(
+                    request_id,
+                    TerminalOutcome {
+                        session_id: None,
+                        silent: false,
+                    },
+                )
+            }));
+        }
     })
+}
+
+/// Recovery stays inside the existing consumer and request registry. The
+/// producer atomically seals truly missing IDs, fencing delayed enqueue POSTs.
+async fn reconcile_requests<A: ImStreamAdapter>(
+    client: &Client,
+    port: u16,
+    router: &Arc<Mutex<ReplyRouter>>,
+    adapter: &A,
+    on_terminal: &Arc<dyn Fn(String, TerminalOutcome) + Send + Sync>,
+) {
+    let (ids, settle_unknown) = {
+        let replies = router.lock().await;
+        (replies.request_ids(), replies.reconcilable_request_ids())
+    };
+    for ids in ids.chunks(200) {
+        let response = client
+            .post(format!("http://127.0.0.1:{port}/api/im/requests"))
+            .timeout(Duration::from_secs(3))
+            .json(&serde_json::json!({"requestIds": ids, "settleUnknown": settle_unknown}))
+            .send()
+            .await;
+        let Ok(response) = response else {
+            continue;
+        };
+        if !response.status().is_success() {
+            continue;
+        }
+        let Ok(body) = response.json::<Value>().await else {
+            continue;
+        };
+        for id in ids {
+            let outcome = &body["outcomes"][id];
+            if outcome["state"] != "terminal" {
+                continue;
+            }
+            let mut replies = router.lock().await;
+            let mut event = outcome["event"].clone();
+            event["reconciled"] = Value::Bool(true);
+            if let Some(terminal) = replies.dispatch(&event, adapter, port).await {
+                if replies.claim_terminal_callback(id) {
+                    on_terminal(id.clone(), terminal);
+                }
+                replies.clear_interactions(id).await;
+                replies.unregister(id).await;
+            }
+        }
+    }
 }
 
 fn events_url(sidecar_port: u16, last_seq: u64, initial_replay_request_id: &str) -> String {

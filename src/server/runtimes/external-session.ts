@@ -2632,6 +2632,8 @@ function resetWatchdog(): void {
   if (watchdogTimer) return; // already armed — markActivity above is the reset
   externalWatchdog.reset();
   watchdogTimer = setInterval(() => {
+    clearWatchdogIfDispatchSettled();
+    if (!watchdogTimer) return;
     const { fire, suspendedMs } = externalWatchdog.evaluateTick();
     if (suspendedMs > 0) {
       console.log(
@@ -2653,14 +2655,13 @@ function resetWatchdog(): void {
     console.error(
       `[external-session] Watchdog: no runtime activity for ${minutes} minutes of active time, killing process`,
     );
-    broadcast('chat:agent-error', {
-      message: `External runtime timed out (no activity for ${minutes} minutes)`,
-    });
-    broadcast('chat:message-error', 'External runtime timed out');
-    fireExternalImCallback(
-      'error',
-      buildImErrorPayload('External runtime timed out'),
-    );
+    if (!isExternalTurnCompleted()) {
+      broadcast('chat:agent-error', {
+        message: `External runtime timed out (no activity for ${minutes} minutes)`,
+      });
+      broadcast('chat:message-error', 'External runtime timed out');
+      fireExternalImCallback('error', buildImErrorPayload('External runtime timed out'));
+    }
     void stopExternalSession({ reason: 'failure' });
   }, WATCHDOG_INTERVAL_MS);
   watchdogTimer.unref?.();
@@ -2673,13 +2674,19 @@ function clearWatchdog(): void {
   }
 }
 
+/** A consumed steer may still own dispatch after its turn has completed. */
+function clearWatchdogIfDispatchSettled(): void {
+  if (isExternalTurnCompleted() && !hasExternalSendInFlight()) clearWatchdog();
+}
+
 function recordRuntimeActivity(): void {
-  if (
-    getExternalTurnStartTime() === 0 ||
-    isExternalTurnCompleted() ||
-    getExternalUserRequestedStop()
-  )
+  if (getExternalUserRequestedStop()) return;
+  if (isExternalTurnCompleted()) {
+    // Extend only an already monitored send; idle/prewarm never acquires a timer.
+    if (watchdogTimer && hasExternalSendInFlight()) externalWatchdog.markActivity();
     return;
+  }
+  if (getExternalTurnStartTime() === 0) return;
   resetWatchdog();
 }
 
@@ -5602,10 +5609,12 @@ async function runExternalMessageOperation(
     }
   }).then(
     (result) => {
+      clearWatchdogIfDispatchSettled();
       settleExternalMessageOperation(operation, result);
       return result;
     },
     (error) => {
+      clearWatchdogIfDispatchSettled();
       settleExternalMessageOperation(operation, {
         queued: false,
         error: error instanceof Error ? error.message : String(error),
@@ -7004,10 +7013,12 @@ export function enqueueExternalSendForDesktop(
     )
       .then(
         ({ result, deferredDispatchAcceptance }) => {
+          clearWatchdogIfDispatchSettled();
           scheduleExternalQueueDrainAfterDirectAdmission();
           return deferredDispatchAcceptance ?? result;
         },
         (error) => {
+          clearWatchdogIfDispatchSettled();
           scheduleExternalQueueDrainAfterDirectAdmission();
           throw error;
         },
@@ -7330,6 +7341,7 @@ async function drainExternalOperationsAfterTurn(): Promise<void> {
   } finally {
     releaseExternalDrainReservation(reservedItem);
     if (isCurrentExternalOperationGeneration(drainGeneration)) {
+      clearWatchdogIfDispatchSettled();
       setExternalOperationDrainInFlight(false);
       scheduleExternalQueueDrainAfterDirectAdmission();
     }
@@ -7888,6 +7900,7 @@ export async function stopExternalSession(options?: {
   preservePromotion?: ExternalTurnPromotionToken | null;
 }): Promise<boolean> {
   const stoppedExecutionTurnId = getExternalExecutionTurnId() ?? undefined;
+  const turnWasCompleted = isExternalTurnCompleted();
   clearWatchdog();
   const preserveQueue = options?.preserveQueue === true;
   const preserveCurrentPromotion = Boolean(
@@ -8058,17 +8071,16 @@ export async function stopExternalSession(options?: {
     status: 'ok',
     detail: { pid },
   });
-  const completionTerminal = finalizeStoppedExternalTurn(
-    currentExternalTurnTextSnapshot(),
-    consumeExternalTurnMetrics(),
-    !isConfigRestart,
+  // Stopping a leftover dispatch/idle process must not finish an already
+  // terminal Product turn again (or replace its successful completion).
+  const completionTerminal = turnWasCompleted ? null : finalizeStoppedExternalTurn(
+    currentExternalTurnTextSnapshot(), consumeExternalTurnMetrics(), !isConfigRestart,
   );
-  await persistExternalPartialAssistantProjection('stopped').catch((error) => {
-    console.error(
-      '[external-session] failed to persist stopped assistant projection:',
-      error,
-    );
-  });
+  if (!turnWasCompleted) {
+    await persistExternalPartialAssistantProjection('stopped').catch((error) => {
+      console.error('[external-session] failed to persist stopped assistant projection:', error);
+    });
+  }
   resetTurnAccumulators();
   releaseManagedCodexExtensionGeneration(active.process.runtimeGeneration);
   clearExternalActiveRuntimeProcess();
@@ -8080,7 +8092,7 @@ export async function stopExternalSession(options?: {
   clearExternalPermissionSuggestions();
   drainPendingInteractiveRequestsAsExpired('stop');
   setExternalSystemInitPayload(null);
-  if (!isConfigRestart) {
+  if (!isConfigRestart && !turnWasCompleted) {
     fireExternalImCallback('cancelled', buildImCancelledPayload());
     finalizeExternalActiveRequest('failed');
     deliverExternalWatchError({
@@ -8105,7 +8117,7 @@ export async function stopExternalSession(options?: {
     clearPendingRealtimeSteeredUserMessagesWithCancellation();
   }
   setExternalSessionState('idle');
-  if (!isConfigRestart) {
+  if (!isConfigRestart && !turnWasCompleted) {
     broadcast(
       'chat:message-stopped',
       withSessionCompletionTerminal(null, completionTerminal),
@@ -11355,8 +11367,9 @@ function applyUnifiedEvent(event: UnifiedEvent): void {
     }
 
     case 'turn_complete': {
+      if (getExternalUserRequestedStop() && isExternalTurnCompleted()) break;
       // Mark turn complete — session_complete will follow for CC -p mode
-      clearWatchdog();
+      if (!hasExternalSendInFlight()) clearWatchdog();
       // Defensive fallback: Codex should emit item/started userMessage for
       // accepted turn/steer input. If an older app-server does not, promote an
       // RPC-acknowledged pill at the turn boundary. An unresolved RPC is not

@@ -87,10 +87,6 @@ describe('buildExternalTitleSessionOptions', () => {
     });
 
     expect(options).toMatchObject({
-      initialTurn: {
-        message: 'Write the title',
-        clientUserMessageId: 'title-user-message',
-      },
       runtimeSource: 'managed-provider',
       mcpServers: [],
       permissionMode: 'suggest',
@@ -99,6 +95,7 @@ describe('buildExternalTitleSessionOptions', () => {
       maxTurns: 1,
       scenario: { type: 'desktop' },
     });
+    expect(options).not.toHaveProperty('initialTurn');
   });
 
   it('preserves system-cli ownership without pretending an empty injected set clears user config', () => {
@@ -108,14 +105,16 @@ describe('buildExternalTitleSessionOptions', () => {
     });
 
     expect(options).toMatchObject({
-      initialTurn: {
-        message: 'Write the title',
-        clientUserMessageId: 'title-user-message',
-      },
       runtimeSource: 'system-cli',
     });
+    expect(options).not.toHaveProperty('initialTurn');
     expect(options).not.toHaveProperty('mcpServers');
     expect(options).not.toHaveProperty('reasoningEffort');
     expect(options).not.toHaveProperty('ephemeral');
+  });
+
+  it('preserves the Claude Code initial-turn contract', () => {
+    expect(buildExternalTitleSessionOptions({ ...base, runtimeType: 'claude-code' }).initialTurn)
+      .toEqual({ message: 'Write the title', clientUserMessageId: 'title-user-message' });
   });
 });

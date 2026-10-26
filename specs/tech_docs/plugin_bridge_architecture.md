@@ -199,17 +199,19 @@ ReplyRouter 按同一 requestId 有序回传：
 当前已知的官方 `chat-queue.js` 结构做窄兼容变换：每个 task 的 dispatcher / completion
 promise 仍存活到平台投递结束，但同 chat 的下一条只等待当前 task 的 Bridge→Rust POST
 收到 2xx（bounded mpsc 已接管）。作用域由 `AsyncLocalStorage` token 绑定，重叠 dispatcher
-不会互相 unregister；未知源码结构保持上游原行为并打印 warning，禁止猜测式 patch。
+不会互相 unregister；队列值仍为可等待的 completion Promise，附带 admission 与 activeTasks，兼容插件其它消费者。目标代码缺失时保持上游行为并打印 warning。
 
 这不是新增平台消息队列，也不改变 ReplyRouter / CardKit owner。Rust 入站队列仍是消息接管
 权威，官方插件仍是渲染与终态投递 owner；Bridge 只移除两个 owner 之间重复且生命周期错位的
 串行等待。
 
+企微的 chat queue、微信 monitor 的逐消息 await、QQ gateway 的 per-user drain 也复用同一个 `lark-admission.ts` 内的通用 Plugin admission scope。只释放输入顺序约束，原 task/completion、frame、stream、工具上下文与发送策略继续 request-scoped；不让插件层决定模型排队。所有加载期兼容变换只匹配实际修改的代码片段，不按版本号或整文件 SHA-256 限制插件升级；匹配允许片段原有空白位置的缩进、换行与注释变化。相关片段一起替换，缺失目标时记录 warning 并继续加载原代码。测试 fixture 保留来源版本用于复现，不作为运行时版本白名单；默认测试不读取用户安装目录。
+
 #### Reply protocol ownership
 
 OpenClaw Channel Plugin 是回复渲染 owner：由插件决定是否启用 streaming、CardKit 的创建/更新节奏、静态消息 fallback 与最终收尾。MyAgents 不复制任何平台 SDK 会话，也不根据凭据或插件 ID 推导流式能力；Bridge 只提供 OpenClaw dispatcher 所需的**请求级、有序、可等待传输**。
 
-插件通过 `dispatchReplyWithBufferedBlockDispatcher` 提供 `dispatcherOptions.deliver` 时，同样拥有这次回复的渲染生命周期：Bridge 用现有 request-scoped OpenClaw reply 协议承接，并在 AI terminal 与 renderer delivery 后才结算调用。只有没有 renderer callback 的旧式 buffered 调用走 admission-only 兼容路径；Rust 接管入站消息的 HTTP 200 不等于插件回复完成。
+插件通过 `dispatchReplyWithBufferedBlockDispatcher` 提供 `dispatcherOptions.deliver` 时，同样拥有这次回复的渲染生命周期：Bridge 用现有 request-scoped OpenClaw reply 协议承接，正常在 AI terminal 与 renderer delivery 后结算调用；投递等待超过下述期限时以 `deliveryOutcome: unknown` 收口，不宣称平台发送已完成。只有没有 renderer callback 的旧式 buffered 调用走 admission-only 兼容路径；Rust 接管入站消息的 HTTP 200 不等于插件回复完成。
 
 `deliveryProtocol: "openclaw-reply"` 是本次入站已经成功创建真实 dispatcher 的事实，只能在 pending dispatch 按同一 `requestId` 注册后随该次请求发送。它不是 channel capability，也不能由 `streaming` 配置反推。Rust 将这个值保存在对应 `ReplySlot`，不影响同一 channel 的其他并发请求。
 
@@ -223,13 +225,17 @@ Bridge 的 `dispatcher_delivery_idle` 只表示 core dispatcher queue 已 drain�
 
 一旦 Bridge 注册 pending dispatcher，Rust 就必须为该 request 产生且仅产生一个 terminal：进入模型的请求由 Sidecar outcome 完成；命令、白名单拒绝、群聊 activation 拒绝等 admission 分支用空 `complete` 或带提示的 `abort` 收口。协议请求不能落入磁盘 buffer，也不能只发送普通 `/send-text` 后悬空 dispatcher。
 
+Bridge 对 complete/abort 保存独立接纳回执（最多 1,000 条、6 小时）；相同 terminal 重复提交返回相同语义 ACK，冲突 terminal 拒绝，不重复调用 renderer。Rust 只对这些幂等 terminal 在 transport/5xx 不确定时进行最多三次有界交接，start/partial 和模型 enqueue 不套用重试。
+
+producer terminal 被接纳后，若 renderer callback 超过 5 分钟仍不返回，pending transport 清除后续待调用操作并以 `deliveryOutcome: unknown` 释放自己的完成义务。此 deadline 不是模型执行上限，也不表示任意插件 Promise 或已发出的平台 I/O 被取消；插件自身的 finally/平台收尾仍由插件拥有。dispatcher idle 的等待同样有界；外层 `withReplyDispatcher` 沿用已返回的 unknown 结果，继续 markComplete/onSettled，不再次进入同一个无期限等待。后续输入已在 admission 边界独立放行，不依赖这类不可合作 renderer 的结束。
+
 #### 渠道环境与发送模式
 
 `normalizePluginMessage` 对四个现有协议按来源字段显式映射，禁止传播整份 plugin context；微信合成 MessageSid 不冒充原生 ID，QQ 保留 Body 中转写与附件，企微接收时刻不冒充源发送时刻。Lark 用户配置指令与 vendor/group context 分开，缺失历史时间不补当前时间。
 
 企微消息回调没有昵称/群名时，Bridge 通过插件已有 `wecom-cli` 执行只读 `message aibot sessions list`，按 `single/group + chat_id` 唯一精确匹配昵称/群名，忽略 `extra_identity_context` 的授权人描述。查询失败/超过 2.5 秒继续原消息，按 Bridge/account 只共享在途请求。渠道启动可经 `/peer-names` 补查已有记录；持久化、最近 20 会话的限制与展示规则见 [IM 配置与持久化](im_integration_architecture.md#10-配置与持久化)。
 
-`/delivery-policy` 将实际执行轮的 mode 交给该 request 的 pending dispatcher。tool_only 丢弃 run-start/partial/block/final 内容，complete/abort 仍走原 terminal owner；控制命令由 Rust 明确允许。进入 admission 前 plugin context 默认为静默，避免 setup error 的 finally 旁路。已知微信 progress/debug/typing/error notice 与企微 finishThinking/模板卡片补发由 `plugin-compat-patches.ts` 按固定源码 hash 局部转换；Lark 同入口保留来源字段。未知源码版本明确拒绝加载并给诊断，不能假设新插件仍遵守已验证规则。补丁不改磁盘 npm 包，不建立额外 dispatcher 或重试队列。
+`/delivery-policy` 将实际执行轮的 mode 交给该 request 的 pending dispatcher。tool_only 丢弃 run-start/partial/block/final 内容，complete/abort 仍走原 terminal owner；控制命令由 Rust 明确允许。进入 admission 前 plugin context 默认为静默，避免 setup error 的 finally 旁路。微信 progress/debug/typing/error notice 与企微 finishThinking/模板卡片补发由 `plugin-compat-patches.ts` 按目标代码片段局部转换；Lark 同入口保留来源字段。企微补丁定位实际卡片调用，不依赖上游注释内容。目标缺失时仅记录未应用补丁的 warning，不因未知源码版本阻止渠道启动；此时该模块继续执行上游行为，不能宣称它已应用 MyAgents 的发送策略。补丁不改磁盘 npm 包，不建立额外 dispatcher 或重试队列。
 
 #### Runtime 同步问答
 
@@ -454,18 +460,18 @@ Bridge 消费；Builtin SDK、Managed Codex 与用户原生外部 Runtime 仍保
 | `src/server/plugin-bridge/index.ts` | Bridge HTTP Server + 插件加载入口 |
 | `src/server/plugin-bridge/compat-api.ts` | OpenClaw API 适配（registerChannel/Tool） |
 | `src/server/plugin-bridge/compat-runtime.ts` | Channel Runtime Mock + 消息拦截路由 |
-| `src/server/plugin-bridge/lark-admission.ts` | 官方 Lark 同 chat task 的 admission scope/token owner |
-| `src/server/plugin-bridge/plugin-compat-patches.ts` | 已知官方 Lark queue 源码的 fail-closed 窄变换 |
+| `src/server/plugin-bridge/lark-admission.ts` | Lark、企微、微信与 QQ 共用的 Plugin admission scope/token owner |
+| `src/server/plugin-bridge/plugin-compat-patches.ts` | 按目标代码片段匹配的队列、渠道上下文、发送策略与 CLI 兼容变换 |
 | `src/server/plugin-bridge/pending-dispatch.ts` | requestId → OpenClaw dispatcher 的有序传输队列 |
 | `src/server/plugin-bridge/sdk-shim/` | SDK shim 包（入口以 package.json exports 为准） |
 | `src/server/plugin-bridge/sdk-shim/plugin-sdk/_handwritten.json` | 手写模块保护清单 |
 | `scripts/generate-sdk-shims.ts` | Stub 自动生成器 |
 | `src-tauri/tauri.conf.json` (resources) | shim 打包配置 |
 
-身份投影只使用来源协议的 actor 字段：微信 `to_user_id` 经既有指纹补丁进入 `MyAgentsSelfId`，不用回复目标 `To` 或账户键替代；该协议没有昵称/username，保留 null。企微 WS 从 `WeComFrame.body.aibotid` 获取 self；agent 入口复制到 SenderName 的 userid 不当作昵称。历史记录缺失身份不回填。
+身份投影只使用来源协议的 actor 字段：微信 `to_user_id` 经既有上下文补丁进入 `MyAgentsSelfId`，不用回复目标 `To` 或账户键替代；该协议没有昵称/username，保留 null。企微 WS 从 `WeComFrame.body.aibotid` 获取 self；agent 入口复制到 SenderName 的 userid 不当作昵称。历史记录缺失身份不回填。
 
 ### WeCom CLI 帮助兼容
 
-安装版 2026.9.15 的 CLI argv 校验错误拒绝独立 `--help` / `-h`，且错误结果缺少 MCP `isError`。Bridge 的既有模块加载 hook 以完整源码摘要识别这两个版本，分别允许独立帮助参数、补回错误标记；组合参数仍经过原凭据/目录隔离校验，不改插件磁盘文件。未知源码保持上游行为并记录诊断，避免猜测改写。Session 代理在内联及大结果 ref 投影中保留 `isError`，不通过猜测文本内容推断所有插件的成功状态。
+企微 2026.9.15 暴露了 CLI argv 校验错误拒绝独立 `--help` / `-h`、错误结果缺少 MCP `isError` 的问题。Bridge 的既有模块加载 hook 匹配对应代码片段，分别允许独立帮助参数、补回错误标记；不限制包版本或整文件摘要。组合参数仍经过原凭据/目录隔离校验，不改插件磁盘文件。目标缺失时保持上游行为并记录诊断。Session 代理在内联及大结果 ref 投影中保留 `isError`，不通过猜测文本内容推断所有插件的成功状态。
 
 `/peer-names` POST 接收已配置 `{users, groups}` ID 列表。除企微最近会话接口外，复用插件标准 directory 的 live 查询；账号来自当前 channel account。查询结果只作为 display metadata，由 Rust config owner 按最新已有授权 ID 合并，不能借名称搜索结果新增身份。兼容 GET 空目标用于企微只读诊断。目录查询等待上限不代表取消插件自身分页；同账号/目标未完成请求复用，等待超时后不继续派发新目标。

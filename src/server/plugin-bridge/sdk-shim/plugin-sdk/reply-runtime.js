@@ -387,15 +387,18 @@ async function waitForReplyDispatcherIdle(dispatcher, abortSignal) {
   finally { removeAbortListener?.(); }
 }
 
-async function settleReplyDispatcher({ dispatcher, onSettled }) {
+async function settleReplyDispatcher({ dispatcher, onSettled, deliveryOutcome }) {
   dispatcher.markComplete();
-  try { await dispatcher.waitForIdle(); }
+  // The request owner has already exhausted its delivery deadline. Do not
+  // re-enter the same wait; this does not claim the vendor I/O was cancelled.
+  try { if (deliveryOutcome !== 'unknown') await dispatcher.waitForIdle(); }
   finally { await onSettled?.(); }
 }
 
 async function withReplyDispatcher({ dispatcher, run, onSettled }) {
-  try { return await run(); }
-  finally { await settleReplyDispatcher({ dispatcher, onSettled }); }
+  let result;
+  try { result = await run(); return result; }
+  finally { await settleReplyDispatcher({ dispatcher, onSettled, deliveryOutcome: result?.deliveryOutcome }); }
 }
 
 // --- reply reference ---

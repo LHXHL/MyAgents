@@ -98,6 +98,9 @@ class ImEventBusImpl {
     const mode = requestId ? imRequestRegistry.get(requestId)?.channelDeliveryMode : undefined;
     const event: ImEvent = { seq, requestId, type, data, ts: Date.now(), ...(mode ? { channelDeliveryMode: mode } : {}) };
 
+    if (type === 'complete' || type === 'error' || type === 'cancelled') {
+      imRequestRegistry.retainTerminal(event);
+    }
     this.buffer.push(event);
     while (this.buffer.length > MAX_BUFFER) {
       const dropped = this.buffer.shift()!;

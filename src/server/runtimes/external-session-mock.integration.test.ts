@@ -1137,6 +1137,7 @@ afterEach(async () => {
   vi.doUnmock('./utils/kill-with-escalation');
   vi.doUnmock('./external-session/transcript-persistence');
   vi.doUnmock('./managed-codex/extensions/host-dispatcher');
+  vi.useRealTimers();
 });
 
 function desktopRequest(
@@ -6709,6 +6710,55 @@ describe('external SessionEngine with fake runtime', () => {
     expect(harness.externalSession.getExternalSessionState()).toBe('idle');
   });
 
+
+  it.each(['ack', 'stop', 'timeout'] as const)(
+    'retains dispatch monitoring after consumed steer and successful terminal (%s)',
+    async ending => {
+      vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] });
+      const harness = await createHarness([{ kind: 'silent' }], {
+        realtimeSteering: true, deferSteerSuccess: true,
+        emitInterruptedOnStop: true, emitSessionCompleteOnStop: true,
+        config: { chatQueueResponseMode: 'realtime' },
+      });
+      const originalSteer = harness.runtime.steerMessage!.bind(harness.runtime);
+      harness.runtime.steerMessage = async (...args: Parameters<NonNullable<AgentRuntime['steerMessage']>>) => {
+        await originalSteer(...args);
+        if (args[0].exited) throw new Error('fixture process exited');
+      };
+      const originalStop = harness.runtime.stopSession.bind(harness.runtime);
+      const stop = vi.spyOn(harness.runtime, 'stopSession').mockImplementation(async process => {
+        await originalStop(process);
+        harness.runtime.releaseSteerSuccess();
+      });
+      const sessionId = 'late-steer-ack';
+      const workspacePath = join(harness.home, 'workspace');
+      const first = await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'first'));
+      await first.dispatchAcceptance;
+      const second = await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'follow-up'));
+      await waitFor(() => harness.runtime.steeredMessages.length === 1, 'pending steer');
+      harness.runtime.emitUserMessageAccepted(harness.runtime.steeredMessages[0].clientUserMessageId);
+      harness.runtime.emitForTest({ kind: 'text_delta', text: 'completed answer' });
+      harness.runtime.emitForTest({ kind: 'turn_complete', status: 'success' });
+      await waitFor(() => harness.engine.getSessionCompletionTerminal()?.status === 'complete', 'successful terminal');
+      const terminal = harness.engine.getSessionCompletionTerminal();
+      const stoppedBefore = broadcastEvents.filter(event => event.event === 'chat:message-stopped').length;
+      const errorsBefore = broadcastEvents.filter(event => event.event === 'chat:agent-error').length;
+      if (ending === 'ack') harness.runtime.releaseSteerSuccess();
+      else if (ending === 'stop') await harness.externalSession.stopExternalSession();
+      else await vi.advanceTimersByTimeAsync(11 * 60_000);
+      await second.dispatchAcceptance;
+      await waitFor(() => !harness.externalSession.isExternalSessionBusy(), 'dispatch released');
+      expect(harness.engine.getSessionCompletionTerminal()).toEqual(terminal);
+      expect(broadcastEvents.filter(event => event.event === 'chat:message-stopped')).toHaveLength(stoppedBefore);
+      expect(broadcastEvents.filter(event => event.event === 'chat:agent-error')).toHaveLength(errorsBefore);
+      expect(harness.runtime.sentMessages).toEqual(['first']);
+      expect(stop).toHaveBeenCalledTimes(ending === 'ack' ? 0 : 1);
+      if (ending === 'ack') {
+        await vi.advanceTimersByTimeAsync(11 * 60_000);
+        expect(stop).not.toHaveBeenCalled();
+      }
+    },
+  );
 
   it('steers a second desktop send into the active Codex turn in realtime mode', async () => {
     const harness = await createHarness(

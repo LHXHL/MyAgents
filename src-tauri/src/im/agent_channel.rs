@@ -699,6 +699,31 @@ pub(super) async fn shutdown_bot_instance(
         feishu.flush_dedup_cache().await;
     }
 
+    // Settle request-scoped dispatchers while the Bridge is still available.
+    // Detach under the short registry lock; joining performs no platform I/O
+    // while holding that lock. Network failure remains unknown delivery.
+    let handles: Vec<_> = instance
+        .im_consumers
+        .lock()
+        .await
+        .drain()
+        .map(|(_, handle)| {
+            handle
+                .cancel
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            handle._join
+        })
+        .collect();
+    if tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        futures::future::join_all(handles),
+    )
+    .await
+    .is_err()
+    {
+        ulog_warn!("[im] Consumer shutdown deadline exceeded; remaining delivery is unknown");
+    }
+
     // Kill bridge process and unregister sender (OpenClaw only)
     if let Some(bp_mutex) = instance.bridge_process {
         let mut bp = bp_mutex.lock().await;
@@ -2251,6 +2276,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                     // Pattern C: per-peer-session ImEventConsumer + ReplyRouter registry
                     let task_consumers = Arc::clone(&im_consumers_for_loop);
                     let task_model_work_gate = Arc::clone(&model_work_gate_for_loop);
+                    let task_shutdown = process_shutdown_rx.clone();
 
                     in_flight.spawn(async move {
                         let _active_work_guard = active_work_guard;
@@ -2447,6 +2473,11 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                 });
                             })
                         };
+                        if *task_shutdown.borrow() {
+                            let _ = abort_immediate_reply(task_adapter.as_ref(), &task_bot_id, &msg,
+                                "channel_stopped", "渠道已停止，请重新发送。").await;
+                            return;
+                        }
                         let reply_router_arc = match ensure_im_consumer(
                             &task_consumers,
                             &task_manager,
@@ -2522,7 +2553,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                 let allowed_snapshot_buf = task_allowed_users.read().await.clone();
                                 let bridge_ctx_buf = task_adapter.bridge_context();
 
-                                reply_router_arc.lock().await.register(
+                                let registered = reply_router_arc.lock().await.register(
                                     buf_request_id.clone(),
                                     buf_chat_id.clone(),
                                     buf_message_id.clone(),
@@ -2538,6 +2569,10 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                     .lock()
                                     .await
                                     .metadata_birth_pending(&session_key);
+                                if !registered {
+                                    task_buffer.lock().await.push(&buf_msg);
+                                    break;
+                                }
                                 let result = enqueue_to_sidecar(
                                     &task_stream_client,
                                     port,
@@ -2553,6 +2588,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                 .await;
                                 match result {
                                     Ok(_) => {
+                                        reply_router_arc.lock().await.finish_admission(&buf_request_id);
                                         let birth_consumed = {
                                             let mut router_guard = task_router.lock().await;
                                             router_guard.mark_metadata_birth_consumed_if_session(
@@ -2578,9 +2614,12 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                             "[im] Buffer replay failed requestId={} session_key={} err={}",
                                             buf_request_id, session_key, e,
                                         );
-                                        reply_router_arc.lock().await.unregister(&buf_request_id);
-                                        if e.should_buffer() {
-                                            task_buffer.lock().await.push(&buf_msg);
+                                        if e.admission_is_unknown() {
+                                            // An ambiguous HTTP result is not rejection. Reconcile this
+                                            // exact request; never replay a possibly accepted task.
+                                            reply_router_arc.lock().await.finish_admission(&buf_request_id);
+                                        } else {
+                                            reply_router_arc.lock().await.unregister(&buf_request_id).await;
                                         }
                                         break;
                                     }
@@ -2644,7 +2683,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                         //    real on_terminal callback; we just reuse `reply_router_arc`.
                         {
                             let mut router_guard = reply_router_arc.lock().await;
-                            router_guard.register(
+                            if !router_guard.register(
                                 request_id.clone(),
                             chat_id.clone(),
                             message_id.clone(),
@@ -2652,7 +2691,12 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                             Some(msg.sender_id.clone()),
                             group_ctx.as_ref(),
                             msg.delivery_protocol.clone(),
-                        );
+                        ) {
+                                drop(router_guard);
+                                let _ = abort_immediate_reply(task_adapter.as_ref(), &task_bot_id,
+                                    &msg, "consumer_stopped", "会话连接已中断，请重新发送。").await;
+                                return;
+                            }
                         }
 
                         reply_router_arc.lock().await.set_pending_delivery_mode(&request_id,
@@ -2686,6 +2730,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                         .await
                         {
                             Ok(_session_hint) => {
+                                reply_router_arc.lock().await.finish_admission(&request_id);
                                 let birth_consumed = {
                                     let mut router_guard = task_router.lock().await;
                                     router_guard.mark_metadata_birth_consumed_if_session(
@@ -2711,12 +2756,11 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                     "[im] Enqueue failed requestId={} session_key={} err={}",
                                     request_id, session_key, e,
                                 );
-                                // Clean up reply slot — no events will arrive for this request
-                                reply_router_arc.lock().await.unregister(&request_id);
-                                // Buffer for retry on transient errors
-                                if e.should_buffer() && !uses_openclaw_reply_protocol(&msg) {
-                                    task_buffer.lock().await.push(&msg);
+                                if e.admission_is_unknown() {
+                                    reply_router_arc.lock().await.finish_admission(&request_id);
+                                    return; // outcome reconciliation owns uncertain admission
                                 }
+                                reply_router_arc.lock().await.unregister(&request_id).await;
                                 let e_str = format!("{}", e);
                                 let user_msg = if e_str.starts_with("Sidecar returned ") {
                                     let inner = e_str.splitn(2, ": ").nth(1).unwrap_or(&e_str);
@@ -2913,24 +2957,21 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
     let mut idle_shutdown_rx = shutdown_rx.clone();
     let agent_id_for_idle = agent_id.clone();
     let consumers_for_idle = Arc::clone(&im_consumers);
+    let peer_locks_for_idle = Arc::clone(&peer_locks);
 
     let _idle_handle = tauri::async_runtime::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
         loop {
             tokio::select! {
                 _ = interval.tick() => {
-                    let collected_keys = router_for_idle
-                        .lock()
-                        .await
-                        .collect_idle_sessions(&manager_for_idle)
-                        .await;
-                    // C3 fix: cancel ImEventConsumer for each collected session.
-                    // The Sidecar port has been released to 0; the long-poll loop
-                    // would otherwise hammer the dead port until backoff cap.
-                    for key in &collected_keys {
-                        drop_im_consumer(&consumers_for_idle, key).await;
-                    }
-                    let collected = collected_keys.len();
+                    let collected = super::enqueue::collect_idle_im_sessions(
+                        &router_for_idle, &manager_for_idle, &consumers_for_idle,
+                        &peer_locks_for_idle, |session_id| {
+                            crate::sidecar::start_headless_background_completion(
+                                &app_for_idle, &manager_for_idle, session_id,
+                            ).map(|_| ())
+                        },
+                    ).await;
                     if collected > 0 {
                         // Notify UI — agent channels emit agent event, legacy emit im event
                         if agent_id_for_idle.is_some() {
