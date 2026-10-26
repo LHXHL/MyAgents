@@ -1116,7 +1116,7 @@ it('preserves an IM turn across rejected inferred-anchor recovery', async () => 
   const onTerminal = vi.fn<(outcome: TurnTerminalOutcome) => void>();
   const engine = (await import('../session-engine/builtin-adapter')).createBuiltinSessionEngine();
   expect(await engine.enqueueImMessage({ message: 'IM once', requestId: 'im-reload', sessionId: meta.id, workspacePath: workspace,
-    scenario: { type: 'agent-channel', platform: 'feishu', sourceType: 'private' }, onTerminal })).toMatchObject({ success: true });
+    scenario: { type: 'agent-channel', platform: 'feishu', sourceType: 'private' }, turnBoundaryOnly: true, onTerminal })).toMatchObject({ success: true });
 
   await vi.waitFor(() => expect(state.query.mock.calls.some(([args]) =>
     args.options.resume === meta.id && args.options.resumeSessionAt === undefined)).toBe(true));

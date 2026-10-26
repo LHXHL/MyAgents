@@ -30,6 +30,7 @@ import type {
   DesktopDeliveryMode,
   QueueCancelResult,
   TurnIdentity,
+  ManualTurnContract,
   TurnOwner,
   TurnTerminalObserver,
 } from '../session-core/turn-queue';
@@ -62,15 +63,12 @@ export type DesktopMessageRequest = {
   analyticsSource?: TurnAnalyticsSource;
   analyticsOrigin?: SessionOrigin;
   birthOrigin?: SessionOrigin;
-  turnBoundaryOnly?: boolean;
   /** Internal queue identity supplied by a domain owner such as Goal. */
   queueId?: string;
-  turnOwner?: TurnOwner;
-  onTerminal?: TurnTerminalObserver;
   beforeDispatch?: DispatchGuard;
   /** Strong app-owned Skill admission for product workflow turns. */
   requiredSystemSkill?: ProductSystemSkillRequirement;
-};
+} & ManualTurnContract;
 
 /** Per-send choices; Session/provider/permission authority remains with the engine. */
 export type DesktopRetryOptions = Pick<DesktopMessageRequest, 'model' | 'reasoningEffort'>;
@@ -107,12 +105,9 @@ export type ImMessageRequest = {
   metadataBirthPending?: boolean;
   metadata?: { source: SessionSource; sourceId?: string; senderName?: string };
   analyticsOrigin?: SessionOrigin;
-  turnBoundaryOnly?: boolean;
   queueId?: string;
-  turnOwner?: TurnOwner;
-  onTerminal?: TurnTerminalObserver;
   beforeDispatch?: DispatchGuard;
-};
+} & ManualTurnContract;
 
 export type ImAdmissionResult = {
   success: boolean;
@@ -148,26 +143,6 @@ export type InboxAdmissionResult = {
   error?: string;
   terminationUnconfirmed?: boolean;
   dispatchAcceptance?: Promise<{ accepted: boolean; error?: string }>;
-};
-
-export type BackgroundMessageRequest = {
-  text: string;
-  images?: ImagePayload[];
-  sessionId: string;
-  workspacePath: string;
-  scenario: InteractionScenario;
-  permissionMode?: string;
-  model?: string;
-  providerRoute?: ProviderRoute;
-  providerEnv?: ProviderEnv | 'subscription';
-  reasoningEffort?: string;
-  metadata?: { source: SessionSource; sourceId?: string; senderName?: string };
-  analyticsOrigin?: SessionOrigin;
-  turnBoundaryOnly?: boolean;
-  queueId?: string;
-  turnOwner?: TurnOwner;
-  onTerminal?: TurnTerminalObserver;
-  beforeDispatch?: DispatchGuard;
 };
 
 export type InjectedTurnRequest = {
@@ -449,7 +424,6 @@ export interface SessionEngine {
   retryMcpServer(serverId: string): Promise<import('../../shared/mcpFailure').McpRetryResult>;
   enqueueImMessage(request: ImMessageRequest): Promise<ImAdmissionResult>;
   cancelImRequest(requestId: string, reason?: string): Promise<ImCancelResult>;
-  enqueueBackgroundMessage(request: BackgroundMessageRequest): Promise<ImAdmissionResult>;
   enqueueInboxMessage(request: InboxMessageRequest): Promise<InboxAdmissionResult>;
   prepareScheduledTurn(request: ScheduledTurnPreparationRequest): Promise<ScheduledTurnPreparationResult>;
   runInjectedTurn(request: InjectedTurnRequest): Promise<InjectedTurnResult>;

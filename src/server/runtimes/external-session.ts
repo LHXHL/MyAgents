@@ -115,7 +115,7 @@ import {
 } from '../../shared/sessionCompletion';
 import { isPendingSessionId } from '../../shared/constants';
 import {
-  resolveChatQueueResponseMode,
+  resolveManualInputResponseMode,
   type TurnOwner,
   type TurnTerminalObserver,
 } from '../session-core/turn-queue';
@@ -6632,40 +6632,6 @@ function deferRealtimeOperationToTurnBoundary(input: {
   };
 }
 
-/**
- * Desktop /chat/send entry — fire-and-forget dispatch with proper serialization.
- *
- * Issue #188:
- *   sendExternalMessage internally awaits waitForExternalSessionIdle(5*60s)
- *   to serialize against an in-flight turn. The Rust SSE proxy's overall HTTP
- *   timeout is 120s, so directly awaiting sendExternalMessage from the HTTP
- *   handler made the request die with the proxy's generic "操作超时" error,
- *   which the renderer surfaced as "AI 调用失败：网络错误". This helper
- *   decouples the HTTP response from runtime dispatch:
- *
- *   1. Return a queue id synchronously so the renderer can show/reconcile a
- *      queue pill while dispatch happens outside the HTTP request lifetime.
- *   2. Chain the actual sendExternalMessage onto a module-level promise tail
- *      so concurrent desktop sends serialize against each other. Without this
- *      tail, multiple sends would all wake from the same turnCompleted gate
- *      simultaneously and double-write to the persistent-runtime stdin.
- *   3. Realtime Codex steering still promotes the pill only after Codex emits
- *      its native userMessage echo; turn/steer RPC success is transport ack,
- *      not runtime-consumption ack.
- *   4. Return the dispatch promise. Callers should fire-and-forget and
- *      surface failures via chat:agent-error since the HTTP response is
- *      already on its way back to the renderer.
- */
-export function enqueueExternalTurnBoundaryOperation(
-  text: string,
-  images: ImagePayload[] | undefined,
-  permissionMode: string | undefined,
-  model: string | undefined,
-  context: ExternalSendContext,
-): ReturnType<typeof enqueueExternalQueuedMessage> {
-  return enqueueExternalQueuedMessage(text, images, permissionMode, model, context);
-}
-
 function enqueueExternalQueuedMessage(
   text: string,
   images: ImagePayload[] | undefined,
@@ -6893,13 +6859,16 @@ export function enqueueExternalSendForInbox(
   return enqueueExternalQueuedMessage(text, images, undefined, undefined, context, 'realtime', 'inbox');
 }
 
-function enqueueExternalManualInput(
+/** Full admission shared by human input and independent work. The caller owns
+ * timing; this path retains startup/recovery, FIFO and projection semantics. */
+function enqueueExternalInput(
   text: string,
   images: ImagePayload[] | undefined,
   permissionMode: string | undefined,
   model: string | undefined,
   context: ExternalSendContext,
-  inputSource: 'desktop' | 'im',
+  inputSource: 'desktop' | 'im' | undefined,
+  queueResponseMode: 'realtime' | 'turn',
 ): {
   queued: boolean;
   queueId?: string;
@@ -6932,12 +6901,6 @@ function enqueueExternalManualInput(
     );
     context = { ...context, queueId, beforeDispatch: guard };
   }
-  const queueResponseMode = context.turnBoundaryOnly
-    ? 'turn'
-    : resolveChatQueueResponseMode(
-        loadAdminConfig().chatQueueResponseMode,
-        true,
-      );
   const lifecycleState = getExternalLifecycleState();
   const canSteerActiveTurn = getExternalActiveSteerPair() !== null;
   const pendingDshRootBlocksAdmission =
@@ -7140,6 +7103,32 @@ function enqueueExternalManualInput(
         }
       : {}),
   };
+}
+
+/** Independent work owns its terminal and never inherits manual chat timing.
+ * Reuse complete admission: forcing an idle/error input into the waiting queue
+ * would change startup, recovery and visible queue behavior. */
+export function enqueueExternalIndependentTurn(
+  text: string,
+  images: ImagePayload[] | undefined,
+  context: Omit<ExternalSendContext, 'turnBoundaryOnly'> & {
+    queueId: string;
+    onTerminal: TurnTerminalObserver;
+  },
+): ReturnType<typeof enqueueExternalInput> {
+  return enqueueExternalInput(text, images, context.permissionMode, context.model, context, undefined, 'turn');
+}
+
+function enqueueExternalManualInput(
+  text: string,
+  images: ImagePayload[] | undefined,
+  permissionMode: string | undefined,
+  model: string | undefined,
+  context: ExternalSendContext,
+  inputSource: 'desktop' | 'im',
+): ReturnType<typeof enqueueExternalInput> {
+  return enqueueExternalInput(text, images, permissionMode, model, context, inputSource,
+    resolveManualInputResponseMode(loadAdminConfig().chatQueueResponseMode, context.turnBoundaryOnly));
 }
 
 /** Desktop and IM human queries share one timing/capability admission policy. */

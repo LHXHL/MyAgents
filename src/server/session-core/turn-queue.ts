@@ -58,6 +58,20 @@ export type TurnTerminalOutcome = {
 
 export type TurnTerminalObserver = (outcome: TurnTerminalOutcome) => void | Promise<void>;
 
+/** An independent turn observer/owner cannot join an existing turn. IM request
+ * receipts are separate and do not impose this constraint on ordinary chat. */
+export type ManualTurnContract =
+  | { turnBoundaryOnly?: boolean; turnOwner?: never; onTerminal?: never }
+  | { turnBoundaryOnly: true; turnOwner?: TurnOwner; onTerminal?: TurnTerminalObserver };
+
+/** Shared Desktop/IM preference; explicit independent work takes precedence. */
+export function resolveManualInputResponseMode(
+  rawValue: unknown,
+  turnBoundaryOnly?: boolean,
+): ChatQueueResponseMode {
+  return turnBoundaryOnly ? 'turn' : normalizeChatQueueResponseMode(rawValue);
+}
+
 export function shouldApplyChatQueueResponseMode(
   fromDesktopChatSend: boolean | undefined,
 ): boolean {
@@ -69,7 +83,7 @@ export function resolveChatQueueResponseMode(
   fromDesktopChatSend: boolean | undefined,
 ): ChatQueueResponseMode {
   if (!shouldApplyChatQueueResponseMode(fromDesktopChatSend)) return 'realtime';
-  return normalizeChatQueueResponseMode(rawValue);
+  return resolveManualInputResponseMode(rawValue);
 }
 
 export function decideQueueAdmission(params: {

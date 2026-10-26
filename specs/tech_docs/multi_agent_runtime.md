@@ -236,7 +236,9 @@ native steer 明确返回“未接收”时，同一个 operation 可以按原 a
 
 SessionEngine 的可信 Inbox ingress 固定 realtime，不读取手动 query 设置，也不根据正文的 `system-reminder` 标签判断来源。原 operation queue 在 running 时选择可实时消费的输入，可越过等待下一轮的手动消息与配置 operation；配置仍只在 boundary 生效。同消费时机的输入保持接纳顺序。builtin 使用 SDK async queue，DSH 使用 `turn/followUp`，Codex 使用 `turn/steer`；native 消费回执才上屏并关联到实际轮次，RPC ack 不能代替消费确认。多个同轮已消费的请求各自保留 Inbox 回复关联，共享 terminal 结果；reply/watch notification 不注册自动回复。
 
-Task 的直接执行、scheduled turn 以及 Goal 等显式 `turnBoundaryOnly` 工作保持 turn-level admission；`runInjectedTurn` 在 adapter 入口固定这一约束，因为它必须取得自己轮次的 terminal，不能借用当前人工对话的完成回执。Task 通知的模型转述也经过此入口。IM 不因渠道来源而强制等待下一轮。Task Comment 等通过 Inbox 投递的事件遵循 Inbox 策略。用户显式 force-start、取消与 Stop 都由 operation queue 按 exact queue id重排或结算，不能清除无关后续项。IM 的同轮请求归属与结束通知见 [IM 入站与执行边界](im_integration_architecture.md#41-并发与-backpressure)。
+Task 的直接执行、scheduled turn 以及 Goal 等显式 `turnBoundaryOnly` 工作保持 turn-level admission；`runInjectedTurn` 固定取得自己轮次的 terminal。External adapter 通过 `enqueueExternalIndependentTurn` 接纳，独立时机与人工输入的设置解析分开，再复用同一完整 admission 流程。不能替换成无条件入队：idle/error 下仍须保留直接启动和恢复路径。Task 通知的模型转述也经过此入口。
+
+Desktop/IM 的 `ManualTurnContract` 在编译期要求独立 `turnOwner` / `onTerminal` 搭配 `turnBoundaryOnly: true`；普通 IM request 的结束回执不属于此独立轮次契约。Builtin/External 使用同一人工偏好解析，IM 不因渠道来源而强制等待下一轮。Task Comment 等通过 Inbox 投递的事件遵循 Inbox 策略。用户显式 force-start、取消与 Stop 都由 operation queue 按 exact queue id重排或结算，不能清除无关后续项。IM 的同轮请求归属与结束通知见 [IM 入站与执行边界](im_integration_architecture.md#41-并发与-backpressure)。
 
 ### 6.3 配置变更
 

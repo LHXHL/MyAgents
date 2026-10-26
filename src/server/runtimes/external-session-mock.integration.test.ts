@@ -4466,6 +4466,7 @@ describe('external SessionEngine with fake runtime', () => {
         'must persist before transport',
       ),
       queueId: 'queue-fresh-persist-failure',
+      turnBoundaryOnly: true,
       turnOwner: owner,
       onTerminal,
     });
@@ -5316,6 +5317,7 @@ describe('external SessionEngine with fake runtime', () => {
         'stop before fresh runtime transport',
       ),
       queueId: 'queue-fresh-admission-persist-stop',
+      turnBoundaryOnly: true,
       turnOwner: owner,
       onTerminal,
     });
@@ -5372,6 +5374,7 @@ describe('external SessionEngine with fake runtime', () => {
         'stop before rejected persist resumes',
       ),
       queueId: 'queue-active-admission-persist-stop-reject',
+      turnBoundaryOnly: true,
       turnOwner: owner,
       onTerminal,
     });
@@ -5427,6 +5430,7 @@ describe('external SessionEngine with fake runtime', () => {
         'stop while transport ack is pending',
       ),
       queueId: 'queue-fresh-send-reject-after-stop',
+      turnBoundaryOnly: true,
       turnOwner: owner,
       onTerminal,
     });
@@ -6010,6 +6014,7 @@ describe('external SessionEngine with fake runtime', () => {
     const sent = await harness.engine.sendDesktopMessage({
       ...desktopRequest(sessionId, workspacePath, 'start partial turn'),
       queueId: 'queue-stop-snapshot',
+      turnBoundaryOnly: true,
       turnOwner: owner,
       onTerminal,
     });
@@ -6064,6 +6069,7 @@ describe('external SessionEngine with fake runtime', () => {
     const sent = await harness.engine.sendDesktopMessage({
       ...desktopRequest(sessionId, workspacePath, 'start partial turn'),
       queueId: 'queue-stop-session-complete-snapshot',
+      turnBoundaryOnly: true,
       turnOwner: owner,
       onTerminal,
     });
@@ -9037,12 +9043,41 @@ describe('external SessionEngine with fake runtime', () => {
   });
 
 
-  it.each(['dsh', 'codex'] as const)('keeps injected %s work in its own turn when manual input is realtime', async runtimeType => {
+  it.each((['dsh', 'codex', 'claude-code'] as const).flatMap(runtimeType =>
+    (['idle', 'error'] as const).map(state => ({ runtimeType, state }))))(
+    'starts independent $runtimeType work from $state without forcing a waiting-queue transition', async ({ runtimeType, state }) => {
+      const harness = await createHarness([{ kind: 'success', text: 'independent answer' }], {
+        runtimeType, config: { chatQueueResponseMode: 'realtime' },
+      });
+      const lifecycle = await import('./external-session/lifecycle');
+      lifecycle.setExternalLifecycleState(state);
+      const onEnqueued = vi.fn(() => expect(harness.runtime.sentMessages).toEqual([]));
+      const onDispatched = vi.fn();
+      const onTerminal = vi.fn();
+      const result = await harness.engine.runInjectedTurn({
+        prompt: 'independent work', sessionId: `independent-${runtimeType}-${state}`,
+        workspacePath: join(harness.home, 'workspace'), scenario: { type: 'desktop' },
+        queueId: 'independent-operation', permissionMode: getMaxPermissionForRuntime(runtimeType),
+        assistantChannelDelivery: 'none', timeoutMs: 2_000, onEnqueued, onDispatched, onTerminal,
+      });
+      expect(result).toMatchObject({ success: true, enqueued: true, text: 'independent answer' });
+      expect(onEnqueued).toHaveBeenCalledExactlyOnceWith('independent-operation');
+      expect(onDispatched).toHaveBeenCalledExactlyOnceWith('independent-operation', `independent-${runtimeType}-${state}`);
+      expect(onTerminal).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ status: 'complete', text: 'independent answer' }));
+      expect(harness.runtime.sentMessages).toEqual(['independent work']);
+      expect(broadcastEvents.some(event => event.event === 'queue:added')).toBe(false);
+      expect(harness.mirrorCalls).toEqual([]);
+    },
+  );
+
+  it.each((['dsh', 'codex'] as const).flatMap(runtimeType =>
+    (['realtime', 'turn'] as const).map(responseMode => ({ runtimeType, responseMode }))))(
+    'keeps injected $runtimeType work in its own turn with manual mode $responseMode', async ({ runtimeType, responseMode }) => {
     const harness = await createHarness([
       { kind: 'silent' },
       { kind: 'success', text: 'notification answer' },
-    ], { runtimeType, realtimeSteering: true, config: { chatQueueResponseMode: 'realtime' } });
-    const sessionId = `injected-realtime-${runtimeType}`;
+    ], { runtimeType, realtimeSteering: true, config: { chatQueueResponseMode: responseMode } });
+    const sessionId = `injected-${responseMode}-${runtimeType}`;
     const workspacePath = join(harness.home, 'workspace');
     const first = await harness.engine.sendDesktopMessage({
       ...desktopRequest(sessionId, workspacePath, 'user work'),

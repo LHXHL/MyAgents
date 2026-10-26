@@ -22,7 +22,6 @@ export {
 export type {
   DesktopAdmissionResult,
   DesktopMessageRequest,
-  BackgroundMessageRequest,
   ImAdmissionResult,
   ImCancelResult,
   ImMessageRequest,

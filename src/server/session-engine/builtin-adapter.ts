@@ -1,5 +1,4 @@
 import { broadcast } from "../sse";
-import { normalizeChatQueueResponseMode } from '../../shared/config-types';
 import { applySessionModelSelection } from '../agent-session';
 import { questionAnswersAsText } from '../../shared/types/askUserQuestion';
 import { retryDesktopRequest } from './retry';
@@ -104,6 +103,7 @@ import type {
 } from './types';
 import { decideBuiltinInjectedTurnResult } from '../session-core/turn-result-policy';
 import type { DispatchGuard, TurnTerminalOutcome } from '../session-core/turn-queue';
+import { resolveManualInputResponseMode } from '../session-core/turn-queue';
 import {
   ensureRegisteredAgentSessionOrigin,
   getPersistedSessionOrigin,
@@ -447,7 +447,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
           queueId: request.queueId,
           turnOwner: request.turnOwner,
           onTerminal: request.onTerminal,
-          ...(request.turnBoundaryOnly ? { queueResponseModeOverride: 'turn' as const } : {}),
+          queueResponseModeOverride: resolveManualInputResponseMode(loadConfig().chatQueueResponseMode, request.turnBoundaryOnly),
           beforeDispatch,
           channelDelivery: DESKTOP_CHANNEL_DELIVERY,
         },
@@ -506,7 +506,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
           queueId: request.queueId,
           turnOwner: request.turnOwner,
           onTerminal: request.onTerminal,
-          queueResponseModeOverride: request.turnBoundaryOnly ? 'turn' : normalizeChatQueueResponseMode(loadConfig().chatQueueResponseMode),
+          queueResponseModeOverride: resolveManualInputResponseMode(loadConfig().chatQueueResponseMode, request.turnBoundaryOnly),
           beforeDispatch: request.beforeDispatch,
           channelDelivery: IM_CHANNEL_DELIVERY,
           channelPrimaryReminder: request.channelPrimaryReminder,
@@ -520,39 +520,6 @@ export function createBuiltinSessionEngine(): SessionEngine {
 
     cancelImRequest(requestId, reason) {
       return cancelBuiltinImRequest(requestId, reason as CancelReason | undefined);
-    },
-
-    async enqueueBackgroundMessage(request) {
-      await setInteractionScenario(request.scenario);
-      const routed = providerEnvForRouteRequest(request);
-      if (routed.error) {
-        return { success: false, error: routed.error, status: routed.status };
-      }
-      const result = await enqueueUserMessage(
-        request.text,
-        request.images,
-        request.permissionMode as PermissionMode | undefined,
-        routed.model,
-        routed.providerEnv,
-        request.reasoningEffort,
-        request.metadata,
-        undefined,
-        undefined,
-        undefined,
-        request.analyticsOrigin,
-        {
-          ...(request.turnBoundaryOnly ? { queueResponseModeOverride: 'turn' as const } : {}),
-          queueId: request.queueId,
-          turnOwner: request.turnOwner,
-          onTerminal: request.onTerminal,
-          beforeDispatch: request.beforeDispatch,
-          channelDelivery: SESSION_BOUND_CHANNEL_DELIVERY,
-        },
-      );
-      if (result.error) {
-        return { success: false, error: result.error, status: 503 };
-      }
-      return { success: true, queued: result.queued, dispatchAcceptance: result.dispatchAcceptance };
     },
 
     async enqueueInboxMessage(request) {
