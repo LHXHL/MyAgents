@@ -21,10 +21,10 @@ import { fileURLToPath } from 'url';
 import { randomUUID } from 'node:crypto';
 import { writeFile, readFile } from 'fs/promises';
 import { ensureDir } from '../utils/fs-utils';
-import { registerPendingDispatch, rejectPendingDispatch, type PendingDispatchCallbacks } from './pending-dispatch';
-import { cancellableFetch } from '../utils/cancellation';
+import { registerPendingDispatch, rejectPendingDispatch, TERMINAL_DELIVERY_DEADLINE_MS, type PendingDispatchCallbacks } from './pending-dispatch';
+import { cancellableFetch, withBoundedTimeout } from '../utils/cancellation';
 import { getOpenClawConfigSnapshot, setOpenClawConfigSnapshot } from './openclaw-config';
-import { markCurrentLarkInboundAccepted } from './lark-admission';
+import { markCurrentPluginInboundAccepted } from './lark-admission';
 import {
   createReplyDispatcherWithTyping as createShimReplyDispatcherWithTyping,
   observeReplyDispatcherIdle,
@@ -592,11 +592,11 @@ export function createCompatRuntime(rustPort: number, botId: string, pluginId: s
               const body = await resp.text();
               throw new Error(`Rust returned ${resp.status}: ${body}`);
             }
-            // The official Lark plugin keeps this request's dispatcher alive
+            // The plugin keeps this request's dispatcher alive
             // until its AI reply and CardKit delivery settle. Only release its
-            // private same-chat ingress lease here, after Rust has taken durable
+            // private same-chat ingress lease here, after Rust has taken
             // ownership in the bot's bounded mpsc queue.
-            markCurrentLarkInboundAccepted();
+            markCurrentPluginInboundAccepted();
             // Pattern 4: record a successful forward for /health/functional.
             (globalThis as { __pluginBridgeLastForwardAt?: number }).__pluginBridgeLastForwardAt = Date.now();
           } catch (err) {
@@ -613,9 +613,14 @@ export function createCompatRuntime(rustPort: number, botId: string, pluginId: s
           try {
             const result = await completionPromise;
             producerResolvedAt = Date.now();
-            if (typeof dispatcher.waitForIdle === 'function') {
-              await dispatcher.waitForIdle();
+            if (result.deliveryOutcome !== 'unknown' && typeof dispatcher.waitForIdle === 'function') {
+              const idle = await withBoundedTimeout(Promise.resolve().then(() => dispatcher.waitForIdle()).then(() => true),
+                TERMINAL_DELIVERY_DEADLINE_MS, () => {
+                  console.warn(`[pending-dispatch] delivery_unknown requestId=${requestId} reason=dispatcher_idle_deadline`);
+                });
+              if (idle !== true) result.deliveryOutcome = 'unknown';
             }
+            if (result.deliveryOutcome === 'unknown') ctx.MyAgentsDeliveryMode = 'tool_only';
             let deliveryDiagnostics = 'queued={} failed={} cancelled={}';
             try {
               const deliveryCounts = (method: string) => (
@@ -632,7 +637,7 @@ export function createCompatRuntime(rustPort: number, botId: string, pluginId: s
               deliveryDiagnostics = 'deliveryCounts=unavailable';
             }
             console.log(
-              `[pending-dispatch] dispatcher_delivery_idle pluginId=${currentPluginId} requestId=${requestId} `
+              `[pending-dispatch] dispatcher_delivery_${result.deliveryOutcome === 'unknown' ? 'unknown' : 'idle'} pluginId=${currentPluginId} requestId=${requestId} `
                 + `producerResolveToIdleMs=${Date.now() - producerResolvedAt} totalMs=${Date.now() - t0} `
                 + deliveryDiagnostics,
             );

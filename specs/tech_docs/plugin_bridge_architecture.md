@@ -205,6 +205,8 @@ promise 仍存活到平台投递结束，但同 chat 的下一条只等待当前
 权威，官方插件仍是渲染与终态投递 owner；Bridge 只移除两个 owner 之间重复且生命周期错位的
 串行等待。
 
+企微 2026.9.15 的 chat queue、微信 monitor 的逐消息 await、QQ gateway 的 per-user drain 也复用同一个 `lark-admission.ts` 内的通用 Plugin admission scope。只释放输入顺序约束，原 task/completion、frame、stream、工具上下文与发送策略继续 request-scoped；不让插件层决定模型排队。变换校验完整源码 SHA-256，未知版本保留上游行为并明确诊断兼容限制。测试 fixture 是固定版本源码，测试不读取用户安装目录。
+
 #### Reply protocol ownership
 
 OpenClaw Channel Plugin 是回复渲染 owner：由插件决定是否启用 streaming、CardKit 的创建/更新节奏、静态消息 fallback 与最终收尾。MyAgents 不复制任何平台 SDK 会话，也不根据凭据或插件 ID 推导流式能力；Bridge 只提供 OpenClaw dispatcher 所需的**请求级、有序、可等待传输**。
@@ -222,6 +224,10 @@ turn 的 canonical final 由 Sidecar terminal outcome 产生，以 `finalPayload
 Bridge 的 `dispatcher_delivery_idle` 只表示 core dispatcher queue 已 drain；shim 在既有 `markDispatchIdle → onIdle` 边界记录 `plugin_delivery_settled`，它才覆盖插件私有的异步 renderer 收尾（飞书为 CardKit 终态更新）。该 observer 只测量现有 lifecycle promise，不读写平台状态，也不改变投递结果。
 
 一旦 Bridge 注册 pending dispatcher，Rust 就必须为该 request 产生且仅产生一个 terminal：进入模型的请求由 Sidecar outcome 完成；命令、白名单拒绝、群聊 activation 拒绝等 admission 分支用空 `complete` 或带提示的 `abort` 收口。协议请求不能落入磁盘 buffer，也不能只发送普通 `/send-text` 后悬空 dispatcher。
+
+Bridge 对 complete/abort 保存独立接纳回执（最多 1,000 条、6 小时）；相同 terminal 重复提交返回相同语义 ACK，冲突 terminal 拒绝，不重复调用 renderer。Rust 只对这些幂等 terminal 在 transport/5xx 不确定时进行最多三次有界交接，start/partial 和模型 enqueue 不套用重试。
+
+producer terminal 被接纳后，若 renderer callback 超过 5 分钟仍不返回，pending transport 清除后续待调用操作并以 `deliveryOutcome: unknown` 释放自己的完成义务。此 deadline 不是模型执行上限，也不表示任意插件 Promise 或已发出的平台 I/O 被取消；插件自身的 finally/平台收尾仍由插件拥有。dispatcher idle 的等待同样有界；外层 `withReplyDispatcher` 沿用已返回的 unknown 结果，继续 markComplete/onSettled，不再次进入同一个无期限等待。后续输入已在 admission 边界独立放行，不依赖这类不可合作 renderer 的结束。
 
 #### 渠道环境与发送模式
 

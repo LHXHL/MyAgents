@@ -679,37 +679,33 @@ impl SessionRouter {
         false
     }
 
-    /// Collect idle sessions that haven't been active for IDLE_TIMEOUT_SECS.
-    /// Releases the Sidecar process but preserves the PeerSession (with port=0)
-    /// so that the stable session_id can be reused for resume on next message.
-    /// Returns the list of session_keys collected so callers can cancel any
-    /// associated ImEventConsumer tasks (Pattern C lifecycle hook).
-    pub async fn collect_idle_sessions(&mut self, manager: &ManagedSidecarManager) -> Vec<String> {
-        let now = Instant::now();
-        let idle_keys: Vec<String> = self
-            .peer_sessions
+    /// Snapshot candidates only. The caller must hold the peer admission fence,
+    /// check unfinished replies, and release owners outside the Router lock.
+    pub fn idle_candidates(&self) -> Vec<(String, String, u16)> {
+        self.peer_sessions
             .iter()
             .filter(|(_, ps)| {
-                ps.sidecar_port > 0
-                    && now.duration_since(ps.last_active).as_secs() >= IDLE_TIMEOUT_SECS
+                ps.sidecar_port > 0 && ps.last_active.elapsed().as_secs() >= IDLE_TIMEOUT_SECS
             })
-            .map(|(k, _)| k.clone())
-            .collect();
+            .map(|(key, ps)| (key.clone(), ps.session_id.clone(), ps.sidecar_port))
+            .collect()
+    }
 
-        for key in &idle_keys {
-            if let Some(ps) = self.peer_sessions.get_mut(key) {
-                ulog_info!(
-                    "[im-router] Collecting idle session {} (inactive for {}s, preserving session_id={})",
-                    key,
-                    now.duration_since(ps.last_active).as_secs(),
-                    &ps.session_id,
-                );
-                let owner = SidecarOwner::Agent(key.clone());
-                let _ = release_session_sidecar(manager, &ps.session_id, &owner).await;
-                ps.sidecar_port = 0; // Sidecar released, but session preserved for resume
-            }
+    pub fn idle_binding_matches(&self, key: &str, session_id: &str, port: u16) -> bool {
+        self.peer_sessions.get(key).is_some_and(|ps| {
+            ps.session_id == session_id
+                && ps.sidecar_port == port
+                && ps.last_active.elapsed().as_secs() >= IDLE_TIMEOUT_SECS
+        })
+    }
+
+    pub fn commit_idle_release(&mut self, key: &str, session_id: &str, port: u16) {
+        if self.idle_binding_matches(key, session_id, port) {
+            self.peer_sessions
+                .get_mut(key)
+                .expect("checked binding")
+                .sidecar_port = 0;
         }
-        idle_keys
     }
 
     /// Get workspace path for a peer session (for attachment file saving).
@@ -1933,7 +1929,14 @@ mod tests {
             .unwrap();
         router.peer_sessions.get_mut(key).unwrap().last_active =
             Instant::now() - Duration::from_secs(IDLE_TIMEOUT_SECS + 1);
-        assert_eq!(router.collect_idle_sessions(&manager).await, vec![key]);
+        assert_eq!(
+            router.idle_candidates(),
+            vec![(key.to_string(), "target".to_string(), 32001)]
+        );
+        release_session_sidecar(&manager, "target", &agent)
+            .await
+            .unwrap();
+        router.commit_idle_release(key, "target", 32001);
         {
             let state = manager.lock().unwrap();
             assert!(state.session_has_exact_owner("target", &tab));

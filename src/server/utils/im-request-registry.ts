@@ -16,6 +16,7 @@
 // session-scoped. If we ever multiplex sessions inside one Sidecar, this
 // becomes a per-session map and the API gains a sessionId parameter.
 
+import type { ImEvent } from './im-event-bus';
 import type { CancelReason } from './cancellation';
 import type { ImBridgeTurnContext } from '../session-core/im-bridge-types';
 
@@ -50,6 +51,29 @@ const STALE_MS = 6 * 60 * 60 * 1000; // 6h — buffered messages might wait this
 
 class ImRequestRegistryImpl {
   private entries = new Map<string, ImRequestEntry>();
+  // Execution receipts outlive unregister and the delta ring. No replay of the
+  // model is needed to recover a terminal after an SSE disconnect.
+  private terminals = new Map<string, ImEvent>();
+
+  retainTerminal(event: ImEvent): void {
+    if (!event.requestId || this.terminals.has(event.requestId)) return;
+    this.terminals.set(event.requestId, event);
+    while (this.terminals.size > MAX_REGISTRY_SIZE) {
+      this.terminals.delete(this.terminals.keys().next().value!);
+    }
+  }
+
+  outcome(requestId: string): { state: 'terminal'; event: ImEvent } | { state: 'active' | 'unknown' } {
+    const terminal = this.terminals.get(requestId);
+    if (terminal && Date.now() - terminal.ts <= STALE_MS) return { state: 'terminal', event: terminal };
+    if (terminal) this.terminals.delete(requestId);
+    return { state: this.entries.has(requestId) ? 'active' : 'unknown' };
+  }
+
+  acknowledgeTerminal(requestId: string): void {
+    this.terminals.delete(requestId);
+  }
+
 
   /** Register a new request. Idempotent: re-registering the same requestId
    *  returns the existing entry (preserves AbortController so callers get
@@ -135,7 +159,7 @@ class ImRequestRegistryImpl {
     const now = Date.now();
     let pruned = 0;
     for (const [id, entry] of this.entries) {
-      if (now - entry.updatedAt > maxAgeMs) {
+      if (['completed', 'failed'].includes(entry.status) && now - entry.updatedAt > maxAgeMs) {
         this.entries.delete(id);
         pruned++;
       }
@@ -151,6 +175,7 @@ class ImRequestRegistryImpl {
       }
     }
     this.entries.clear();
+    this.terminals.clear();
   }
 }
 

@@ -327,22 +327,50 @@ impl BridgeAdapter {
         operation: &str,
         body: &serde_json::Value,
     ) -> AdapterResult<serde_json::Value> {
-        let resp = self
-            .client
-            .post(self.url(path))
-            .json(body)
-            .send()
-            .await
-            .map_err(|e| format!("Bridge {} failed: {}", operation, e))?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(format!(
-                "Bridge {} returned {}: {}",
-                operation, status, text
-            ));
+        // Only terminal handoffs are idempotent. A transport/5xx failure is
+        // unknown admission, so retry the SAME terminal; never retry a partial
+        // or turn enqueue and never infer execution completion from RPC failure.
+        let attempts = if matches!(path, "/complete-dispatch" | "/abort-dispatch") {
+            3
+        } else {
+            1
+        };
+        for attempt in 0..attempts {
+            let response = self
+                .client
+                .post(self.url(path))
+                .json(body)
+                .timeout(std::time::Duration::from_secs(2))
+                .send()
+                .await;
+            match response {
+                Ok(resp) if resp.status().is_success() => {
+                    return Ok(resp.json().await.unwrap_or_default())
+                }
+                Ok(resp) => {
+                    let status = resp.status();
+                    if status.is_server_error() && attempt + 1 < attempts {
+                        continue;
+                    }
+                    return Err(format!("Bridge {} rejected status={}", operation, status));
+                }
+                Err(error) if attempt + 1 == attempts => {
+                    let category = if error.is_timeout() {
+                        "timeout"
+                    } else if error.is_connect() {
+                        "connection"
+                    } else {
+                        "transport"
+                    };
+                    return Err(format!(
+                        "Bridge {} admission unknown: {}",
+                        operation, category
+                    ));
+                }
+                Err(_) => {}
+            }
         }
-        Ok(resp.json().await.unwrap_or_default())
+        unreachable!("at least one handoff attempt")
     }
 
     pub fn plugin_id(&self) -> &str {

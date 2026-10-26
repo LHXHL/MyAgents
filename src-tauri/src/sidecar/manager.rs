@@ -1552,6 +1552,26 @@ impl SidecarManager {
         found
     }
 
+    /// Admit a request owner only to the exact accepting producer generation.
+    /// Logical owner attachment during recovery is insufficient for a request
+    /// that is about to POST to an already captured process port.
+    pub(crate) fn add_session_owner_to_generation(
+        &mut self,
+        session_id: &str,
+        generation: u64,
+        owner: SidecarOwner,
+    ) -> bool {
+        if self.generation_for(session_id) != Some(generation)
+            || !self
+                .sidecars
+                .get(session_id)
+                .is_some_and(|sidecar| sidecar.dispatch_gate.is_accepting())
+        {
+            return false;
+        }
+        self.add_session_owner(session_id, owner)
+    }
+
     pub(super) fn reusable_session_binding(
         &mut self,
         session_id: &str,
@@ -2186,8 +2206,13 @@ impl SidecarManager {
 
     /// A prepared Inbox lease keeps a process alive, but cannot by itself
     /// authorize an unpublished Session after every original owner is gone.
-    pub(crate) fn session_has_owners_other_than(&self, session_id: &str, excluded: Option<&SidecarOwner>) -> bool {
-        self.session_owners(session_id).any(|owner| Some(owner) != excluded)
+    pub(crate) fn session_has_owners_other_than(
+        &self,
+        session_id: &str,
+        excluded: Option<&SidecarOwner>,
+    ) -> bool {
+        self.session_owners(session_id)
+            .any(|owner| Some(owner) != excluded)
     }
 
     /// Whether deletion is blocked by any owner other than the exact mounted

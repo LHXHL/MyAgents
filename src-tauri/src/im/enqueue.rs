@@ -101,13 +101,15 @@ where
     }
 
     let cancel: event_consumer::CancelFlag = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let retirement_owner = crate::sidecar::SidecarOwner::BackgroundCompletion(format!(
-        "im-reply:{}",
-        uuid::Uuid::new_v4()
-    ));
     let retire_when_idle: event_consumer::CancelFlag =
         Arc::new(std::sync::atomic::AtomicBool::new(false));
     let reply_router = reply_router::shared_router(pending_approvals, pending_questions);
+    reply_router.lock().await.set_lifecycle(
+        Arc::clone(&cancel),
+        sidecar_manager.clone(),
+        sidecar_session_id.to_string(),
+        sidecar_generation,
+    );
     let join = event_consumer::spawn_consumer(
         stream_client,
         sidecar_port,
@@ -119,7 +121,7 @@ where
             cancel: Arc::clone(&cancel),
             retire_when_idle: Arc::clone(&retire_when_idle),
             manager: sidecar_manager.clone(),
-            retirement_owner: retirement_owner.clone(),
+            generation: sidecar_generation,
         },
         on_terminal,
     );
@@ -127,7 +129,6 @@ where
         session_key.to_string(),
         ImConsumerHandle {
             retire_when_idle,
-            retirement_owner,
             cancel,
             reply_router: Arc::clone(&reply_router),
             sidecar_port,
@@ -143,17 +144,11 @@ where
 /// Retired consumers stay in the same lifecycle registry so Channel stop still owns them.
 pub(super) async fn retire_im_consumer(
     consumers: &ImConsumers,
-    manager: &ManagedSidecarManager,
+    _manager: &ManagedSidecarManager,
     session_key: &str,
 ) {
     let mut guard = consumers.lock().await;
     if let Some(handle) = guard.remove(session_key) {
-        if let Ok(mut manager) = manager.lock() {
-            if manager.is_live(&handle.sidecar_session_id, handle.sidecar_generation) {
-                manager
-                    .add_session_owner(&handle.sidecar_session_id, handle.retirement_owner.clone());
-            }
-        }
         handle
             .retire_when_idle
             .store(true, std::sync::atomic::Ordering::SeqCst);
@@ -176,6 +171,65 @@ pub(super) async fn drop_im_consumer(consumers: &ImConsumers, session_key: &str)
             .cancel
             .store(true, std::sync::atomic::Ordering::SeqCst);
     }
+}
+
+/// Idle policy never owns execution. Serialize with admission/handover, then
+/// transfer other surfaces' accepted work before releasing the binding lease.
+/// The callback reuses SidecarManager's existing background completion owner.
+pub(super) async fn collect_idle_im_sessions(
+    router: &Arc<Mutex<SessionRouter>>,
+    manager: &ManagedSidecarManager,
+    consumers: &ImConsumers,
+    peer_locks: &PeerLocks,
+    preserve_execution: impl Fn(&str) -> Result<(), String>,
+) -> usize {
+    let candidates = router.lock().await.idle_candidates();
+    let mut collected = 0;
+    for (key, session_id, port) in candidates {
+        let peer_lock = {
+            let mut locks = peer_locks.lock().await;
+            locks
+                .entry(key.clone())
+                .or_insert_with(|| Arc::new(Mutex::new(())))
+                .clone()
+        };
+        let _peer_guard = peer_lock.lock().await;
+        if !router
+            .lock()
+            .await
+            .idle_binding_matches(&key, &session_id, port)
+        {
+            continue;
+        }
+        let replies = consumers
+            .lock()
+            .await
+            .get(&key)
+            .map(|h| h.reply_router.clone());
+        if let Some(replies) = replies {
+            if replies.lock().await.slot_count() > 0 {
+                continue;
+            }
+        }
+        if let Err(error) = preserve_execution(&session_id) {
+            ulog_warn!("[im] Idle handoff failed: {}", error);
+            continue;
+        }
+        let owner = crate::sidecar::SidecarOwner::Agent(key.clone());
+        if let Err(error) =
+            crate::sidecar::release_session_sidecar(manager, &session_id, &owner).await
+        {
+            ulog_warn!("[im] Idle release failed: {}", error);
+            continue;
+        }
+        router
+            .lock()
+            .await
+            .commit_idle_release(&key, &session_id, port);
+        drop_im_consumer(consumers, &key).await;
+        collected += 1;
+    }
+    collected
 }
 
 /// POST /api/im/enqueue — synchronous enqueue, returns immediately.

@@ -11,6 +11,7 @@ import {
   enqueuePartial,
   enqueueRunStart,
   getPendingDispatch,
+  TERMINAL_DELIVERY_DEADLINE_MS,
 } from './pending-dispatch';
 import {
   _getInheritedProxySnapshotForTests,
@@ -31,10 +32,33 @@ describe('plugin bridge compat runtime dispatch ownership', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     _resetProxyStateForTests(originalProxySettings, originalInheritedProxySnapshot);
     _setGeneralFetchTransportForTests();
     vi.unstubAllGlobals();
     clearAllPendingDispatches();
+  });
+
+  it('releases the entire buffered wrapper after a renderer exceeds its deadline', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => new Response('{}'));
+    vi.stubGlobal('fetch', fetchMock);
+    const runtime = createCompatRuntime(31_426, 'bot', 'fixture');
+    const renderer = Promise.withResolvers<void>();
+    const ctx = { To: 'peer', SenderId: 'user', Body: 'hello' };
+    let result: unknown;
+    const completion = runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
+      ctx, dispatcherOptions: { deliver: () => renderer.promise },
+    }).then(value => { result = value; });
+    await vi.advanceTimersByTimeAsync(1);
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    completePendingDispatch(body.requestId, [{ text: 'done' }]);
+    await vi.advanceTimersByTimeAsync(TERMINAL_DELIVERY_DEADLINE_MS + 1);
+    expect(result).toMatchObject({ deliveryOutcome: 'unknown' });
+    expect(ctx).toMatchObject({ MyAgentsDeliveryMode: 'tool_only' });
+    // Releasing the test's vendor I/O is cleanup, not what settles the wrapper.
+    renderer.resolve();
+    await completion;
   });
 
   it.each(['protocol', 'buffered'] as const)('shares registered identity and inbound peer IDs with Rust handoffs (%s)', async path => {

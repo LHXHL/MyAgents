@@ -83,7 +83,7 @@ use config_store::{
 pub use config_store::{monitor_agent_channels, schedule_agent_auto_start, schedule_auto_start};
 pub(crate) use config_store::{resolve_agent_heartbeat_route, AgentHeartbeatRouteResolution};
 use dingtalk::DingtalkAdapter;
-use enqueue::{drop_im_consumer, enqueue_to_sidecar, ensure_im_consumer};
+use enqueue::{enqueue_to_sidecar, ensure_im_consumer};
 use feishu::FeishuAdapter;
 use group_history::{GroupHistoryBuffer, GroupHistoryEntry};
 use health::HealthManager;

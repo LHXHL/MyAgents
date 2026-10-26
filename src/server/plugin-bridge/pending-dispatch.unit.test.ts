@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  TERMINAL_DELIVERY_DEADLINE_MS,
   abortPendingDispatch,
   setPendingDispatchDeliveryMode,
   bindPendingStream,
@@ -225,5 +226,44 @@ describe('channel delivery policy', () => {
     completePendingDispatch('a', [{text: 'hidden'}]);
     await Promise.all([a,b]);
     expect(sent).toEqual(['visible']);
+  });
+});
+
+
+describe('terminal handoff recovery (#678)', () => {
+  it('ACKs identical terminal retries during and after delivery without sending twice', async () => {
+    const blocked = deferred();
+    const send = vi.fn(async () => { await blocked.promise; return true; });
+    const completion = registerPendingDispatch('retry', 'peer', { sendFinalReply: send });
+    completePendingDispatch('retry', [{ text: 'final' }]);
+    completePendingDispatch('retry', [{ text: 'final' }]);
+    expect(() => abortPendingDispatch('retry', {})).toThrow('protocol_terminal_conflict');
+    blocked.resolve();
+    await completion;
+    completePendingDispatch('retry', [{ text: 'final' }]);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports unknown delivery and drops queued writes when a renderer never returns', async () => {
+    vi.useFakeTimers();
+    const blocked = deferred();
+    const final = vi.fn(() => true);
+    try {
+      const completion = registerPendingDispatch('hung', 'peer', {
+        onPartialReply: () => blocked.promise,
+        sendFinalReply: final,
+      });
+      bindPendingStream('hung', 'stream');
+      enqueuePartial('stream', { text: 'progress' }, 'answer');
+      abortPendingDispatch('hung', { text: 'interrupted' });
+      await vi.advanceTimersByTimeAsync(TERMINAL_DELIVERY_DEADLINE_MS);
+      expect((await completion).deliveryOutcome).toBe('unknown');
+      expect(getPendingDispatch('hung')).toBeUndefined();
+      blocked.resolve();
+      await Promise.resolve();
+      expect(final).not.toHaveBeenCalled();
+      // The accepted abort remains idempotent even though delivery is unknown.
+      expect(() => abortPendingDispatch('hung', { text: 'interrupted' })).not.toThrow();
+    } finally { vi.useRealTimers(); }
   });
 });

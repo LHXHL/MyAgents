@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
+import { imEventBus } from './im-event-bus';
 import { imRequestRegistry } from './im-request-registry';
 
 describe('ImRequestRegistry cancellation ownership', () => {
@@ -41,5 +42,42 @@ describe('ImRequestRegistry cancellation ownership', () => {
     });
     expect(imRequestRegistry.get('request-1')).toBe(entry);
     expect(entry.abortController.signal.aborted).toBe(true);
+  });
+});
+
+
+describe('producer terminal receipts (#678)', () => {
+  beforeEach(() => { imRequestRegistry.clear(); imEventBus.clear(); });
+
+  it('recovers the exact terminal after unregister and 20,001 delta evictions', () => {
+    imRequestRegistry.register('lost', 'session');
+    const final = { finalPayloads: [{ text: 'canonical result' }] };
+    imEventBus.emit('lost', 'complete', final);
+    imRequestRegistry.unregister('lost');
+    for (let i = 0; i < 20_001; i++) imEventBus.emit('other', 'delta', 'x');
+    const replay: string[] = [];
+    imEventBus.subscribe(0, event => replay.push(event.type), undefined, 'lost')();
+    expect(replay).toContain('gap');
+    expect(replay).not.toContain('complete');
+    expect(imRequestRegistry.outcome('lost')).toMatchObject({ state: 'terminal', event: { type: 'complete', data: final } });
+    imRequestRegistry.acknowledgeTerminal('lost');
+    expect(imRequestRegistry.outcome('lost')).toEqual({ state: 'unknown' });
+  });
+
+  it('never prunes silent queued/running requests and distinguishes unknown from active', () => {
+    const request = imRequestRegistry.register('silent', 'session');
+    request.updatedAt = 0;
+    expect(imRequestRegistry.pruneStale(1)).toBe(0);
+    imRequestRegistry.transferCancellationToRuntime('silent');
+    request.updatedAt = 0;
+    expect(imRequestRegistry.pruneStale(1)).toBe(0);
+    expect(imRequestRegistry.outcome('silent')).toEqual({ state: 'active' });
+    expect(imRequestRegistry.outcome('absent')).toEqual({ state: 'unknown' });
+  });
+
+  it('bounds retained receipts and makes evicted outcomes explicitly unknown', () => {
+    for (let i = 0; i < 201; i++) imEventBus.emit(`r${i}`, 'cancelled', { finalPayloads: [] });
+    expect(imRequestRegistry.outcome('r0')).toEqual({ state: 'unknown' });
+    expect(imRequestRegistry.outcome('r200')).toMatchObject({ state: 'terminal' });
   });
 });

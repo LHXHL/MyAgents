@@ -44,6 +44,33 @@ fn terminal_text(data: Option<&Value>) -> Option<&str> {
     })
 }
 
+/// Each admission has a unique lease, so late cleanup can never release a
+/// newly registered request's owner (even in the same process generation).
+struct ReplyLease {
+    manager: crate::sidecar::ManagedSidecarManager,
+    session_id: String,
+    owner: Option<crate::sidecar::SidecarOwner>,
+}
+
+impl Drop for ReplyLease {
+    fn drop(&mut self) {
+        if let Some(owner) = self.owner.take() {
+            crate::sidecar::schedule_release_session_sidecar(
+                self.manager.clone(),
+                self.session_id.clone(),
+                owner,
+            );
+        }
+    }
+}
+
+struct ReplyLifecycle {
+    cancel: super::event_consumer::CancelFlag,
+    manager: crate::sidecar::ManagedSidecarManager,
+    session_id: String,
+    generation: u64,
+}
+
 /// Per-requestId reply state. Mirrors the locals previously declared at the
 /// top of `stream_to_im` / `stream_to_im_streaming`. One slot per in-flight
 /// IM user message.
@@ -78,6 +105,11 @@ pub struct ReplySlot {
     pub completed_session_id: Option<String>,
     /// Whether the slot has reached a terminal state (complete / error / cancelled).
     pub is_done: bool,
+    interaction_ids: Vec<String>,
+    _lease: Option<ReplyLease>,
+    admission_finished: bool,
+    terminal_callback_claimed: bool,
+    producer_terminal: Option<Value>,
 }
 
 impl ReplySlot {
@@ -112,6 +144,11 @@ impl ReplySlot {
             reply_dispatch_started: false,
             completed_session_id: None,
             is_done: false,
+            interaction_ids: Vec::new(),
+            _lease: None,
+            admission_finished: false,
+            terminal_callback_claimed: false,
+            producer_terminal: None,
         }
     }
 }
@@ -120,6 +157,7 @@ impl ReplySlot {
 /// from /api/im/events, calls adapter to render content. Owned by ImEventConsumer.
 pub struct ReplyRouter {
     slots: HashMap<String, ReplySlot>,
+    lifecycle: Option<ReplyLifecycle>,
     pending_approvals: PendingApprovals,
     pending_questions: PendingQuestions,
 }
@@ -131,6 +169,7 @@ impl ReplyRouter {
     ) -> Self {
         Self {
             slots: HashMap::new(),
+            lifecycle: None,
             pending_approvals,
             pending_questions,
         }
@@ -147,15 +186,22 @@ impl ReplyRouter {
         requester_user_id: Option<String>,
         group_ctx: Option<&GroupStreamContext>,
         delivery_protocol: Option<ImDeliveryProtocol>,
-    ) {
+    ) -> bool {
+        if self
+            .lifecycle
+            .as_ref()
+            .is_some_and(|lifecycle| lifecycle.cancel.load(std::sync::atomic::Ordering::SeqCst))
+        {
+            return false;
+        }
         if self.slots.contains_key(&request_id) {
-            return;
+            return true;
         }
         let group_activation_always = matches!(
             group_ctx.map(|g| &g.activation),
             Some(super::types::GroupActivation::Always),
         );
-        let slot = ReplySlot::new(
+        let mut slot = ReplySlot::new(
             request_id.clone(),
             chat_id,
             message_id,
@@ -164,7 +210,27 @@ impl ReplyRouter {
             group_activation_always,
             delivery_protocol,
         );
+        if let Some(lifecycle) = &self.lifecycle {
+            let owner = crate::sidecar::SidecarOwner::BackgroundCompletion(format!(
+                "im-reply:{}",
+                uuid::Uuid::new_v4()
+            ));
+            let mut manager = lifecycle.manager.lock().unwrap_or_else(|e| e.into_inner());
+            if !manager.add_session_owner_to_generation(
+                &lifecycle.session_id,
+                lifecycle.generation,
+                owner.clone(),
+            ) {
+                return false;
+            }
+            slot._lease = Some(ReplyLease {
+                manager: lifecycle.manager.clone(),
+                session_id: lifecycle.session_id.clone(),
+                owner: Some(owner),
+            });
+        }
         self.slots.insert(request_id, slot);
+        true
     }
 
     pub(crate) fn set_pending_delivery_mode(
@@ -220,6 +286,14 @@ impl ReplyRouter {
         };
         if already_done {
             return None;
+        }
+        // Preserve producer authority before any cancellable delivery await.
+        // Shutdown may interrupt transport, but cannot replace this outcome.
+        if matches!(event_type, "complete" | "error" | "cancelled") {
+            self.slots
+                .get_mut(&request_id)?
+                .producer_terminal
+                .get_or_insert_with(|| event.clone());
         }
 
         if let Some(mode) = event
@@ -304,6 +378,27 @@ impl ReplyRouter {
                 .and_then(|slot| slot.delivery_protocol.as_ref()),
             Some(ImDeliveryProtocol::OpenClawReply)
         );
+        if !uses_openclaw_reply && event_type == "complete" && event["reconciled"] == true {
+            // A receipt may replace missing deltas. Never finalize a stale
+            // partial as the whole answer; use producer-owned canonical text.
+            let text = event
+                .pointer("/data/finalPayloads")
+                .and_then(Value::as_array)
+                .map(|payloads| {
+                    payloads
+                        .iter()
+                        .filter_map(|p| p["text"].as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n\n")
+                });
+            if let Some(text) = text.filter(|text| !text.is_empty()) {
+                let slot = self.slots.get_mut(&request_id)?;
+                if text != slot.last_block_text {
+                    slot.block_text = text.clone();
+                    slot.last_block_text = text;
+                }
+            }
+        }
         let outcome = if uses_openclaw_reply {
             self.dispatch_openclaw_reply(event_type, event, &request_id, adapter, sidecar_port)
                 .await
@@ -365,6 +460,11 @@ impl ReplyRouter {
             return;
         }
 
+        self.slots
+            .get_mut(request_id)
+            .expect("registered slot")
+            .interaction_ids
+            .push(question_request_id.clone());
         // Register before platform I/O: a button can arrive before send returns.
         self.pending_questions.lock().await.insert(
             question_request_id.clone(),
@@ -609,6 +709,7 @@ impl ReplyRouter {
                         },
                     );
                 }
+                slot.interaction_ids.push(perm_request_id.clone());
                 let card_msg_id = match adapter
                     .send_approval_card(&chat_id, &perm_request_id, &tool_name, &tool_input_str)
                     .await
@@ -705,17 +806,15 @@ impl ReplyRouter {
                     request_id,
                     error
                 );
-                // A reply-operation admission failure means the process-scoped
-                // plugin owner is absent (connection failure) or no longer has
-                // this request (protocol_dispatch_missing). Retaining the Rust
-                // slot cannot recreate that owner and would only leak it.
-                slot.is_done = true;
-                return Some(TerminalOutcome {
-                    session_id: None,
-                    silent: false,
-                });
+                // Delivery failure is not an execution terminal. Keep the slot
+                // and its lease until the producer terminal (or confirmed loss).
+                // Terminal RPCs do not require a successful start ACK.
+                if !matches!(event_type, "complete" | "error" | "cancelled") {
+                    return None;
+                }
+            } else {
+                slot.reply_dispatch_started = true;
             }
-            slot.reply_dispatch_started = true;
         }
 
         match event_type {
@@ -802,9 +901,8 @@ impl ReplyRouter {
                         error
                     );
                 }
-                // The Bridge endpoint ACKs queue admission synchronously. On
-                // failure there is no reachable pending dispatcher to retry or
-                // settle, so local terminal cleanup remains authoritative.
+                // Execution is terminal regardless of transport delivery. Failed
+                // handoff is logged as unknown, never as successful delivery.
                 slot.is_done = true;
                 Some(TerminalOutcome {
                     session_id: None,
@@ -829,8 +927,7 @@ impl ReplyRouter {
                         error
                     );
                 }
-                // See the complete branch: keeping the local slot cannot
-                // recover a process-scoped plugin dispatch owner.
+                // This is the producer's real terminal, not a delivery outcome.
                 slot.is_done = true;
                 Some(TerminalOutcome {
                     session_id: None,
@@ -1025,6 +1122,7 @@ impl ReplyRouter {
                         },
                     );
                 }
+                slot.interaction_ids.push(perm_request_id.clone());
                 let card_msg_id = adapter
                     .send_approval_card(&chat_id, &perm_request_id, &tool_name, &tool_input_str)
                     .await
@@ -1145,10 +1243,108 @@ impl ReplyRouter {
         }
     }
 
+    pub(crate) fn set_lifecycle(
+        &mut self,
+        cancel: super::event_consumer::CancelFlag,
+        manager: crate::sidecar::ManagedSidecarManager,
+        session_id: String,
+        generation: u64,
+    ) {
+        self.lifecycle = Some(ReplyLifecycle {
+            cancel,
+            manager,
+            session_id,
+            generation,
+        });
+    }
+
+    /// Claim all outstanding obligations under the short router lock. Cleanup
+    /// and platform I/O then run on this detached router, never the registry lock.
+    pub(crate) fn take_for_shutdown(&mut self) -> Self {
+        if let Some(lifecycle) = &self.lifecycle {
+            lifecycle
+                .cancel
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        let mut pending = Self::new(
+            self.pending_approvals.clone(),
+            self.pending_questions.clone(),
+        );
+        pending.slots = std::mem::take(&mut self.slots);
+        pending
+    }
+
+    pub(crate) fn request_ids(&self) -> Vec<String> {
+        self.slots.keys().cloned().collect()
+    }
+
+    pub(crate) fn producer_terminal(&self, request_id: &str) -> Option<&Value> {
+        self.slots.get(request_id)?.producer_terminal.as_ref()
+    }
+
+    pub(crate) fn uses_idempotent_terminal(&self, request_id: &str) -> bool {
+        self.slots.get(request_id).is_some_and(|slot| {
+            matches!(
+                slot.delivery_protocol,
+                Some(ImDeliveryProtocol::OpenClawReply)
+            )
+        })
+    }
+
+    pub(crate) async fn clear_interactions(&mut self, request_id: &str) {
+        if let Some(slot) = self.slots.get_mut(request_id) {
+            let mut approvals = self.pending_approvals.lock().await;
+            let mut questions = self.pending_questions.lock().await;
+            for id in slot.interaction_ids.drain(..) {
+                approvals.remove(&id);
+                questions.remove(&id);
+            }
+        }
+    }
+
     /// Drop a slot after handling its terminal event. Caller invokes after
     /// processing TerminalOutcome.
-    pub fn unregister(&mut self, request_id: &str) {
-        self.slots.remove(request_id);
+    pub async fn unregister(&mut self, request_id: &str) {
+        if let Some(mut slot) = self.slots.remove(request_id) {
+            if let Some(mut lease) = slot._lease.take() {
+                if let Some(owner) = lease.owner.take() {
+                    if let Err(error) = crate::sidecar::release_session_sidecar(
+                        &lease.manager,
+                        &lease.session_id,
+                        &owner,
+                    )
+                    .await
+                    {
+                        ulog_warn!("[reply-router] Reply lease release failed: {}", error);
+                    }
+                }
+            }
+        }
+    }
+
+    pub(crate) fn claim_terminal_callback(&mut self, request_id: &str) -> bool {
+        let Some(slot) = self.slots.get_mut(request_id) else {
+            return false;
+        };
+        if slot.terminal_callback_claimed {
+            return false;
+        }
+        slot.terminal_callback_claimed = true;
+        true
+    }
+
+    pub(crate) fn finish_admission(&mut self, request_id: &str) {
+        if let Some(slot) = self.slots.get_mut(request_id) {
+            slot.admission_finished = true;
+        }
+    }
+
+    pub(crate) fn reconcilable_request_ids(&self) -> Vec<String> {
+        self.slots
+            .iter()
+            .filter(|(_, slot)| slot.admission_finished)
+            .map(|(id, _)| id.clone())
+            .collect()
     }
 
     /// Diagnostic.
@@ -1190,6 +1386,8 @@ use adapter::ImStreamAdapter as _ImStreamAdapter;
 mod tests {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex as StdMutex};
+    use std::time::{Duration, Instant};
+    use tokio::sync::Mutex;
 
     use serde_json::json;
 
@@ -1204,6 +1402,16 @@ mod tests {
         ordinary_effects: StdMutex<Vec<&'static str>>,
         question_pending: Option<crate::im::PendingQuestions>,
         fail_send: bool,
+        fail_start: bool,
+        panic_start_once: std::sync::atomic::AtomicBool,
+        terminal_pause: Option<Arc<TerminalPause>>,
+    }
+
+    struct TerminalPause {
+        before_accept: bool,
+        used: std::sync::atomic::AtomicBool,
+        entered: tokio::sync::Notify,
+        release: tokio::sync::Notify,
     }
 
     impl RecordingAdapter {
@@ -1347,6 +1555,15 @@ mod tests {
         }
 
         async fn start_reply_dispatch(&self, request_id: &str) -> AdapterResult<()> {
+            assert!(
+                !self
+                    .panic_start_once
+                    .swap(false, std::sync::atomic::Ordering::SeqCst),
+                "fixture adapter panic"
+            );
+            if self.fail_start {
+                return Err("temporary connection failure".into());
+            }
             self.reply_operations
                 .lock()
                 .unwrap()
@@ -1401,11 +1618,28 @@ mod tests {
             request_id: &str,
             final_payloads: &serde_json::Value,
         ) -> AdapterResult<()> {
-            self.reply_operations.lock().unwrap().push(json!({
-                "kind": "complete",
-                "requestId": request_id,
-                "finalPayloads": final_payloads,
-            }));
+            let pause = self
+                .terminal_pause
+                .as_ref()
+                .filter(|pause| !pause.used.swap(true, std::sync::atomic::Ordering::SeqCst));
+            if let Some(pause) = pause.filter(|pause| pause.before_accept) {
+                pause.entered.notify_one();
+                pause.release.notified().await;
+            }
+            // Model the Bridge's existing idempotent terminal admission.
+            {
+                let mut operations = self.reply_operations.lock().unwrap();
+                if !operations
+                    .iter()
+                    .any(|op| op["kind"] == "complete" && op["requestId"] == request_id)
+                {
+                    operations.push(json!({ "kind": "complete", "requestId": request_id, "finalPayloads": final_payloads }));
+                }
+            }
+            if let Some(pause) = pause.filter(|pause| !pause.before_accept) {
+                pause.entered.notify_one();
+                pause.release.notified().await;
+            }
             Ok(())
         }
 
@@ -1471,7 +1705,7 @@ mod tests {
                 if protocol.is_some() {
                     assert_eq!(operations.len(), 1);
                 }
-                router.unregister("r");
+                router.unregister("r").await;
                 assert_eq!(router.slot_count(), 0);
             }
         }
@@ -1951,6 +2185,18 @@ mod tests {
             let retired = Arc::new(AtomicBool::new(true));
             let cancel = Arc::new(AtomicBool::new(false));
             let terminal = Arc::new(AtomicBool::new(false));
+            let manager = crate::sidecar::create_sidecar_manager();
+            let owner = crate::sidecar::SidecarOwner::BackgroundCompletion("test-old-reply".into());
+            manager.lock().unwrap().insert_test_ready_frontend_sidecar(
+                "old-session",
+                port,
+                owner.clone(),
+            );
+            let generation = manager
+                .lock()
+                .unwrap()
+                .generation_for("old-session")
+                .unwrap();
             let handle = spawn_consumer(
                 crate::local_http::sse_client(),
                 port,
@@ -1961,10 +2207,8 @@ mod tests {
                 ConsumerLifetime {
                     cancel: cancel.clone(),
                     retire_when_idle: retired,
-                    manager: crate::sidecar::create_sidecar_manager(),
-                    retirement_owner: crate::sidecar::SidecarOwner::BackgroundCompletion(
-                        "test-old-reply".into(),
-                    ),
+                    manager: manager.clone(),
+                    generation,
                 },
                 Arc::new({
                     let terminal = terminal.clone();
@@ -1983,6 +2227,9 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap();
+            crate::sidecar::release_session_sidecar(&manager, "old-session", &owner)
+                .await
+                .unwrap();
             assert!(terminal.load(Ordering::SeqCst));
             assert!(cancel.load(Ordering::SeqCst));
             assert_eq!(router.lock().await.slot_count(), 0);
@@ -1999,5 +2246,689 @@ mod tests {
             }
             server.abort();
         }
+    }
+
+    #[tokio::test]
+    async fn delivery_start_failure_does_not_end_execution_or_hide_real_terminal() {
+        let mut replies = ReplyRouter::new(
+            Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(Mutex::new(HashMap::new())),
+        );
+        replies.register(
+            "r".into(),
+            "chat".into(),
+            "m".into(),
+            ImSourceType::Private,
+            None,
+            None,
+            Some(ImDeliveryProtocol::OpenClawReply),
+        );
+        let adapter = RecordingAdapter {
+            fail_start: true,
+            ..Default::default()
+        };
+        assert!(replies
+            .dispatch(
+                &json!({"requestId":"r", "type":"delta", "data":"working"}),
+                &adapter,
+                0
+            )
+            .await
+            .is_none());
+        assert_eq!(replies.slot_count(), 1);
+        assert!(!replies.slots["r"].is_done);
+        assert!(replies.dispatch(&json!({"requestId":"r", "type":"error", "data":{"finalPayloads":[{"text":"producer failure"}]}}), &adapter, 0).await.is_some());
+        assert!(adapter
+            .reply_operations()
+            .iter()
+            .any(|op| op["kind"] == "abort"));
+    }
+
+    fn idle_peer(key: &str, session: &str, port: u16) -> crate::im::types::PeerSession {
+        crate::im::types::PeerSession {
+            session_key: key.into(),
+            session_id: session.into(),
+            sidecar_port: port,
+            workspace_path: std::path::PathBuf::from("/synthetic"),
+            source_type: ImSourceType::Private,
+            source_id: "chat".into(),
+            source_display_name: None,
+            last_sender_name: None,
+            message_count: 1,
+            metadata_birth_pending: false,
+            metadata_indexed: true,
+            last_active: Instant::now() - Duration::from_secs(1900),
+        }
+    }
+
+    #[tokio::test]
+    async fn idle_gc_keeps_silent_work_with_or_without_a_tab_and_releases_after_terminal() {
+        use crate::im::enqueue::{collect_idle_im_sessions, ensure_im_consumer};
+        use crate::sidecar::{create_sidecar_manager, release_session_sidecar, SidecarOwner};
+        for tab_present in [false, true] {
+            let manager = create_sidecar_manager();
+            let agent = SidecarOwner::Agent("peer".into());
+            let tab = SidecarOwner::Tab("tab".into());
+            let port = 1; // No network server is needed to exercise lifecycle ownership.
+            manager.lock().unwrap().insert_test_ready_frontend_sidecar(
+                "session",
+                port,
+                agent.clone(),
+            );
+            if tab_present {
+                manager
+                    .lock()
+                    .unwrap()
+                    .add_session_owner("session", tab.clone());
+            }
+            let generation = manager.lock().unwrap().generation_for("session").unwrap();
+            let consumers = Arc::new(Mutex::new(HashMap::new()));
+            let adapter = Arc::new(RecordingAdapter::default());
+            let replies = ensure_im_consumer(
+                &consumers,
+                &manager,
+                "peer",
+                port,
+                "session",
+                generation,
+                "r".into(),
+                adapter.clone(),
+                Arc::new(Mutex::new(HashMap::new())),
+                Arc::new(Mutex::new(HashMap::new())),
+                crate::local_http::sse_client(),
+                Arc::new(|_, _| {}),
+            )
+            .await
+            .unwrap();
+            assert!(replies.lock().await.register(
+                "r".into(),
+                "chat".into(),
+                "m".into(),
+                ImSourceType::Private,
+                None,
+                None,
+                Some(ImDeliveryProtocol::OpenClawReply)
+            ));
+            let router = Arc::new(Mutex::new(crate::im::router::SessionRouter::new(
+                std::path::PathBuf::from("/synthetic"),
+            )));
+            router
+                .lock()
+                .await
+                .upsert_peer_session(idle_peer("peer", "session", port));
+            let peer_locks = Arc::new(Mutex::new(HashMap::new()));
+            assert_eq!(
+                collect_idle_im_sessions(&router, &manager, &consumers, &peer_locks, |_| panic!(
+                    "busy work must not enter GC"
+                ))
+                .await,
+                0
+            );
+            assert!(manager.lock().unwrap().is_live("session", generation));
+            assert!(!consumers.lock().await["peer"]
+                .cancel
+                .load(std::sync::atomic::Ordering::SeqCst));
+            // Even a binding-owner release cannot kill the request lease.
+            release_session_sidecar(&manager, "session", &agent)
+                .await
+                .unwrap();
+            assert!(manager.lock().unwrap().is_live("session", generation));
+            manager
+                .lock()
+                .unwrap()
+                .add_session_owner("session", agent.clone());
+            {
+                let mut replies = replies.lock().await;
+                assert!(replies
+                    .dispatch(
+                        &json!({"requestId":"r","type":"complete","data":{"finalPayloads":[]}}),
+                        adapter.as_ref(),
+                        port
+                    )
+                    .await
+                    .is_some());
+                replies.unregister("r").await;
+            }
+            // Failed preservation keeps the binding and consumer intact.
+            assert_eq!(
+                collect_idle_im_sessions(&router, &manager, &consumers, &peer_locks, |_| Err(
+                    "unavailable".into()
+                ))
+                .await,
+                0
+            );
+            assert_eq!(
+                collect_idle_im_sessions(&router, &manager, &consumers, &peer_locks, |_| Ok(()))
+                    .await,
+                1
+            );
+            assert_eq!(
+                router
+                    .lock()
+                    .await
+                    .peer_session_snapshot("peer")
+                    .unwrap()
+                    .sidecar_port,
+                0
+            );
+            assert!(consumers.lock().await.is_empty());
+            assert_eq!(
+                manager.lock().unwrap().is_live("session", generation),
+                tab_present
+            );
+            if tab_present {
+                release_session_sidecar(&manager, "session", &tab)
+                    .await
+                    .unwrap();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn stopped_consumer_settles_each_pending_request_and_rejects_late_registration() {
+        use crate::im::enqueue::{drop_im_consumer, ensure_im_consumer};
+        use crate::sidecar::{create_sidecar_manager, release_session_sidecar, SidecarOwner};
+        let manager = create_sidecar_manager();
+        let agent = SidecarOwner::Agent("peer".into());
+        manager
+            .lock()
+            .unwrap()
+            .insert_test_ready_frontend_sidecar("session", 1, agent.clone());
+        let generation = manager.lock().unwrap().generation_for("session").unwrap();
+        let consumers = Arc::new(Mutex::new(HashMap::new()));
+        let adapter = Arc::new(RecordingAdapter::default());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let replies = ensure_im_consumer(
+            &consumers,
+            &manager,
+            "peer",
+            1,
+            "session",
+            generation,
+            "r1".into(),
+            adapter.clone(),
+            Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(Mutex::new(HashMap::new())),
+            crate::local_http::sse_client(),
+            Arc::new(move |id, _| {
+                let _ = tx.send(id);
+            }),
+        )
+        .await
+        .unwrap();
+        for id in ["r1", "r2"] {
+            assert!(replies.lock().await.register(
+                id.into(),
+                "chat".into(),
+                "m".into(),
+                ImSourceType::Private,
+                None,
+                None,
+                Some(ImDeliveryProtocol::OpenClawReply)
+            ));
+        }
+        drop_im_consumer(&consumers, "peer").await;
+        for _ in 0..2 {
+            tokio::time::timeout(Duration::from_secs(3), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+        }
+        assert_eq!(replies.lock().await.slot_count(), 0);
+        assert!(!replies.lock().await.register(
+            "late".into(),
+            "chat".into(),
+            "m".into(),
+            ImSourceType::Private,
+            None,
+            None,
+            None
+        ));
+        assert_eq!(
+            adapter
+                .reply_operations()
+                .iter()
+                .filter(|op| op["kind"] == "abort")
+                .count(),
+            2
+        );
+        release_session_sidecar(&manager, "session", &agent)
+            .await
+            .unwrap();
+        assert!(!manager.lock().unwrap().is_live("session", generation));
+    }
+
+    #[tokio::test]
+    async fn old_generation_cleanup_cannot_release_or_cancel_a_new_request() {
+        use crate::im::enqueue::{drop_im_consumer, ensure_im_consumer};
+        use crate::sidecar::{create_sidecar_manager, release_session_sidecar, SidecarOwner};
+        let manager = create_sidecar_manager();
+        let agent = SidecarOwner::Agent("peer".into());
+        manager
+            .lock()
+            .unwrap()
+            .insert_test_ready_frontend_sidecar("session", 1, agent.clone());
+        let old_generation = manager.lock().unwrap().generation_for("session").unwrap();
+        let consumers = Arc::new(Mutex::new(HashMap::new()));
+        let adapter = Arc::new(RecordingAdapter::default());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let callback: Arc<dyn Fn(String, super::TerminalOutcome) + Send + Sync> =
+            Arc::new(move |id, _| {
+                let _ = tx.send(id);
+            });
+        let old = ensure_im_consumer(
+            &consumers,
+            &manager,
+            "peer",
+            1,
+            "session",
+            old_generation,
+            "old".into(),
+            adapter.clone(),
+            Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(Mutex::new(HashMap::new())),
+            crate::local_http::sse_client(),
+            callback.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(old.lock().await.register(
+            "old".into(),
+            "chat".into(),
+            "m".into(),
+            ImSourceType::Private,
+            None,
+            None,
+            Some(ImDeliveryProtocol::OpenClawReply)
+        ));
+        manager
+            .lock()
+            .unwrap()
+            .insert_test_ready_frontend_sidecar("session", 1, agent.clone());
+        let generation = manager.lock().unwrap().generation_for("session").unwrap();
+        assert_ne!(generation, old_generation);
+        let new = ensure_im_consumer(
+            &consumers,
+            &manager,
+            "peer",
+            1,
+            "session",
+            generation,
+            "new".into(),
+            adapter.clone(),
+            Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(Mutex::new(HashMap::new())),
+            crate::local_http::sse_client(),
+            callback,
+        )
+        .await
+        .unwrap();
+        assert!(new.lock().await.register(
+            "new".into(),
+            "chat".into(),
+            "m".into(),
+            ImSourceType::Private,
+            None,
+            None,
+            Some(ImDeliveryProtocol::OpenClawReply)
+        ));
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(3), rx.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+            "old"
+        );
+        assert_eq!(old.lock().await.slot_count(), 0);
+        assert_eq!(new.lock().await.slot_count(), 1);
+        assert!(!consumers.lock().await["peer"]
+            .cancel
+            .load(std::sync::atomic::Ordering::SeqCst));
+        release_session_sidecar(&manager, "session", &agent)
+            .await
+            .unwrap();
+        assert!(manager.lock().unwrap().is_live("session", generation));
+        drop_im_consumer(&consumers, "peer").await;
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(3), rx.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+            "new"
+        );
+        assert!(!manager.lock().unwrap().is_live("session", generation));
+    }
+
+    #[tokio::test]
+    async fn recovered_terminal_uses_canonical_text_instead_of_a_truncated_native_draft() {
+        let mut replies = ReplyRouter::new(
+            Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(Mutex::new(HashMap::new())),
+        );
+        replies.register(
+            "r".into(),
+            "chat".into(),
+            "m".into(),
+            ImSourceType::Private,
+            None,
+            None,
+            None,
+        );
+        let adapter = RecordingAdapter::default();
+        replies
+            .dispatch(
+                &json!({"requestId":"r","type":"delta","data":"partial"}),
+                &adapter,
+                0,
+            )
+            .await;
+        assert!(replies.dispatch(&json!({"requestId":"r","type":"complete","reconciled":true,"data":{"finalPayloads":[{"text":"full canonical answer"}]}}), &adapter, 0).await.is_some());
+        assert!(adapter
+            .sent_messages()
+            .iter()
+            .any(|(_, text)| text == "full canonical answer"));
+        assert!(replies.claim_terminal_callback("r"));
+        assert!(!replies.claim_terminal_callback("r"));
+    }
+    struct ConsumerProbe {
+        replies: super::SharedReplyRouter,
+        consumers: crate::im::ImConsumers,
+        manager: crate::sidecar::ManagedSidecarManager,
+        events: tokio::sync::broadcast::Sender<serde_json::Value>,
+        receipt: Arc<StdMutex<serde_json::Value>>,
+        queries: Arc<StdMutex<Vec<serde_json::Value>>>,
+        queried: Arc<tokio::sync::Notify>,
+        cancellations: Arc<StdMutex<Vec<serde_json::Value>>>,
+        terminal: tokio::sync::mpsc::UnboundedReceiver<String>,
+        server: tauri::async_runtime::JoinHandle<()>,
+        port: u16,
+    }
+
+    impl ConsumerProbe {
+        async fn start(adapter: Arc<RecordingAdapter>) -> Self {
+            use crate::sidecar::{create_sidecar_manager, SidecarOwner};
+            use axum::{
+                response::sse::{Event, Sse},
+                routing::{get, post},
+                Json,
+            };
+            let (events, _) = tokio::sync::broadcast::channel::<serde_json::Value>(32);
+            let connected = Arc::new(tokio::sync::Notify::new());
+            let receipt = Arc::new(StdMutex::new(json!({"outcomes":{"r":{"state":"active"}}})));
+            let queries = Arc::new(StdMutex::new(Vec::new()));
+            let queried = Arc::new(tokio::sync::Notify::new());
+            let cancellations = Arc::new(StdMutex::new(Vec::new()));
+            let app = axum::Router::new()
+                .route(
+                    "/api/im/events",
+                    get({
+                        let events = events.clone();
+                        let connected = connected.clone();
+                        move || {
+                            let receiver = events.subscribe();
+                            connected.notify_one();
+                            async move {
+                                Sse::new(futures_util::stream::unfold(receiver, |mut rx| async {
+                                    rx.recv().await.ok().map(|event| {
+                                        (
+                                            Ok::<_, std::convert::Infallible>(
+                                                Event::default().json_data(event).unwrap(),
+                                            ),
+                                            rx,
+                                        )
+                                    })
+                                }))
+                            }
+                        }
+                    }),
+                )
+                .route(
+                    "/api/im/requests",
+                    post({
+                        let receipt = receipt.clone();
+                        let queries = queries.clone();
+                        let queried = queried.clone();
+                        move |Json(body): Json<serde_json::Value>| {
+                            queries.lock().unwrap().push(body);
+                            queried.notify_one();
+                            let result = receipt.lock().unwrap().clone();
+                            async move { Json(result) }
+                        }
+                    }),
+                )
+                .route(
+                    "/api/im/cancel",
+                    post({
+                        let cancellations = cancellations.clone();
+                        move |Json(body): Json<serde_json::Value>| {
+                            cancellations.lock().unwrap().push(body);
+                            async { Json(json!({"success":true})) }
+                        }
+                    }),
+                );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let server = tauri::async_runtime::spawn(async move {
+                axum::serve(listener, app).await.unwrap();
+            });
+            let manager = create_sidecar_manager();
+            manager.lock().unwrap().insert_test_ready_frontend_sidecar(
+                "session",
+                port,
+                SidecarOwner::Tab("tab".into()),
+            );
+            let generation = manager.lock().unwrap().generation_for("session").unwrap();
+            let consumers = Arc::new(Mutex::new(HashMap::new()));
+            let (tx, terminal) = tokio::sync::mpsc::unbounded_channel();
+            let replies = crate::im::enqueue::ensure_im_consumer(
+                &consumers,
+                &manager,
+                "peer",
+                port,
+                "session",
+                generation,
+                "r".into(),
+                adapter,
+                Default::default(),
+                Default::default(),
+                crate::local_http::sse_client(),
+                Arc::new(move |id, _| {
+                    tx.send(id).unwrap();
+                }),
+            )
+            .await
+            .unwrap();
+            assert!(replies.lock().await.register(
+                "r".into(),
+                "chat".into(),
+                "msg".into(),
+                ImSourceType::Private,
+                None,
+                None,
+                Some(ImDeliveryProtocol::OpenClawReply)
+            ));
+            tokio::time::timeout(Duration::from_secs(3), connected.notified())
+                .await
+                .unwrap();
+            Self {
+                replies,
+                consumers,
+                manager,
+                events,
+                receipt,
+                queries,
+                queried,
+                cancellations,
+                terminal,
+                server,
+                port,
+            }
+        }
+
+        async fn stopped(&mut self) {
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(3), self.terminal.recv())
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                "r"
+            );
+            assert_eq!(self.replies.lock().await.slot_count(), 0);
+            assert!(self.terminal.try_recv().is_err());
+        }
+
+        async fn close(self) {
+            let handle = self.consumers.lock().await.remove("peer").unwrap();
+            handle
+                .cancel
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            tokio::time::timeout(Duration::from_secs(3), handle._join)
+                .await
+                .unwrap()
+                .unwrap();
+            crate::sidecar::release_session_sidecar(
+                &self.manager,
+                "session",
+                &crate::sidecar::SidecarOwner::Tab("tab".into()),
+            )
+            .await
+            .unwrap();
+            assert!(!self.manager.lock().unwrap().has_session_sidecar("session"));
+            self.server.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn consumer_stop_preserves_terminal_before_and_after_bridge_acceptance() {
+        for before_accept in [true, false] {
+            let pause = Arc::new(TerminalPause {
+                before_accept,
+                used: false.into(),
+                entered: Default::default(),
+                release: Default::default(),
+            });
+            let adapter = Arc::new(RecordingAdapter {
+                terminal_pause: Some(pause.clone()),
+                ..Default::default()
+            });
+            let mut probe = ConsumerProbe::start(adapter.clone()).await;
+            let payload = json!([{"text":"canonical result"}]);
+            probe.events.send(json!({"seq":1,"requestId":"r","type":"complete","data":{"finalPayloads":payload}})).unwrap();
+            tokio::time::timeout(Duration::from_secs(3), pause.entered.notified())
+                .await
+                .unwrap();
+            probe.consumers.lock().await["peer"]
+                .cancel
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            probe.stopped().await;
+            let operations = adapter.reply_operations();
+            assert_eq!(
+                operations
+                    .iter()
+                    .filter(|op| op["kind"] == "complete")
+                    .count(),
+                1
+            );
+            assert!(operations.iter().any(|op| op["finalPayloads"] == payload));
+            assert!(!operations.iter().any(|op| op["kind"] == "abort"));
+            assert!(probe.cancellations.lock().unwrap().is_empty());
+            probe.close().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn consumer_reconciles_gap_after_active_receipt_without_reexecuting() {
+        let adapter = Arc::new(RecordingAdapter::default());
+        let mut probe = ConsumerProbe::start(adapter.clone()).await;
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while probe.queries.lock().unwrap().is_empty() {
+                probe.queried.notified().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(probe.queries.lock().unwrap()[0]["settleUnknown"], json!([]));
+        assert_eq!(probe.replies.lock().await.slot_count(), 1);
+        assert!(probe.terminal.try_recv().is_err());
+        probe.replies.lock().await.finish_admission("r");
+        let payload = json!([{"text":"recovered canonical"}]);
+        *probe.receipt.lock().unwrap() = json!({"outcomes":{"r":{"state":"terminal","event":{
+            "requestId":"r","type":"complete","data":{"finalPayloads":payload}
+        }}}});
+        probe
+            .events
+            .send(json!({"seq":20,"requestId":null,"type":"gap","data":{"droppedSeqs":[1,20]}}))
+            .unwrap();
+        probe.stopped().await;
+        assert!(probe
+            .queries
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|q| q["settleUnknown"] == json!(["r"])));
+        assert_eq!(
+            adapter
+                .reply_operations()
+                .iter()
+                .filter(|op| op["kind"] == "complete")
+                .count(),
+            1
+        );
+        assert!(probe.cancellations.lock().unwrap().is_empty());
+        probe.close().await;
+    }
+
+    #[tokio::test]
+    async fn consumer_panic_cleans_question_and_releases_request_lease() {
+        let adapter = Arc::new(RecordingAdapter {
+            panic_start_once: true.into(),
+            ..Default::default()
+        });
+        let mut probe = ConsumerProbe::start(adapter.clone()).await;
+        probe.replies.lock().await.dispatch(&json!({"requestId":"r","type":"ask-user-question-request","data":serde_json::to_string(&json!({
+            "requestId":"ask-1","questions":[{"id":"choice","header":"Choice","question":"Pick one","options":[{"label":"A","description":""}],"multiSelect":false}]
+        })).unwrap()}), adapter.as_ref(), probe.port).await;
+        let questions = probe.replies.lock().await.pending_questions.clone();
+        assert!(questions.lock().await.contains_key("ask-1"));
+        probe
+            .events
+            .send(json!({"seq":1,"requestId":"r","type":"delta","data":"trigger panic"}))
+            .unwrap();
+        probe.stopped().await;
+        assert!(questions.lock().await.is_empty());
+        assert_eq!(
+            adapter
+                .reply_operations()
+                .iter()
+                .filter(|op| op["kind"] == "abort")
+                .count(),
+            1
+        );
+        assert_eq!(probe.cancellations.lock().unwrap().len(), 1);
+        let generation = probe
+            .manager
+            .lock()
+            .unwrap()
+            .generation_for("session")
+            .unwrap();
+        // A replacement consumer can still admit work on the retained Tab's Session.
+        let mut replacement = ReplyRouter::new(Default::default(), Default::default());
+        replacement.set_lifecycle(
+            Arc::new(false.into()),
+            probe.manager.clone(),
+            "session".into(),
+            generation,
+        );
+        assert!(replacement.register(
+            "next".into(),
+            "chat".into(),
+            "msg".into(),
+            ImSourceType::Private,
+            None,
+            None,
+            None
+        ));
+        replacement.unregister("next").await;
+        probe.close().await;
     }
 }

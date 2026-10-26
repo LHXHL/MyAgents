@@ -213,3 +213,39 @@ export function patchWecomCliSource(source: string, kind: keyof typeof WECOM_CLI
     || source.split(patch.before).length !== 2) return null;
   return source.replace(patch.before, patch.after);
 }
+
+/** WeCom 2026.9.15 uses the same admission/completion boundary as Lark.
+ * Its renderer state is local to processWeComMessageNow(entry), so overlapping
+ * tasks retain their own frame, stream, callbacks and delivery policy. */
+export function patchWecomChatQueueSource(source: string): string | null {
+  if (createHash('sha256').update(source).digest('hex') !== "7b8a3aa49abd854d171101ea9a485406ed8d895ceca423c2f35947ceb9911677") return null;
+  const before = "export function enqueueWeComChatTask(params) {\n    const { accountId, chatId, task } = params;\n    const key = buildQueueKey(accountId, chatId);\n    const prev = chatQueues.get(key) ?? Promise.resolve();\n    const status = chatQueues.has(key) ? \"queued\" : \"immediate\";\n    // continue queue even if previous task failed\n    const next = prev.then(task, task);\n    chatQueues.set(key, next);\n    const cleanup = () => {\n        // 只有当前任务仍是队列末尾时才清理，避免误删后续任务\n        if (chatQueues.get(key) === next) {\n            chatQueues.delete(key);\n        }\n    };\n    next.then(cleanup, cleanup);\n    return { status, promise: next };\n}";
+  if (source.split(before).length !== 2) return null;
+  const after = LARK_ENQUEUE_PATCH
+    .replace('function enqueueFeishuChatTask', 'export function enqueueWeComChatTask')
+    .replace('accountId, chatId, threadId, task', 'accountId, chatId, task')
+    .replace('buildQueueKey(accountId, chatId, threadId)', 'buildQueueKey(accountId, chatId)');
+  return source.replace(before, after);
+}
+
+// Audited installed monitor revisions: retain upstream transport/queue order,
+// but release the ingress lane after the existing Rust bounded queue accepts.
+const IM_MONITOR_ADMISSION_PATCHES = {
+  "weixin": {
+    "sha256": "a8689853b464cea3bd12932fc97055dbcac2ec1386d1a7a39a81cb8e291f3704",
+    "before": "        await processOneMessage(full, {\n          accountId,\n          config,\n          channelRuntime,\n          baseUrl,\n          cdnBaseUrl,\n          token,\n          typingTicket: cachedConfig.typingTicket,\n          log: opts.runtime?.log ?? (() => {}),\n          errLog,\n        });",
+    "after": "        const admit = (globalThis as any).__myagentsAwaitPluginAdmission;\n        const task = () => processOneMessage(full, {\n          accountId,\n          config,\n          channelRuntime,\n          baseUrl,\n          cdnBaseUrl,\n          token,\n          typingTicket: cachedConfig.typingTicket,\n          log: opts.runtime?.log ?? (() => {}),\n          errLog,\n        });\n        if (admit) {\n          await admit(task, () => errLog('[myagents] weixin request delivery failed'));\n        } else {\n          await task();\n        }"
+  },
+  "qq": {
+    "sha256": "26aa19501f938edd83ef6f9d224488dd2075c85a2f3713ee771b40421b68f632",
+    "before": "            await handleMessageFnRef(msg);",
+    "after": "            const admit = (globalThis as any).__myagentsAwaitPluginAdmission;\n            const handler = handleMessageFnRef;\n            if (admit) {\n              await admit(() => handler(msg), () => log?.error('[myagents] qq request delivery failed'));\n            } else {\n              await handler(msg);\n            }"
+  }
+} as const;
+
+export function patchImMonitorAdmissionSource(source: string, kind: keyof typeof IM_MONITOR_ADMISSION_PATCHES): string | null {
+  const patch = IM_MONITOR_ADMISSION_PATCHES[kind];
+  if (createHash('sha256').update(source).digest('hex') !== patch.sha256
+    || source.split(patch.before).length !== 2) return null;
+  return source.replace(patch.before, patch.after);
+}

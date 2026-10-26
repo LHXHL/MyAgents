@@ -41,7 +41,7 @@ import {
 import { redactPluginBridgeSecrets } from './secret-redaction';
 import { sanitizeOutboundMediaFilename } from './media-filename';
 import { installLarkAdmissionRuntimeGlobals } from './lark-admission';
-import { patchLarkChatQueueSource, patchChannelLifecycleSource, patchWecomCliSource } from './plugin-compat-patches';
+import { patchLarkChatQueueSource, patchWecomChatQueueSource, patchImMonitorAdmissionSource, patchChannelLifecycleSource, patchWecomCliSource } from './plugin-compat-patches';
 import {
   getGeneralRequestDispatcher,
   initializeProxyStateFromCurrentSettings,
@@ -138,6 +138,18 @@ registerHooks({
       const patched = patchWecomCliSource(src, wecomCliKind);
       if (patched) return { ...next(url, context), source: patched, shortCircuit: true };
       console.warn(`[plugin-bridge] Unknown WeCom CLI ${wecomCliKind} revision; retaining upstream behavior`);
+    }
+    if (url.endsWith('/@wecom/wecom-openclaw-plugin/dist/src/chat-queue.js')) {
+      const patched = patchWecomChatQueueSource(src);
+      if (patched) return { ...next(url, context), source: patched, shortCircuit: true };
+      console.warn('[plugin-bridge] Unknown WeCom chat queue revision; retaining upstream serialization');
+    }
+    const admissionKind = url.endsWith('/@tencent-weixin/openclaw-weixin/src/monitor/monitor.ts') ? 'weixin'
+      : url.endsWith('/@sliverp/qqbot/src/gateway.ts') ? 'qq' : null;
+    if (admissionKind) {
+      const patched = patchImMonitorAdmissionSource(src, admissionKind);
+      if (patched) return { ...next(url, context), source: stripTypeScriptTypes(patched, { mode: 'transform', sourceUrl: url }), shortCircuit: true };
+      console.warn(`[plugin-bridge] Unknown ${admissionKind} monitor revision; retaining upstream serialization`);
     }
     const hasImportMeta = /\bimport\.meta\b/.test(src);
     // Detect CJS-style exports: top of file is `"use strict"` and file has any
@@ -958,7 +970,7 @@ const server = honoServe({
       const message = err instanceof Error ? err.message : String(err);
       const code = message.startsWith('protocol_dispatch_missing')
         ? 'protocol_dispatch_missing'
-        : 'protocol_dispatch_error';
+        : message === 'protocol_terminal_conflict' ? 'protocol_terminal_conflict' : 'protocol_dispatch_error';
       mergeGatewayStatus({
         lastProtocolError: { code, requestId, at: Date.now() },
       });
@@ -966,7 +978,7 @@ const server = honoServe({
         `[plugin-bridge] ${code} pluginId=${capturedPlugin?.id || 'unknown'} requestId=${requestId}:`,
         err,
       );
-      return Response.json({ ok: false, error: code }, { status: code === 'protocol_dispatch_missing' ? 404 : 500 });
+      return Response.json({ ok: false, error: code }, { status: code === 'protocol_dispatch_missing' ? 404 : code === 'protocol_terminal_conflict' ? 409 : 500 });
     };
 
     if (path === '/start-dispatch' && req.method === 'POST') {
