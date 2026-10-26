@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { AgentConfig } from '../../shared/types/agent';
 import {
@@ -25,7 +25,40 @@ function makeAgent(overrides: Partial<AgentConfig> = {}): AgentConfig {
   };
 }
 
+afterEach(() => vi.restoreAllMocks());
+
 describe('createMaterializedSessionMetadata', () => {
+  describe.each([
+    ['darwin', 'arm64'], ['darwin', 'x64'], ['win32', 'x64'], ['linux', 'x64'],
+  ] as const)('DSH on %s-%s', (platform, arch) => {
+    it.each(['desktop', 'cron', 'im', 'agent-channel', 'registeredAgent'] as const)(
+      'freezes the accepted platform for %s births', (scenario) => {
+        vi.spyOn(process, 'platform', 'get').mockReturnValue(platform);
+        vi.spyOn(process, 'arch', 'get').mockReturnValue(arch);
+        const meta = createMaterializedSessionMetadata({
+          agentDir: '/tmp/workspace', sessionId: 'dsh-platform', scenario,
+          agent: makeAgent({ runtime: 'dsh', providerId: 'deepseek', model: 'deepseek-flash' }),
+        });
+        expect(meta.runtimeBinding).toMatchObject({
+          family: 'integrated', id: 'dsh', platformTarget: `${platform}-${arch}`,
+        });
+        expect(meta.runtimeSource).toBe('integrated');
+        if (scenario !== 'registeredAgent') expect(meta.providerId).toBe('deepseek');
+      },
+    );
+
+    it('uses the same platform for fallback births and Task identity rebinding', () => {
+      vi.spyOn(process, 'platform', 'get').mockReturnValue(platform);
+      vi.spyOn(process, 'arch', 'get').mockReturnValue(arch);
+      const fallback = createMaterializedSessionMetadata({
+        agentDir: '/tmp/workspace', sessionId: 'dsh-fallback', scenario: 'desktop', fallbackRuntime: 'dsh',
+      });
+      const rebound = bindOwnedSnapshotToRuntimeIdentity({ runtime: 'builtin' }, { runtime: 'dsh' });
+      expect(fallback.runtimeBinding).toMatchObject({ platformTarget: `${platform}-${arch}` });
+      expect(rebound.runtimeBinding).toEqual(fallback.runtimeBinding);
+    });
+  });
+
   it('materializes DSH with an authoritative binding while retaining ordinary Provider facts', () => {
     const meta = createMaterializedSessionMetadata({
       agentDir: '/tmp/workspace',

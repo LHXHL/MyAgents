@@ -31,6 +31,7 @@ import { INTERNAL_CLI_TOKEN_ENV } from '../../../shared/externalCliCapabilities'
 import { getSessionMetadata } from '../../SessionStore';
 import { withLogContext } from '../../logger-context';
 import { fingerprintDshNativeInput } from './input-identity';
+import { resolveDshPlatformTarget } from '../../../shared/integrated-runtimes/identity';
 import {
   findEffectiveProvider,
   loadConfig,
@@ -380,14 +381,6 @@ function turnOrigin(options: SessionStartOptions): MethodParams<'turn/start'>['o
     : { kind: 'headless', scenario: options.scenario.type };
 }
 
-function platformTarget(): 'darwin-arm64' | 'darwin-x64' | 'win32-x64' | 'linux-x64' {
-  const target = `${process.platform}-${process.arch}`;
-  if (target === 'darwin-arm64' || target === 'darwin-x64' || target === 'win32-x64' || target === 'linux-x64') {
-    return target;
-  }
-  throw new Error(`DSH Runtime has no accepted native target for ${target}`);
-}
-
 async function resourceRootForNode(nodeExecutablePath: string): Promise<string> {
   let cursor = dirname(await realpath(nodeExecutablePath));
   for (let depth = 0; depth < 8; depth += 1) {
@@ -551,7 +544,7 @@ function executionEnvironment(
   const windows = process.platform === 'win32';
   return {
     revision: `myagents-dsh-execution-v2:${hash(
-      platformTarget(),
+      resolveDshPlatformTarget(process.platform, process.arch),
       workspaceIdentity,
       workspacePath,
       attachmentRoot,

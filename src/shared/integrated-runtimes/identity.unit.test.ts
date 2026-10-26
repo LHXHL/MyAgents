@@ -10,6 +10,7 @@ import {
   parseEffectiveRuntimeBinding,
   preferenceFromLegacyAgentFacts,
   resolvePersistedRuntimeBinding,
+  resolveDshPlatformTarget,
   runtimeBindingKey,
 } from "./identity";
 
@@ -68,7 +69,9 @@ describe("Integrated Runtime identity", () => {
     ).toBeUndefined();
   });
 
-  it.each(["darwin-arm64", "win32-x64", "linux-x64"])("creates %s DSH bindings exclusively from the committed lock", (platformTarget) => {
+  it.each(["darwin-arm64", "darwin-x64", "win32-x64", "linux-x64"])("creates %s DSH bindings exclusively from the committed lock", (platformTarget) => {
+    const [platform, arch] = platformTarget.split("-");
+    expect(resolveDshPlatformTarget(platform, arch)).toBe(platformTarget);
     const binding = createDshBinding(platformTarget);
     expect(binding).toMatchObject({
       family: "integrated",
@@ -88,6 +91,12 @@ describe("Integrated Runtime identity", () => {
       runtimeSource: "integrated",
     });
   });
+
+  it.each([["linux", "arm64"], ["win32", "arm64"], ["freebsd", "x64"], ["darwin", "ia32"]])(
+    "rejects unsupported DSH hosts %s-%s", (platform, arch) => {
+      expect(() => resolveDshPlatformTarget(platform, arch)).toThrow(`DSH has no accepted platform target for ${platform}-${arch}`);
+    },
+  );
 
   it("migrates every legal legacy identity without changing semantics", () => {
     expect(resolvePersistedRuntimeBinding({ runtime: "builtin" })).toMatchObject({

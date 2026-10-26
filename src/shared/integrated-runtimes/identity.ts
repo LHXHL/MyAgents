@@ -210,6 +210,18 @@ export function createClaudeSdkBinding(): EffectiveRuntimeBinding {
   };
 }
 
+/** Native startup and Product Session birth must accept the same host targets. */
+export function resolveDshPlatformTarget(
+  platform: string,
+  arch: string,
+): "darwin-arm64" | "darwin-x64" | "win32-x64" | "linux-x64" {
+  const target = `${platform}-${arch}`;
+  if (target === "darwin-arm64" || target === "darwin-x64" || target === "win32-x64" || target === "linux-x64") {
+    return target;
+  }
+  throw new Error(`DSH has no accepted platform target for ${target}`);
+}
+
 export function createDshBinding(
   platformTarget: string,
 ): EffectiveRuntimeBinding {
