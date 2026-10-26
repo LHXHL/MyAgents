@@ -119,20 +119,22 @@ impl PeerBindingTransition {
     }
 }
 
-/// Error from Sidecar routing — distinguishes bufferable vs non-bufferable failures.
+/// Error from Sidecar routing — distinguishes rejection from unknown admission.
 #[derive(Debug)]
 pub enum RouteError {
     /// Sidecar setup failed (ensure_sidecar error)
     Setup(String),
-    /// HTTP request failed (connection error, timeout) — message should be buffered
+    /// HTTP request or response decoding failed; execution may already be admitted.
     Unavailable(String),
     /// Sidecar returned non-success HTTP status
     Response(u16, String),
 }
 
 impl RouteError {
-    pub fn should_buffer(&self) -> bool {
-        matches!(self, Self::Unavailable(_))
+    pub fn admission_is_unknown(&self) -> bool {
+        // A server error may follow runtime admission (for example, metadata
+        // persistence fails). Only the producer registry can settle that input.
+        matches!(self, Self::Unavailable(_) | Self::Response(500..=599, _))
     }
 }
 
@@ -1409,10 +1411,21 @@ mod tests {
     use super::{
         parse_session_key, peer_binding_source_requires_freeze,
         reconcile_peer_metadata_with_lookup, EnsureSidecarInfo, EnsureSidecarPrep,
-        PeerMetadataDisposition, SessionRouter, IDLE_TIMEOUT_SECS,
+        PeerMetadataDisposition, RouteError, SessionRouter, IDLE_TIMEOUT_SECS,
     };
     use crate::im::types::{ImActiveSession, PeerSession};
     use crate::sidecar::{release_session_sidecar, SidecarManager, SidecarOwner};
+
+    #[test]
+    fn enqueue_server_error_does_not_prove_input_was_rejected() {
+        // Metadata persistence can fail after SessionEngine accepts the input.
+        // Keep its reply lease and reconcile the same request, just as for a lost ACK.
+        assert!(RouteError::Response(500, "metadata write failed".into()).admission_is_unknown());
+        assert!(RouteError::Response(503, "unavailable".into()).admission_is_unknown());
+        assert!(RouteError::Unavailable("connection closed".into()).admission_is_unknown());
+        assert!(!RouteError::Response(409, "runtime mismatch".into()).admission_is_unknown());
+        assert!(!RouteError::Setup("startup failed".into()).admission_is_unknown());
+    }
 
     fn peer(session_key: &str, session_id: &str) -> PeerSession {
         let (source_type, source_id) = parse_session_key(session_key);

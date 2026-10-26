@@ -14,7 +14,7 @@ function installed(kind: "weixin" | "wecom", path: string): string {
   const original = readFileSync(join(root!, path), "utf8");
   const patched = patchChannelLifecycleSource(original, kind);
   if (!patched)
-    throw new Error(`Unrecognized installed ${kind} protocol fingerprint`);
+    throw new Error(`Installed ${kind} lifecycle patch target not found`);
   return patched;
 }
 function functions(
@@ -76,7 +76,7 @@ describe.skipIf(!root)("installed plugin lifecycle exits", () => {
     expect(toolSource).not.toBeNull();
     const result = runInNewContext(toolSource!.slice(toolSource!.indexOf("const textResult ="), toolSource!.indexOf("/**", toolSource!.indexOf("const textResult ="))) + '\nerrorResult("synthetic failure");');
     expect(result).toMatchObject({ isError: true, details: { error: "synthetic failure" } });
-    expect(patchWecomCliSource(argvSource + "\n", "argv")).toBeNull();
+    expect(patchWecomCliSource(argvSource + "\n// New package build\n", "argv")).not.toBeNull();
   });
 
   it.each(["single", "group"] as const)(

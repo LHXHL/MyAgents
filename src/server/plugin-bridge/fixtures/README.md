@@ -1,6 +1,6 @@
 # IM admission compatibility fixtures
 
-Pinned upstream source, used only by isolated compatibility tests. Compressed fixtures preserve the full source hash without copying large monitor modules into the test body. Tests execute only the transformed admission boundary with synthetic callbacks; no vendor gateway is started.
+Upstream snapshots used only by isolated compatibility tests. Versions and hashes below identify the fixtures, not a runtime allowlist. Tests also vary surrounding code, comments and formatting to cover plugin upgrades. Compressed fixtures avoid copying large monitor modules into the test body. Tests execute only the transformed admission boundary with synthetic callbacks; no vendor gateway is started.
 
 | Package | Version | Fixture | Source SHA-256 |
 |---|---|---|---|

@@ -15,16 +15,20 @@ describe('installed IM monitor admission contracts', () => {
   for (const kind of ['weixin', 'qq'] as const) {
     it(`${kind}: the next input enters before the previous renderer completes`, async () => {
       const filename = kind === 'weixin' ? 'weixin-monitor' : 'qq-gateway';
-      const source = gunzipSync(readFileSync(new URL(`./fixtures/${filename}.ts.gz`, import.meta.url))).toString();
-      expect(patchImMonitorAdmissionSource(source + '\n', kind)).toBeNull();
+      const original = gunzipSync(readFileSync(new URL(`./fixtures/${filename}.ts.gz`, import.meta.url))).toString();
+      const source = `// Upgraded monitor build\n${original}\nexport const buildLabel = 'next';`
+        .replaceAll('    ', '\t').replaceAll('\n', '\r\n');
       const patched = patchImMonitorAdmissionSource(source, kind);
       expect(patched).not.toBeNull();
+      expect(patchImMonitorAdmissionSource(source.replaceAll(
+        kind === 'weixin' ? 'processOneMessage(full,' : 'handleMessageFnRef(msg)',
+        'changedMessageHandler()',
+      ), kind)).toBeNull();
       // Execute the exact transformed admission boundary from the pinned
       // upstream source. No accounts, user state, network or vendor API calls.
       const start = patched!.indexOf('const admit = (globalThis as any).__myagentsAwaitPluginAdmission;');
-      const end = kind === 'weixin'
-        ? patched!.indexOf('\n      }\n    } catch', start)
-        : patched!.indexOf('\n            messagesProcessed++;', start);
+      const tail = kind === 'weixin' ? /\s+}\s+}\s+catch/ : /\s+messagesProcessed\+\+;/;
+      const end = start + patched!.slice(start).search(tail);
       expect(start).toBeGreaterThan(0);
       expect(end).toBeGreaterThan(start);
       const code = ts.transpileModule(patched!.slice(start, end), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;

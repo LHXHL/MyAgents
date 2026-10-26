@@ -100,7 +100,7 @@ import { parseArgs } from 'util';
 //    queue turns normal follow-ups into head-of-line blocking. The narrow
 //    structural patch below advances only after Bridge→Rust admission while
 //    keeping every dispatcher alive until its own delivery completes. Unknown
-//    upstream source shapes are left unchanged (fail closed).
+//    target code is left unchanged with a warning when it no longer matches.
 const PLUGIN_PATH_RE = /[/\\]openclaw-plugins[/\\][^/\\]+[/\\]node_modules[/\\]/;
 // Match the broken lark pattern, capturing the destination var name and the input arg name
 // so we can preserve them in the rewrite. The transform expression matches both upload sites
@@ -127,7 +127,9 @@ registerHooks({
       : url.endsWith('/@larksuite/openclaw-lark/src/messaging/inbound/dispatch-builders.js') ? 'lark'
       : url.endsWith('/@larksuite/openclaw-lark/src/messaging/inbound/dispatch.js') ? 'larkDispatch' : null;
     const channelPatched = channelPatchKind ? patchChannelLifecycleSource(src, channelPatchKind) : null;
-    if (channelPatchKind && !channelPatched) throw new Error(`Unsupported ${channelPatchKind} channel-context/delivery-policy source revision; update the compatible plugin before starting this channel.`);
+    if (channelPatchKind && !channelPatched) {
+      console.warn(`[plugin-bridge] ${channelPatchKind} context/delivery patch target not found; loading upstream code`);
+    }
     if (channelPatched) {
       const original = next(url, context);
       return { ...original, source: url.endsWith('.ts') ? stripTypeScriptTypes(channelPatched, { mode: 'transform', sourceUrl: url }) : channelPatched, shortCircuit: true };
@@ -137,19 +139,19 @@ registerHooks({
     if (wecomCliKind) {
       const patched = patchWecomCliSource(src, wecomCliKind);
       if (patched) return { ...next(url, context), source: patched, shortCircuit: true };
-      console.warn(`[plugin-bridge] Unknown WeCom CLI ${wecomCliKind} revision; retaining upstream behavior`);
+      console.warn(`[plugin-bridge] WeCom CLI ${wecomCliKind} patch target not found; loading upstream code`);
     }
     if (url.endsWith('/@wecom/wecom-openclaw-plugin/dist/src/chat-queue.js')) {
       const patched = patchWecomChatQueueSource(src);
       if (patched) return { ...next(url, context), source: patched, shortCircuit: true };
-      console.warn('[plugin-bridge] Unknown WeCom chat queue revision; retaining upstream serialization');
+      console.warn('[plugin-bridge] WeCom admission patch target not found; retaining upstream queue');
     }
     const admissionKind = url.endsWith('/@tencent-weixin/openclaw-weixin/src/monitor/monitor.ts') ? 'weixin'
       : url.endsWith('/@sliverp/qqbot/src/gateway.ts') ? 'qq' : null;
     if (admissionKind) {
       const patched = patchImMonitorAdmissionSource(src, admissionKind);
       if (patched) return { ...next(url, context), source: stripTypeScriptTypes(patched, { mode: 'transform', sourceUrl: url }), shortCircuit: true };
-      console.warn(`[plugin-bridge] Unknown ${admissionKind} monitor revision; retaining upstream serialization`);
+      console.warn(`[plugin-bridge] ${admissionKind} admission patch target not found; retaining upstream queue`);
     }
     const hasImportMeta = /\bimport\.meta\b/.test(src);
     // Detect CJS-style exports: top of file is `"use strict"` and file has any
@@ -163,7 +165,7 @@ registerHooks({
     const isLarkChatQueue = LARK_CHAT_QUEUE_PATH_RE.test(fileURLToPath(url));
     const larkChatQueuePatched = isLarkChatQueue ? patchLarkChatQueueSource(src) : null;
     if (isLarkChatQueue && !larkChatQueuePatched) {
-      console.warn('[plugin-bridge] official Lark chat queue shape is unknown; keeping upstream serialization unchanged');
+      console.warn('[plugin-bridge] Lark admission patch target not found; retaining upstream queue');
     }
     if (!needsCjsImportMetaPatch && !needsLarkBufferPatch && !larkChatQueuePatched) {
       return next(url, context);

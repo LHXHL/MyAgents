@@ -97,8 +97,8 @@ type QueueModule = {
   }) => { status: 'immediate' | 'queued'; promise: Promise<void> };
 };
 
-function loadPatchedQueue(): QueueModule {
-  const patched = patchLarkChatQueueSource(CHAT_QUEUE_FIXTURE);
+function loadPatchedQueue(source = CHAT_QUEUE_FIXTURE): QueueModule {
+  const patched = patchLarkChatQueueSource(source);
   if (!patched) throw new Error('fixture no longer matches the official Lark queue contract');
   const module = { exports: {} as QueueModule };
   Function('exports', 'module', patched)(module.exports, module);
@@ -110,8 +110,13 @@ describe('official Lark chat admission compatibility', () => {
     installLarkAdmissionRuntimeGlobals();
   });
 
-  it('releases same-chat FIFO at Rust admission while keeping each dispatcher alive to completion', async () => {
-    const queue = loadPatchedQueue();
+  it.each([
+    CHAT_QUEUE_FIXTURE,
+    `// Updated package header\n${CHAT_QUEUE_FIXTURE}`
+      .replace('const prev =', 'const /* upstream comment */ prev =')
+      .replaceAll('    ', '\t').replaceAll('\n', '\r\n'),
+  ])('releases same-chat FIFO at Rust admission across source formatting changes (%#)', async (source) => {
+    const queue = loadPatchedQueue(source);
     const key = queue.buildQueueKey('default', 'chat-1');
     const allowFirstAdmission = deferred();
     const completeFirst = deferred();
@@ -182,7 +187,7 @@ describe('official Lark chat admission compatibility', () => {
     expect(patchLarkChatQueueSource('function enqueueFeishuChatTask() {}')).toBeNull();
   });
 
-  it('fails closed when the upstream enqueue lifecycle is only a near match', () => {
+  it('leaves a changed enqueue implementation intact when its target no longer matches', () => {
     const changedUpstream = CHAT_QUEUE_FIXTURE.replace(
       'const taskPromise = prev.then(task, task);',
       'const taskPromise = prev.then(() => task(), () => task());',
@@ -190,14 +195,24 @@ describe('official Lark chat admission compatibility', () => {
     expect(patchLarkChatQueueSource(changedUpstream)).toBeNull();
   });
 
-  it('fails closed when upstream adds a consumer outside the replaced blocks', () => {
-    const changedUpstream = CHAT_QUEUE_FIXTURE.replace(
-      '/** Check whether the queue has an active task for the given key. */',
-      `function waitForChatTask(key) {
-    return chatQueues.get(key)?.then(() => undefined);
-}
-/** Check whether the queue has an active task for the given key. */`,
-    );
-    expect(patchLarkChatQueueSource(changedUpstream)).toBeNull();
+  it('preserves awaitable queue entries for new upstream consumers', async () => {
+    const queue = loadPatchedQueue(CHAT_QUEUE_FIXTURE + `
+exports.waitForChatTask = key => chatQueues.get(key)?.then(() => undefined);
+`) as QueueModule & { waitForChatTask: (key: string) => Promise<void> };
+    const entered = deferred();
+    const finish = deferred();
+    const task = queue.enqueueFeishuChatTask({ accountId: 'a', chatId: 'chat', task: async () => {
+      markCurrentLarkInboundAccepted();
+      entered.resolve();
+      await finish.promise;
+    } });
+    await entered.promise;
+    let completed = false;
+    const waiting = queue.waitForChatTask(queue.buildQueueKey('a', 'chat')).then(() => { completed = true; });
+    await Promise.resolve();
+    expect(completed).toBe(false);
+    finish.resolve();
+    await Promise.all([waiting, task.promise]);
+    expect(completed).toBe(true);
   });
 });

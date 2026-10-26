@@ -2614,8 +2614,8 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                             "[im] Buffer replay failed requestId={} session_key={} err={}",
                                             buf_request_id, session_key, e,
                                         );
-                                        if e.should_buffer() {
-                                            // Lost HTTP ACK is not rejection. Reconcile this
+                                        if e.admission_is_unknown() {
+                                            // An ambiguous HTTP result is not rejection. Reconcile this
                                             // exact request; never replay a possibly accepted task.
                                             reply_router_arc.lock().await.finish_admission(&buf_request_id);
                                         } else {
@@ -2756,7 +2756,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                     "[im] Enqueue failed requestId={} session_key={} err={}",
                                     request_id, session_key, e,
                                 );
-                                if e.should_buffer() {
+                                if e.admission_is_unknown() {
                                     reply_router_arc.lock().await.finish_admission(&request_id);
                                     return; // outcome reconciliation owns uncertain admission
                                 }

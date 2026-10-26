@@ -1,18 +1,19 @@
 import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { installLarkAdmissionRuntimeGlobals, markCurrentPluginInboundAccepted } from './lark-admission';
 import { patchWecomChatQueueSource } from './plugin-compat-patches';
-import { abortPendingDispatch, registerPendingDispatch, setPendingDispatchDeliveryMode } from './pending-dispatch';
+import { abortPendingDispatch, clearAllPendingDispatches, registerPendingDispatch, setPendingDispatchDeliveryMode } from './pending-dispatch';
 
 const source = readFileSync(new URL('./fixtures/wecom-chat-queue-2026.9.15.txt', import.meta.url), 'utf8');
+afterEach(clearAllPendingDispatches);
 function deferred() {
   let resolve!: () => void;
   const promise = new Promise<void>(done => { resolve = done; });
   return { promise, resolve };
 }
-function loadQueue() {
+function loadQueue(input = source) {
   installLarkAdmissionRuntimeGlobals();
-  const patched = patchWecomChatQueueSource(source);
+  const patched = patchWecomChatQueueSource(input);
   expect(patched).not.toBeNull();
   return new Function(`${patched!.replaceAll('export function', 'function')}; return { enqueueWeComChatTask, hasActiveTask };`)() as {
     enqueueWeComChatTask(params: { accountId: string; chatId: string; task: () => Promise<void> }): { promise: Promise<void> };
@@ -20,13 +21,18 @@ function loadQueue() {
   };
 }
 
-it('does not guess at an unknown WeCom queue source revision', () => {
-  expect(patchWecomChatQueueSource(source + '\n')).toBeNull();
+it('leaves a changed queue implementation intact when its target is missing', () => {
+  expect(patchWecomChatQueueSource(source.replace('prev.then(task, task)', 'runTask(task)'))).toBeNull();
 });
 
 describe('WeCom admission/completion separation (#678)', () => {
-  it('admits an answer before the original task completes and preserves both renderers', async () => {
-    const queue = loadQueue();
+  it.each([
+    source,
+    `// New package build\n${source}\nconst pluginVersion = 'next';`
+      .replace('// continue queue even if previous task failed', '// Updated queue comment')
+      .replaceAll('    ', '\t').replaceAll('\n', '\r\n'),
+  ])('admits an answer and preserves both renderers across upstream edits (%#)', async (input) => {
+    const queue = loadQueue(input);
     const firstEntered = deferred();
     const secondEntered = deferred();
     const accept = deferred();

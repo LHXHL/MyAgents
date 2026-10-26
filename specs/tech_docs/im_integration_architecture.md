@@ -205,7 +205,7 @@ OpenClaw reply：
 
 `ImRequestRegistry` 独立于 20,000 项 delta ring 保留最多 200 条、最长 6 小时的 producer terminal receipt。consumer 重连、gap 和既有 15 秒核对周期通过 `/api/im/requests` 核对原 request，不重跑模型。active 继续等待；过期/容量淘汰为 unknown。只有 enqueue 已返回或回执不确定的请求才允许原 registry 封闭缺失 ID，返回“执行状态无法核对”并阻止迟到 POST 再执行。显式取消先于 enqueue 注册到达时，也由同一 registry 留下取消回执，阻止迟到输入启动；已有真实终态保持不变。运行中、排队中及取消尚未完成的 registry entry 不按沉默时长淘汰。状态查询与取消入口在 `src/server/routes/im-request-lifecycle.ts`，仍由既有 SessionEngine 执行取消，不改变客户端停止和排队行为。
 
-enqueue 的未知 HTTP ACK 不再触发 buffer 重放：保留 slot/lease、核对同一 requestId；明确拒绝仍立即收尾。Bridge start/partial 投递失败不会结束执行关联。terminal handoff 是有界、幂等接纳，投递失败与 producer terminal 分别处理。
+enqueue 的未知 HTTP ACK（连接/响应解析失败或 HTTP 5xx）不触发 buffer 重放：保留 slot/lease、核对同一 requestId；5xx 可能发生在 Runtime 已接纳之后，不能推断为拒绝。明确拒绝仍立即收尾。Bridge start/partial 投递失败不会结束执行关联。terminal handoff 是有界、幂等接纳，投递失败与 producer terminal 分别处理。
 
 ### 5.2 Session binding delivery
 
