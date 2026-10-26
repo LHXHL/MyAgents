@@ -763,6 +763,9 @@ export function createExternalSessionEngine(): SessionEngine {
           metadataBirthPending: request.metadataBirthPending === true,
           analyticsOrigin: request.analyticsOrigin,
           queueId,
+          // Injected work owns its terminal result; it cannot join a human turn
+          // whose completion observer belongs to a different operation.
+          turnBoundaryOnly: true,
           turnOwner: request.turnOwner,
           onTerminal: async (outcome) => {
             observedOutcome = outcome;

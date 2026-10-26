@@ -9037,6 +9037,48 @@ describe('external SessionEngine with fake runtime', () => {
   });
 
 
+  it.each(['dsh', 'codex'] as const)('keeps injected %s work in its own turn when manual input is realtime', async runtimeType => {
+    const harness = await createHarness([
+      { kind: 'silent' },
+      { kind: 'success', text: 'notification answer' },
+    ], { runtimeType, realtimeSteering: true, config: { chatQueueResponseMode: 'realtime' } });
+    const sessionId = `injected-realtime-${runtimeType}`;
+    const workspacePath = join(harness.home, 'workspace');
+    const first = await harness.engine.sendDesktopMessage({
+      ...desktopRequest(sessionId, workspacePath, 'user work'),
+      permissionMode: getMaxPermissionForRuntime(runtimeType), model: undefined,
+    });
+    await expect(first.dispatchAcceptance).resolves.toMatchObject({ accepted: true });
+    const terminal = vi.fn();
+    const dispatched = vi.fn();
+    const notification = runInjectedTurn(harness, {
+      prompt: 'relay notification', sessionId, workspacePath, scenario: { type: 'desktop' },
+      queueId: 'notification-attempt', assistantChannelDelivery: 'caller-owned',
+      timeoutMs: 2_000, pollMs: 10, onTerminal: terminal, onDispatched: dispatched,
+    });
+    await waitFor(() => broadcastEvents.some(event => event.event === 'queue:added'
+      && (event.data as { queueId?: string }).queueId === 'notification-attempt'), 'notification admission');
+    expect(broadcastEvents).toContainEqual({ event: 'queue:added', data: expect.objectContaining({
+      queueId: 'notification-attempt', deliveryMode: 'turn',
+    }) });
+    expect(harness.runtime.steeredMessages).toEqual([]);
+    expect(dispatched).not.toHaveBeenCalled();
+    expect(terminal).not.toHaveBeenCalled();
+
+    harness.runtime.emitForTest({ kind: 'text_delta', text: 'user answer' });
+    harness.runtime.emitForTest({ kind: 'text_stop' });
+    harness.runtime.emitForTest({ kind: 'turn_complete', status: 'success', result: 'user answer' });
+    await expect(notification).resolves.toMatchObject({ success: true, enqueued: true, text: 'notification answer' });
+    expect(harness.runtime.sentMessages).toEqual(['user work', 'relay notification']);
+    expect(harness.runtime.steeredMessages).toEqual([]);
+    expect(dispatched).toHaveBeenCalledOnce();
+    expect(terminal).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ status: 'complete', text: 'notification answer' }));
+    expect(harness.mirrorCalls).toEqual([
+      expect.objectContaining({ role: 'user', text: 'user work' }),
+      expect.objectContaining({ role: 'assistant', text: 'user answer' }),
+    ]);
+  });
+
   it.each(['dsh', 'codex', 'claude-code'] as const)('keeps a busy %s notification queued and rechecks its binding before the exact terminal', async runtimeType => {
     const harness = await createHarness([
       {kind:'success',text:'warm'}, {kind:'success',text:'existing work',completeDelayMs:250}, {kind:'success',text:'notification answer'},
