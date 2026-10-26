@@ -400,10 +400,10 @@ export function buildExternalTitleSessionOptions(input: {
   return {
     sessionId: input.sessionId,
     workspacePath: input.workspacePath,
-    initialTurn: {
+    ...(input.runtimeType === 'codex' ? {} : { initialTurn: {
       message: input.userPrompt,
       clientUserMessageId: input.clientUserMessageId,
-    },
+    } }),
     systemPromptAppend: SYSTEM_PROMPT,
     ...(input.model ? { model: input.model } : {}),
     permissionMode: titlePermissionMode(input.runtimeType),
@@ -435,7 +435,7 @@ export function buildExternalTitleSessionOptions(input: {
 /**
  * Generate a title using the session's external runtime (Claude Code or Codex).
  * Spawns a brand-new short-lived process, sends the title prompt as
- * initialTurn, accumulates text_delta, returns on turn_complete or
+ * input (Codex sends after acquiring its process), accumulates text_delta, returns on turn_complete or
  * session_complete. The process is always stopped afterwards (including on
  * timeout), so the temporary runtime process is cleaned up.
  *
@@ -528,6 +528,17 @@ export async function generateTitleExternal(
     // Late handle after timeout already fired — kill immediately, nobody else will.
     if (resolved) {
       runtime.stopSession(h).catch(() => { /* ignore */ });
+    } else if (runtimeType === 'codex') {
+      // Hold the process before waiting for native input acknowledgement so
+      // the title's own deadline can stop it even when admission is slow.
+      void runtime.sendMessage(h, userPrompt, undefined, {
+        clientUserMessageId: titleClientUserMessageId,
+      }).catch((error: unknown) => {
+        if (resolved) return;
+        outcome = 'error';
+        console.warn('[title-generator] external sendMessage failed:', error);
+        settle(null);
+      });
     }
   }).catch((err) => {
     outcome = 'start-failed';
@@ -535,8 +546,12 @@ export async function generateTitleExternal(
     settle(null);
   });
 
-  const timeoutPromise = new Promise<null>((resolve) => setTimeout(() => resolve(null), EXTERNAL_TIMEOUT_MS));
+  let deadline: ReturnType<typeof setTimeout>;
+  const timeoutPromise = new Promise<null>((resolve) => {
+    deadline = setTimeout(() => resolve(null), EXTERNAL_TIMEOUT_MS);
+  });
   const titleText = await Promise.race([resultPromise, timeoutPromise]);
+  clearTimeout(deadline!);
 
   // #296 review (Codex C2): mark the attempt finished now. If the TIMEOUT won the
   // race, `settle()` was never called so `resolved` is still false — and the

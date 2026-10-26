@@ -220,6 +220,12 @@ facade 负责组装 owner，不重新保存同一份 mutable state。Route 和 S
 
 guard accepted 之前不展示伪 user bubble、不写 transcript、不启动 watchdog。transport write 开始后的 error 只表示 acknowledgement 不确定；必须尝试 exact stop，未确认终止时保留 process、queue binding 和 domain owner，不能自动重放。
 
+Codex 产品输入的 `turn/start` 和 `turn/steer` 等待 matching response，由现有 Session watchdog、Stop 和进程退出结束等待，不使用独立的 15 秒 RPC 期限。初始化、控制和查询 RPC 仍有各自的有限等待；真实 stdin 写入失败直接结束对应请求。原生接收准备可以超过 15 秒，宿主没有收到响应不等于输入未被接收。
+
+watchdog 监控已开始的 turn 以及尚未结束的发送 dispatch。消费事件、turn terminal 和 RPC response 可以乱序：主轮已完成但发送仍占用 `operation-queue` 的 `externalSendTail` 时，继续既有监控；dispatch 结束后收束。Session owner 复用自己的发送状态，不读取 adapter 的 RPC pending 表。清理完成后残留的 dispatch/进程不能再次结算已终结的 turn，也不能生成第二次完成/停止通知。普通排队和 idle/prewarm 不因此取得 watchdog。
+
+Codex 自动标题先取得进程句柄，再调用 `sendMessage`，由标题自身的 30 秒业务期限与 `stopSession` 清理。迟到的启动只释放进程，不补发标题输入。共享 `initialTurn` 合同及 Codex 该兼容入口的有限等待保留；普通产品输入和标题不使用该入口。
+
 V1 保留 user append、成功 terminal/附件/finalization gate 内提交 assistant 的原行为。V2 在接纳和 native 内容事件中更新 canonical projection，后台持续保存；下一 turn 和同步 caller 只依赖执行结算，最新结果读 live projection。完整帧、retraction 和 Codex nativeText 按原产品目标确认；细节见 [`session_transcript_v2.md`](session_transcript_v2.md)。
 
 ### 6.2 realtime 与 turn-boundary queue

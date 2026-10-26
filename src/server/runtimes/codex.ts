@@ -2480,26 +2480,25 @@ export class JsonRpcClient {
     this.onServerRequest = handler;
   }
 
-  /** Send a JSON-RPC request and wait for the matching response */
-  async call(method: string, params: unknown, timeoutMs = 30_000): Promise<unknown> {
+  /** null leaves execution admission under the caller's existing stop/watchdog lifecycle. */
+  async call(method: string, params: unknown, timeoutMs: number | null = 30_000): Promise<unknown> {
     const id = this.nextId++;
     const msg = { jsonrpc: '2.0', id, method, params };
-    this.write(msg);
 
     return new Promise<unknown>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      const timer = setTimeout(() => {
-        if (this.pending.has(id)) {
-          this.pending.delete(id);
-          reject(new Error(`JSON-RPC call "${method}" timed out after ${timeoutMs}ms`));
-        }
+      const timer = timeoutMs === null ? undefined : setTimeout(() => {
+        this.pending.get(id)?.reject(new Error(`JSON-RPC call "${method}" timed out after ${timeoutMs}ms`));
       }, timeoutMs);
-      // Clear timeout on resolution
-      const orig = this.pending.get(id)!;
       this.pending.set(id, {
-        resolve: (r) => { clearTimeout(timer); orig.resolve(r); },
-        reject: (e) => { clearTimeout(timer); orig.reject(e); },
+        resolve: (result) => { clearTimeout(timer); this.pending.delete(id); resolve(result); },
+        reject: (error) => { clearTimeout(timer); this.pending.delete(id); reject(error); },
       });
+      // Register before writing, and propagate EPIPE instead of waiting for a
+      // deadline or process exit. A failed write does not prove non-execution.
+      void this.sink.write(this.encoder.encode(JSON.stringify(msg) + '\n'))
+        .catch((error: unknown) => this.pending.get(id)?.reject(
+          error instanceof Error ? error : new Error(String(error)),
+        ));
     });
   }
 
@@ -4394,6 +4393,8 @@ export class CodexRuntime implements AgentRuntime {
 
     this.beginRootTurnAdmission(codexProc, clientUserMessageId);
     const input = buildCodexInput(message, images);
+    const admission = codexProc.activeRootTurnAdmission!;
+    const startedAt = Date.now();
     try {
       const turnResult = await codexProc.rpc.call('turn/start', buildCodexTurnStartParams({
         threadId: codexProc.threadId,
@@ -4408,7 +4409,7 @@ export class CodexRuntime implements AgentRuntime {
             ? resolveManagedCodexEffort(codexProc.models, codexProc.model, codexProc.reasoningEffort)
             : codexProc.reasoningEffort || null,
         clientUserMessageId,
-      }), 15_000) as { turn: { id: string } };
+      }), null) as { turn: { id: string } };
       this.completeRootTurnAdmission(codexProc, turnResult.turn.id, (event) => {
         withLogContext({ runtime: 'codex', runtimeSource: codexProc.runtimeSource }, () => {
           const handler = codexProc.rootEventHandler;
@@ -4418,6 +4419,8 @@ export class CodexRuntime implements AgentRuntime {
     } catch (error) {
       codexProc.activeRootTurnAdmission = null;
       throw error;
+    } finally {
+      console.log(`[codex] turn/start acknowledgement outcome=${admission.responseTurnId ? 'accepted' : 'failed'} elapsedMs=${Date.now() - startedAt} nativeTurnObserved=${Boolean(admission.notificationTurnId)} version=${codexProc.version} source=${codexProc.runtimeSource} exited=${codexProc.exited}`);
     }
   }
 
@@ -4561,13 +4564,16 @@ export class CodexRuntime implements AgentRuntime {
 
     const input = buildCodexInput(message, images);
     let result: { turnId?: string };
+    const startedAt = Date.now();
+    let acknowledged = false;
     try {
       result = await codexProc.rpc.call('turn/steer', buildCodexTurnSteerParams({
         threadId: codexProc.threadId,
         input,
         expectedTurnId: activeTurnId,
         clientUserMessageId: options?.clientUserMessageId,
-      }), 15_000) as { turnId?: string };
+      }), null) as { turnId?: string };
+      acknowledged = true;
     } catch (error) {
       if (isCodexNoActiveTurnSteerRejection(error)) {
         if (codexProc.activeSteerTurnId === activeTurnId) {
@@ -4576,6 +4582,8 @@ export class CodexRuntime implements AgentRuntime {
         throw new RuntimeSteerUnavailableError(error.message);
       }
       throw error;
+    } finally {
+      console.log(`[codex] turn/steer acknowledgement outcome=${acknowledged ? 'accepted' : 'failed'} elapsedMs=${Date.now() - startedAt} version=${codexProc.version} source=${codexProc.runtimeSource} exited=${codexProc.exited}`);
     }
     if (result.turnId && result.turnId !== activeTurnId) {
       codexProc.currentTurnId = result.turnId;
