@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.9] - 2026-10-28
+
+### Fixed
+
+- **聊天机器人实时交互**：飞书等渠道的连续消息与桌面对话统一遵循设置的「实时响应／轮次响应」模式；实时模式下，支持追加输入的运行环境不再强制等整轮回答结束才处理新消息，并避免追加消息产生重复回复。
+- **DeepSeek 网页搜索**：内置 DeepSeek Harness 升级至 0.1.21，修复使用官方 DeepSeek 模型搜索时可能出现的 `max_uses_exceeded` 错误，正常返回搜索结果与来源链接。
+
+---
+
 ## [0.5.8] - 2026-10-26
 
 ### Fixed
