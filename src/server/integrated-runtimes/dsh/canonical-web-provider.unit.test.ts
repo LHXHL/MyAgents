@@ -183,22 +183,20 @@ describe('DshCanonicalWebProvider', () => {
     else await expect(request).resolves.toMatchObject({ results: [{ url: 'https://example.com/' }], citations: [{ url: 'https://example.com/' }] });
   });
 
-  it.each(['direct', 'proxy'] as const)('keeps native DeepSeek server search on the Host %s route', async (route) => {
+  it.each(['direct', 'proxy'] as const)('uses the native DeepSeek Search API on the Host %s route', async (route) => {
     const profile: DshModelExecutionProfile = Object.freeze({
       ...zhipuAnthropicProfile, provider: 'deepseek', providerRouteId: 'deepseek-official',
       modelId: 'deepseek-v4-pro', baseUrl: OFFICIAL_DEEPSEEK_ANTHROPIC_BASE_URL,
     });
     const inspect = vi.fn(async (url: URL, request: { headers?: Readonly<Record<string, string>>; body?: Uint8Array }) => {
-      expect(url.toString()).toBe('https://api.deepseek.com/anthropic/v1/messages');
-      expect(request.headers).toMatchObject({ 'x-api-key': 'synthetic-key', authorization: 'Bearer synthetic-key', 'anthropic-version': '2023-06-01' });
-      expect(JSON.parse(Buffer.from(request.body ?? []).toString())).toMatchObject({
-        model: profile.modelId, max_tokens: 32000,
-        tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }],
+      expect(url.toString()).toBe('https://api.deepseek.com/v1/tools/search');
+      expect(request.headers).toMatchObject({ authorization: 'Bearer synthetic-key' });
+      expect(request.headers).not.toHaveProperty('anthropic-version');
+      expect(JSON.parse(Buffer.from(request.body ?? []).toString())).toEqual({
+        query: 'synthetic search', count: 8, need_content: false,
       });
       return json({
-        stop_reason: 'end_turn',
-        content: [{ type: 'web_search_tool_result', tool_use_id: 'srvtoolu_native', content: [{ type: 'web_search_result', title: 'Source', url: 'https://example.com' }] }],
-        usage: { input_tokens: 1, output_tokens: 1 },
+        results: [{ title: 'Source', url: 'https://example.com', summary: 'Grounded summary', snippet: 'Short UI snippet' }],
       });
     });
     const direct = vi.fn<DshSafeHttpTransport['dispatch']>(async (url, _address, request) => inspect(url, request));
@@ -211,11 +209,34 @@ describe('DshCanonicalWebProvider', () => {
     await expect(provider.runSearch({
       profile, apiKey: 'synthetic-key', authType: 'both', query: 'synthetic search',
       operationId: 'deepseek-search', signal: new AbortController().signal,
-    })).resolves.toMatchObject({ results: [{ title: 'Source', url: 'https://example.com/', snippet: '' }], searchCount: 1 });
+    })).resolves.toMatchObject({ results: [{ title: 'Source', url: 'https://example.com/', snippet: 'Grounded summary' }], searchCount: 1 });
     expect(route === 'proxy' ? proxy : direct).toHaveBeenCalledOnce();
     expect(route === 'proxy' ? direct : proxy).not.toHaveBeenCalled();
     expect(profile.api).toBe('anthropic-messages');
     expect(profile.baseUrl).toBe(OFFICIAL_DEEPSEEK_ANTHROPIC_BASE_URL);
+  });
+
+  it('enforces native query bounds and domain policy without a model request', async () => {
+    const dispatch = vi.fn<DshSafeHttpTransport['dispatch']>(async (_url, _address, request) => {
+      expect(JSON.parse(Buffer.from(request.body ?? []).toString()).query).toBe('query site:example.com');
+      return json({ results: [
+        { title: 'Source', url: 'https://example.com/a', summary: 'Evidence' },
+        { title: 'Excluded', url: 'https://other.test/a', summary: 'Other' },
+        { title: 'Duplicate', url: 'https://example.com/a', summary: 'Duplicate' },
+      ] });
+    });
+    const provider = providerWith(dispatch);
+    const input = { profile: { ...anthropicProfile, provider: 'deepseek', providerRouteId: 'deepseek-official', baseUrl: OFFICIAL_DEEPSEEK_ANTHROPIC_BASE_URL }, apiKey: 'synthetic-key', authType: 'api_key' as const, query: 'query', allowedDomains: ['example.com'], operationId: 'native', signal: new AbortController().signal };
+    const result = await provider.runSearch(input);
+    expect(result.results).toEqual([{ title: 'Source', url: 'https://example.com/a', snippet: 'Evidence' }]);
+    expect(result.usage).toBeUndefined();
+    await expect(provider.runSearch({ ...input, query: '测'.repeat(129) })).rejects.toMatchObject({ code: 'provider_search_failed' });
+    expect(dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([{}, { results: null }, { results: [null] }, { error: { code: 'rate_limit' } }])('rejects malformed native Search API data: %j', async payload => {
+    const provider = providerWith(vi.fn(async () => json(payload)));
+    await expect(provider.runSearch({ profile: { ...anthropicProfile, provider: 'deepseek', providerRouteId: 'deepseek-official', baseUrl: OFFICIAL_DEEPSEEK_ANTHROPIC_BASE_URL }, apiKey: 'synthetic-key', authType: 'api_key', query: 'query', operationId: 'native', signal: new AbortController().signal })).rejects.toMatchObject({ code: 'provider_search_failed' });
   });
 
   it('rejects a native DeepSeek identity attached to an unrelated endpoint before using credentials', async () => {

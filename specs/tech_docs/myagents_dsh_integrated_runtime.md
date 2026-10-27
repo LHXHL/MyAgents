@@ -93,6 +93,8 @@ Provider credential 由 Host 的既有配置或认证 owner 管理，每个模�
 
 子进程环境采用 allowlist。PATH 使用应用工具入口和已发现的用户执行环境；只准入 OS、用户目录、locale、临时目录和标准 proxy 等必要变量；bundled Node 目录排在 PATH 首位。内部 CLI capability 通过专用 token 注入，Provider/MCP secret 不因继承整个 `process.env` 泄漏给 Shell。
 
+官方 DeepSeek WebSearch 经既有 canonical Host capability 调用独立 `POST https://api.deepseek.com/v1/tools/search`，不再启动辅助 Messages 模型轮次或使用 `max_uses`。每次请求携带 query、count=8、need_content=false；域约束转为搜索语法并再次过滤返回 URL，包含域约束的 query 超过官方 128 Unicode 字符上限时明确要求缩短，不静默截断。结果优先采用面向模型的 summary，引用只来自真实结构化结果；该 API 按请求计费，不产生辅助模型 token usage。凭据与 Provider 代理策略仍由当前 operation 的 profile owner 提供，失败不切换后端或绕过代理。Runtime 独立运行的 direct backend遵循相同协议；其它 Provider 的兼容服务器搜索保持各自协议。
+
 ## 6. Prompt 与扩展
 
 扩展完整快照经既有 `DshAttachmentRegistry` 发布为不可变 JSON；`extension/replace` 只传摘要引用。Runtime 在进入原有组件事务前通过 generation-scoped lease 校验大小、字节 SHA-256 与 canonical snapshot digest，并释放 lease。启动和 live replacement 共用这条路径，不能把全部技能正文重新塞进有界协议帧。协议精确版本仍由所选 handoff 决定；新的资源表示需要匹配的 Runtime。stdio 与带凭据的 remote MCP 使用 native credential owner 接受的环境变量名格式引用；启动环境与 secret 仍留在 Host reverse plane。
@@ -127,7 +129,7 @@ Plan 是独立状态，不等同于 permission mode。Host 显式退出与 Agent
 
 所有 desktop、IM、Inbox、Task、Goal 和后台 turn 都经过 SessionEngine。Root admission 在 `turn/start` 前保存准确 Product input 与 operation identity；原生 receipt 才证明输入消费。RPC 返回、HTTP queued、进程 idle 都不能代替真实 terminal。
 
-普通消息由共享 operation queue 排序。realtime 只有在当前 generation 有明确 steer target 且原生确认输入接纳后成立；明确未接收可降级为 turn-boundary，transport uncertainty 不自动重发。冷恢复取得的 operation 不具备 same-turn steer 资格。force-start 先停止并结算旧 turn 的 partial output，再提升目标项，不能丢弃无关排队消息。
+普通消息由共享 operation queue 排序。Desktop 与 IM 手动输入使用同一响应偏好与实际 steer 能力；实时 IM 的请求结算由既有 interactive/ReplyRouter owner 在原生消费确认后关联。realtime 只有在当前 generation 有明确 steer target 且原生确认输入接纳后成立；明确未接收可降级为 turn-boundary，transport uncertainty 不自动重发。冷恢复取得的 operation 不具备 same-turn steer 资格。force-start 先停止并结算旧 turn 的 partial output，再提升目标项，不能丢弃无关排队消息。
 
 Live event inbox 按 generation、sequence 与 identity 串行处理。精确重复可幂等消费；gap、冲突或 replacement 触发既有恢复。空 delta 仍推进协议位置但不制造产品正文。工具输入中的非 object JSON 只包装展示，不改原生执行参数。
 

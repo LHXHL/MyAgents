@@ -378,6 +378,33 @@ impl ReplyRouter {
                 .and_then(|slot| slot.delivery_protocol.as_ref()),
             Some(ImDeliveryProtocol::OpenClawReply)
         );
+        // The producer's explicit empty terminal is a lifecycle receipt, for
+        // example an IM input merged into an already replying runtime turn.
+        // Do not manufacture a second "No response"/error/cancelled message.
+        // Legacy terminals without finalPayloads still use the old fallback.
+        let empty_terminal = matches!(event_type, "complete" | "error" | "cancelled")
+            && event
+                .pointer("/data/finalPayloads")
+                .and_then(Value::as_array)
+                .is_some_and(Vec::is_empty);
+        if !uses_openclaw_reply && empty_terminal {
+            let slot = self.slots.get_mut(&request_id)?;
+            if !slot.any_text_sent && slot.block_text.is_empty() && slot.stream_id.is_none() {
+                if let Some(id) = slot.placeholder_id.take() {
+                    let _ = adapter.delete_message(&chat_id, &id).await;
+                }
+                if let Some(id) = slot.draft_id.take() {
+                    let _ = adapter.delete_message(&chat_id, &id).await;
+                }
+                slot.is_done = true;
+                adapter.post_stream_cleanup(&chat_id).await;
+                adapter::ImAdapter::ack_clear(adapter, &chat_id, &message_id).await;
+                return Some(TerminalOutcome {
+                    session_id: None,
+                    silent: true,
+                });
+            }
+        }
         if !uses_openclaw_reply && event_type == "complete" && event["reconciled"] == true {
             // A receipt may replace missing deltas. Never finalize a stale
             // partial as the whole answer; use producer-owned canonical text.
@@ -1656,6 +1683,41 @@ mod tests {
                 "terminalPayload": terminal_payload,
             }));
             Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn empty_producer_terminal_settles_joined_requests_without_a_second_reply() {
+        for protocol in [None, Some(ImDeliveryProtocol::OpenClawReply)] {
+            for terminal in ["complete", "error", "cancelled"] {
+                let mut router = ReplyRouter::new(Default::default(), Default::default());
+                let adapter = RecordingAdapter::default();
+                router.register(
+                    "joined".into(),
+                    "chat".into(),
+                    "message".into(),
+                    ImSourceType::Private,
+                    Some("user".into()),
+                    None,
+                    protocol.clone(),
+                );
+                let outcome = router
+                    .dispatch(
+                        &json!({"requestId":"joined","type":terminal,
+                    "data":{"finalPayloads":[]}}),
+                        &adapter,
+                        1,
+                    )
+                    .await
+                    .unwrap();
+                assert!(adapter.sent_messages().is_empty());
+                if protocol.is_none() {
+                    assert!(outcome.silent);
+                }
+                assert!(router.slots.get("joined").unwrap().is_done);
+                router.unregister("joined").await;
+                assert_eq!(router.slot_count(), 0);
+            }
         }
     }
 

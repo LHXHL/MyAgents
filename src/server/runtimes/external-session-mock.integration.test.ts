@@ -4466,6 +4466,7 @@ describe('external SessionEngine with fake runtime', () => {
         'must persist before transport',
       ),
       queueId: 'queue-fresh-persist-failure',
+      turnBoundaryOnly: true,
       turnOwner: owner,
       onTerminal,
     });
@@ -5316,6 +5317,7 @@ describe('external SessionEngine with fake runtime', () => {
         'stop before fresh runtime transport',
       ),
       queueId: 'queue-fresh-admission-persist-stop',
+      turnBoundaryOnly: true,
       turnOwner: owner,
       onTerminal,
     });
@@ -5372,6 +5374,7 @@ describe('external SessionEngine with fake runtime', () => {
         'stop before rejected persist resumes',
       ),
       queueId: 'queue-active-admission-persist-stop-reject',
+      turnBoundaryOnly: true,
       turnOwner: owner,
       onTerminal,
     });
@@ -5427,6 +5430,7 @@ describe('external SessionEngine with fake runtime', () => {
         'stop while transport ack is pending',
       ),
       queueId: 'queue-fresh-send-reject-after-stop',
+      turnBoundaryOnly: true,
       turnOwner: owner,
       onTerminal,
     });
@@ -6010,6 +6014,7 @@ describe('external SessionEngine with fake runtime', () => {
     const sent = await harness.engine.sendDesktopMessage({
       ...desktopRequest(sessionId, workspacePath, 'start partial turn'),
       queueId: 'queue-stop-snapshot',
+      turnBoundaryOnly: true,
       turnOwner: owner,
       onTerminal,
     });
@@ -6064,6 +6069,7 @@ describe('external SessionEngine with fake runtime', () => {
     const sent = await harness.engine.sendDesktopMessage({
       ...desktopRequest(sessionId, workspacePath, 'start partial turn'),
       queueId: 'queue-stop-session-complete-snapshot',
+      turnBoundaryOnly: true,
       turnOwner: owner,
       onTerminal,
     });
@@ -6358,6 +6364,163 @@ describe('external SessionEngine with fake runtime', () => {
     ]);
   });
 
+
+  it.each(['dsh', 'codex'] as const)('admits %s IM follow-ups in the active turn and settles every request once', async runtimeType => {
+    const harness = await createHarness([{ kind: 'silent' }], { runtimeType, realtimeSteering: true, config: { chatQueueResponseMode: 'realtime' } });
+    const sessionId = `im-realtime-${runtimeType}`;
+    const { imEventBus } = await import('../utils/im-event-bus');
+    const { imRequestRegistry } = await import('../utils/im-request-registry');
+    const events: Array<{requestId: string | null; type: string; data?: unknown}> = [];
+    const unsubscribe = imEventBus.subscribe(imEventBus.currentSeq(), event => events.push(event));
+    const request = (message: string, requestId: string) => {
+      imRequestRegistry.register(requestId, sessionId, 'feishu_private');
+      return { message, requestId, sessionId, workspacePath: join(harness.home, 'workspace'), scenario: { type: 'agent-channel' as const, platform: 'feishu', sourceType: 'private' as const }, permissionMode: getMaxPermissionForRuntime(runtimeType), metadataBirthPending: true };
+    };
+    try {
+      await harness.engine.enqueueImMessage(request('first', 'im-first'));
+      const second = await harness.engine.enqueueImMessage(request('follow-up', 'im-second'));
+      await waitFor(() => harness.runtime.steeredMessages.length === 1, 'IM realtime dispatch');
+      expect(harness.runtime.sentMessages).toEqual(['first']);
+      expect(harness.runtime.steeredMessages[0].message).toBe('follow-up');
+      harness.runtime.emitUserMessageAccepted(harness.runtime.steeredMessages[0].clientUserMessageId);
+      await second.dispatchAcceptance;
+      await waitFor(() => harness.engine.getQueueStatus().length === 0, 'IM input consumed');
+      harness.runtime.emitForTest({ kind: 'text_delta', text: 'Combined answer' });
+      harness.runtime.emitForTest({ kind: 'text_stop' });
+      harness.runtime.emitForTest({ kind: 'turn_complete', status: 'success', result: 'Combined answer' });
+      await harness.engine.waitIdle(2_000, 10);
+      await waitFor(() => events.filter(e => e.type === 'complete').length === 2, 'IM terminal receipts');
+      expect(events.filter(e => e.type === 'delta').map(e => e.requestId)).toEqual(['im-first']);
+      expect(events.filter(e => e.type === 'complete')).toEqual([
+        expect.objectContaining({ requestId: 'im-first', data: { finalPayloads: [{ text: 'Combined answer' }] } }),
+        expect.objectContaining({ requestId: 'im-second', data: { finalPayloads: [] } }),
+      ]);
+      expect(imRequestRegistry.get('im-first')).toBeUndefined();
+      expect(imRequestRegistry.get('im-second')).toBeUndefined();
+    } finally { unsubscribe(); }
+  });
+
+  it.each((['dsh', 'codex'] as const).flatMap(runtimeType =>
+    (['consumed-cancel', 'pending-cancel', 'unconfirmed', 'rejected'] as const).map(outcome => ({ runtimeType, outcome })),
+  ))('settles realtime IM lifecycle from a desktop turn (%j)', async ({ runtimeType, outcome }) => {
+    const harness = await createHarness([{ kind: 'silent' }], {
+      runtimeType, realtimeSteering: true, rejectSteer: outcome === 'rejected',
+      config: { chatQueueResponseMode: 'realtime' },
+    });
+    const sessionId = `im-lifecycle-${runtimeType}-${outcome}`;
+    const workspacePath = join(harness.home, 'workspace');
+    const { imEventBus } = await import('../utils/im-event-bus');
+    const { imRequestRegistry } = await import('../utils/im-request-registry');
+    const events: Array<{ requestId: string | null; type: string; data?: unknown }> = [];
+    const unsubscribe = imEventBus.subscribe(imEventBus.currentSeq(), event => events.push(event));
+    try {
+      const first = await harness.engine.sendDesktopMessage({ ...desktopRequest(sessionId, workspacePath, 'desktop work'),
+        permissionMode: getMaxPermissionForRuntime(runtimeType), model: undefined });
+      expect(first.success).toBe(true);
+      await expect(first.dispatchAcceptance).resolves.toMatchObject({ accepted: true });
+      imRequestRegistry.register('im-follow-up', sessionId, 'feishu_private');
+      const second = await harness.engine.enqueueImMessage({ message: 'IM follow-up', requestId: 'im-follow-up', sessionId, workspacePath,
+        scenario: { type: 'agent-channel', platform: 'feishu', sourceType: 'private' }, permissionMode: getMaxPermissionForRuntime(runtimeType) });
+      await waitFor(() => harness.runtime.steeredMessages.length === 1, 'IM steer dispatch');
+      await second.dispatchAcceptance;
+      if (outcome === 'consumed-cancel') {
+        harness.runtime.emitUserMessageAccepted(harness.runtime.steeredMessages[0].clientUserMessageId);
+        await waitFor(() => imRequestRegistry.get('im-follow-up')?.status === 'running', 'IM native consumption');
+        await expect(harness.engine.cancelImRequest('im-follow-up', 'user')).resolves.toEqual({ aborted: true, mode: 'running' });
+      } else if (outcome === 'pending-cancel') {
+        if (runtimeType === 'dsh') harness.runtime.cancelSteeredMessage = async () => 'cancelled';
+        await expect(harness.engine.cancelImRequest('im-follow-up', 'user')).resolves.toMatchObject({ aborted: true });
+      } else if (outcome === 'unconfirmed') {
+        harness.runtime.emitForTest({ kind: 'turn_complete', status: 'success', result: 'Desktop answer' });
+        if (runtimeType === 'dsh') {
+          // DSH's durable input receipt, rather than a turn-terminal guess,
+          // decides whether an admitted but unconsumed input was cancelled.
+          expect(imRequestRegistry.get('im-follow-up')).toBeDefined();
+          harness.runtime.emitForTest({ kind: 'user_message_cancelled', clientUserMessageId: harness.runtime.steeredMessages[0].clientUserMessageId! });
+        }
+      }
+      await waitFor(() => events.some(event => ['error', 'cancelled'].includes(event.type)), 'IM exact terminal');
+      const terminals = events.filter(event => ['error', 'cancelled', 'complete'].includes(event.type));
+      expect(terminals).toHaveLength(1);
+      expect(terminals[0]).toMatchObject({ requestId: 'im-follow-up', type: outcome.endsWith('cancel') || (runtimeType === 'dsh' && outcome === 'unconfirmed') ? 'cancelled' : 'error' });
+      expect(imRequestRegistry.get('im-follow-up')).toBeUndefined();
+      expect(harness.runtime.sentMessages).toEqual(['desktop work']);
+      // Late duplicate receipts cannot attach the retired request to another turn.
+      harness.runtime.emitUserMessageAccepted(harness.runtime.steeredMessages[0].clientUserMessageId);
+      expect(imRequestRegistry.get('im-follow-up')).toBeUndefined();
+    } finally { unsubscribe(); }
+  });
+
+  it.each(['waiting-steer', 'demoted-steer', 'durable-stop'] as const)('settles realtime IM cancellation at its operation owner: %s', async phase => {
+    const runtimeType = phase === 'durable-stop' ? 'dsh' : 'codex';
+    const harness = await createHarness([{ kind: 'silent' }], { runtimeType, realtimeSteering: true,
+      deferSteerSuccess: phase === 'waiting-steer', rejectSteerUnavailable: phase === 'demoted-steer', config: { chatQueueResponseMode: 'realtime' } });
+    const sessionId = `im-owner-${phase}`, workspacePath = join(harness.home, 'workspace');
+    const { imEventBus } = await import('../utils/im-event-bus');
+    const { imRequestRegistry } = await import('../utils/im-request-registry');
+    const events: Array<{ requestId: string | null; type: string }> = [];
+    const unsubscribe = imEventBus.subscribe(imEventBus.currentSeq(), event => events.push(event));
+    const request = (requestId: string) => {
+      imRequestRegistry.register(requestId, sessionId, 'feishu_private');
+      return { message: requestId, requestId, sessionId, workspacePath, scenario: { type: 'agent-channel' as const, platform: 'feishu', sourceType: 'private' as const }, permissionMode: getMaxPermissionForRuntime(runtimeType) };
+    };
+    try {
+      const first = await harness.engine.sendDesktopMessage({ ...desktopRequest(sessionId, workspacePath, 'desktop'), permissionMode: getMaxPermissionForRuntime(runtimeType), model: undefined });
+      await first.dispatchAcceptance;
+      if (phase === 'durable-stop') {
+        const original = harness.runtime.steerMessage!.bind(harness.runtime);
+        harness.runtime.steerMessage = async (process, message, images, options) => {
+          await options?.beforeDispatch?.({ clientOperationId: options.clientOperationId!, inputFingerprint: 'a'.repeat(64) });
+          await original(process, message, images, options);
+          if (options?.beforeDispatch) throw new Error('uncertain transport after durable input');
+        };
+      }
+      const second = await harness.engine.enqueueImMessage(request('im-owner-second'));
+      await waitFor(() => harness.runtime.steeredMessages.length === 1, 'first steer dispatch');
+      let target = 'im-owner-second';
+      if (phase === 'waiting-steer') {
+        target = 'im-owner-third';
+        const third = await harness.engine.enqueueImMessage(request(target));
+        await expect(harness.engine.cancelImRequest(target, 'user')).resolves.toMatchObject({ aborted: true, mode: 'queued' });
+        harness.runtime.releaseSteerSuccess();
+        await third.dispatchAcceptance;
+        expect(harness.runtime.steeredMessages.map(item => item.message)).toEqual(['im-owner-second']);
+      } else if (phase === 'demoted-steer') {
+        await waitFor(() => harness.engine.getQueueStatus().some(item => item.messagePreview === target), 'demoted queue ownership');
+        await expect(harness.engine.cancelImRequest(target, 'user')).resolves.toMatchObject({ aborted: true, mode: 'queued' });
+        await second.dispatchAcceptance;
+      } else {
+        await second.dispatchAcceptance;
+        const saved = harness.sessionStore.getSessionMetadata(sessionId)?.pendingDshInputs?.[0];
+        expect(saved).toBeDefined();
+        await harness.engine.stopTurn();
+        expect(imRequestRegistry.get(target)).toBeUndefined();
+        // Native journal remains authoritative for transcript reconciliation,
+        // while the stopped IM request has already released its reply lease.
+        expect(harness.sessionStore.getSessionMetadata(sessionId)?.pendingDshInputs?.[0]?.clientUserMessageId).toBe(saved!.clientUserMessageId);
+        harness.runtime.cancelSteeredMessage = async (_process, input) => {
+          harness.runtime.emitForTest({ kind: 'user_message_cancelled', clientUserMessageId: input.clientUserMessageId });
+          return 'cancelled';
+        };
+        await expect(harness.engine.cancelQueuedMessage(saved!.queueId)).resolves.toMatchObject({ status: 'cancelled' });
+      }
+      const terminals = events.filter(event => event.requestId === target && ['error', 'cancelled', 'complete'].includes(event.type));
+      expect(terminals).toEqual([expect.objectContaining({ requestId: target, type: 'cancelled' })]);
+      expect(imRequestRegistry.get(target)).toBeUndefined();
+    } finally { unsubscribe(); }
+  });
+
+  it.each([{ mode: 'turn', boundary: false }, { mode: 'realtime', boundary: true }] as const)('keeps IM explicit next-turn constraints (%j)', async ({ mode, boundary }) => {
+    const harness = await createHarness([{ kind: 'success', text: 'first answer', completeDelayMs: 150 }, { kind: 'success', text: 'second answer' }], { runtimeType: 'dsh', realtimeSteering: true, config: { chatQueueResponseMode: mode } });
+    const request = (message: string, requestId: string) => ({ message, requestId, sessionId: 'im-turn-mode', workspacePath: join(harness.home, 'workspace'), scenario: { type: 'agent-channel' as const, platform: 'feishu', sourceType: 'private' as const }, permissionMode: getMaxPermissionForRuntime('dsh'), metadataBirthPending: true });
+    await harness.engine.enqueueImMessage(request('first', 'turn-first'));
+    const second = await harness.engine.enqueueImMessage({ ...request('second', 'turn-second'), turnBoundaryOnly: boundary });
+    expect(harness.runtime.steeredMessages).toEqual([]);
+    expect(harness.engine.getQueueStatus().map(item => item.messagePreview)).toEqual(['second']);
+    await second.dispatchAcceptance;
+    await harness.engine.waitIdle(2_000, 10);
+    expect(harness.runtime.sentMessages).toEqual(['first', 'second']);
+  });
 
   it('atomically queues a simultaneous idle IM follow-up before the first runtime starts', async () => {
     const harness = await createHarness(
@@ -8879,6 +9042,77 @@ describe('external SessionEngine with fake runtime', () => {
     expect((await harness.sessionStore.getSessionData(sessionId))?.messages.find(message => message.id === userMessage.id)?.desktopQuery).toEqual(desktopQuery);
   });
 
+
+  it.each((['dsh', 'codex', 'claude-code'] as const).flatMap(runtimeType =>
+    (['idle', 'error'] as const).map(state => ({ runtimeType, state }))))(
+    'starts independent $runtimeType work from $state without forcing a waiting-queue transition', async ({ runtimeType, state }) => {
+      const harness = await createHarness([{ kind: 'success', text: 'independent answer' }], {
+        runtimeType, config: { chatQueueResponseMode: 'realtime' },
+      });
+      const lifecycle = await import('./external-session/lifecycle');
+      lifecycle.setExternalLifecycleState(state);
+      const onEnqueued = vi.fn(() => expect(harness.runtime.sentMessages).toEqual([]));
+      const onDispatched = vi.fn();
+      const onTerminal = vi.fn();
+      const result = await harness.engine.runInjectedTurn({
+        prompt: 'independent work', sessionId: `independent-${runtimeType}-${state}`,
+        workspacePath: join(harness.home, 'workspace'), scenario: { type: 'desktop' },
+        queueId: 'independent-operation', permissionMode: getMaxPermissionForRuntime(runtimeType),
+        assistantChannelDelivery: 'none', timeoutMs: 2_000, onEnqueued, onDispatched, onTerminal,
+      });
+      expect(result).toMatchObject({ success: true, enqueued: true, text: 'independent answer' });
+      expect(onEnqueued).toHaveBeenCalledExactlyOnceWith('independent-operation');
+      expect(onDispatched).toHaveBeenCalledExactlyOnceWith('independent-operation', `independent-${runtimeType}-${state}`);
+      expect(onTerminal).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ status: 'complete', text: 'independent answer' }));
+      expect(harness.runtime.sentMessages).toEqual(['independent work']);
+      expect(broadcastEvents.some(event => event.event === 'queue:added')).toBe(false);
+      expect(harness.mirrorCalls).toEqual([]);
+    },
+  );
+
+  it.each((['dsh', 'codex'] as const).flatMap(runtimeType =>
+    (['realtime', 'turn'] as const).map(responseMode => ({ runtimeType, responseMode }))))(
+    'keeps injected $runtimeType work in its own turn with manual mode $responseMode', async ({ runtimeType, responseMode }) => {
+    const harness = await createHarness([
+      { kind: 'silent' },
+      { kind: 'success', text: 'notification answer' },
+    ], { runtimeType, realtimeSteering: true, config: { chatQueueResponseMode: responseMode } });
+    const sessionId = `injected-${responseMode}-${runtimeType}`;
+    const workspacePath = join(harness.home, 'workspace');
+    const first = await harness.engine.sendDesktopMessage({
+      ...desktopRequest(sessionId, workspacePath, 'user work'),
+      permissionMode: getMaxPermissionForRuntime(runtimeType), model: undefined,
+    });
+    await expect(first.dispatchAcceptance).resolves.toMatchObject({ accepted: true });
+    const terminal = vi.fn();
+    const dispatched = vi.fn();
+    const notification = runInjectedTurn(harness, {
+      prompt: 'relay notification', sessionId, workspacePath, scenario: { type: 'desktop' },
+      queueId: 'notification-attempt', assistantChannelDelivery: 'caller-owned',
+      timeoutMs: 2_000, pollMs: 10, onTerminal: terminal, onDispatched: dispatched,
+    });
+    await waitFor(() => broadcastEvents.some(event => event.event === 'queue:added'
+      && (event.data as { queueId?: string }).queueId === 'notification-attempt'), 'notification admission');
+    expect(broadcastEvents).toContainEqual({ event: 'queue:added', data: expect.objectContaining({
+      queueId: 'notification-attempt', deliveryMode: 'turn',
+    }) });
+    expect(harness.runtime.steeredMessages).toEqual([]);
+    expect(dispatched).not.toHaveBeenCalled();
+    expect(terminal).not.toHaveBeenCalled();
+
+    harness.runtime.emitForTest({ kind: 'text_delta', text: 'user answer' });
+    harness.runtime.emitForTest({ kind: 'text_stop' });
+    harness.runtime.emitForTest({ kind: 'turn_complete', status: 'success', result: 'user answer' });
+    await expect(notification).resolves.toMatchObject({ success: true, enqueued: true, text: 'notification answer' });
+    expect(harness.runtime.sentMessages).toEqual(['user work', 'relay notification']);
+    expect(harness.runtime.steeredMessages).toEqual([]);
+    expect(dispatched).toHaveBeenCalledOnce();
+    expect(terminal).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ status: 'complete', text: 'notification answer' }));
+    expect(harness.mirrorCalls).toEqual([
+      expect.objectContaining({ role: 'user', text: 'user work' }),
+      expect.objectContaining({ role: 'assistant', text: 'user answer' }),
+    ]);
+  });
 
   it.each(['dsh', 'codex', 'claude-code'] as const)('keeps a busy %s notification queued and rechecks its binding before the exact terminal', async runtimeType => {
     const harness = await createHarness([

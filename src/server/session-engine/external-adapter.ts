@@ -17,6 +17,7 @@ import {
   enqueueExternalSendForDesktop,
   enqueueExternalSendForInbox,
   enqueueExternalSendForIm,
+  enqueueExternalIndependentTurn,
   forceExecuteExternalQueueItem,
   getActiveRuntimeSource,
   getActiveRuntimeType,
@@ -65,7 +66,6 @@ import {
   rewindExternalConversation,
   retryDshConversation,
   forkExternalConversation,
-  sendExternalMessage,
   setExternalModel,
   setExternalPermissionMode,
   setExternalReasoningEffort,
@@ -519,6 +519,7 @@ export function createExternalSessionEngine(): SessionEngine {
           turnOwner: request.turnOwner,
           onTerminal: request.onTerminal,
           beforeDispatch: request.beforeDispatch,
+          turnBoundaryOnly: request.turnBoundaryOnly,
           channelDelivery: IM_CHANNEL_DELIVERY,
           channelPrimaryReminder: request.channelPrimaryReminder,
         },
@@ -529,9 +530,9 @@ export function createExternalSessionEngine(): SessionEngine {
         sent.userMessageId,
       );
 
-      // A queueId means the existing external turn-boundary queue has taken
-      // ownership. Return admission immediately; the request-scoped terminal
-      // and Goal lifecycle stay attached to the queued operation until drain.
+      // A queueId means the external input owner has taken responsibility for
+      // queueing or steering. Return admission immediately; native consumption
+      // and the request-scoped terminal are observed independently of ingress.
       if (sent.queueId) {
         return {
           success: true,
@@ -557,41 +558,6 @@ export function createExternalSessionEngine(): SessionEngine {
 
     cancelImRequest(requestId, reason) {
       return cancelExternalImRequest(requestId, reason);
-    },
-
-    async enqueueBackgroundMessage(request) {
-      const result = await sendExternalMessage(
-        request.text,
-        request.images,
-        undefined,
-        undefined,
-        {
-          sessionId: request.sessionId,
-          workspacePath: request.workspacePath,
-          scenario: request.scenario,
-          permissionMode: request.permissionMode,
-          model: request.model,
-          reasoningEffort: request.reasoningEffort,
-          analyticsOrigin: request.analyticsOrigin,
-          queueId: request.queueId,
-          turnOwner: request.turnOwner,
-          onTerminal: request.onTerminal,
-          ...(request.beforeDispatch ? { beforeDispatch: request.beforeDispatch } : {}),
-          channelDelivery: SESSION_BOUND_CHANNEL_DELIVERY,
-        },
-      );
-      if (!result.queued) {
-        if (result.terminationUnconfirmed) {
-          return { success: true, queued: true };
-        }
-        if (request.queueId) clearExternalTurnBinding(request.queueId);
-        return {
-          success: false,
-          error: result.error ?? 'Failed to send via external runtime',
-          status: 503,
-        };
-      }
-      return { success: true, queued: result.queued };
     },
 
     async enqueueInboxMessage(request) {
@@ -749,7 +715,7 @@ export function createExternalSessionEngine(): SessionEngine {
       const terminal = new Promise<TurnTerminalOutcome>((resolve) => {
         resolveTerminal = resolve;
       });
-      const queuedTurn = enqueueExternalSendForIm(
+      const queuedTurn = enqueueExternalIndependentTurn(
         request.prompt,
         undefined,
         {

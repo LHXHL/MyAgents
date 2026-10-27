@@ -119,7 +119,7 @@ export function createExternalMessageOperation(input: {
   userMessage: SessionMessage;
   surfaceMode?: 'chat-replay' | 'queue-started';
   deliveryMode?: 'realtime' | 'turn';
-  inputSource?: 'desktop' | 'inbox';
+  inputSource?: 'desktop' | 'im' | 'inbox';
   queueId?: string;
 }): ExternalMessageOperation {
   const queueId = input.queueId ?? input.context.queueId ?? nextExternalQueueId();
@@ -214,7 +214,7 @@ export function enqueueExternalMessageOperation(input: {
   userMessage: SessionMessage;
   surfaceMode?: 'chat-replay' | 'queue-started';
   deliveryMode?: 'realtime' | 'turn';
-  inputSource?: 'desktop' | 'inbox';
+  inputSource?: 'desktop' | 'im' | 'inbox';
   queueId?: string;
 }): {
   queued: true;

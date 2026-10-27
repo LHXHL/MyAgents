@@ -221,7 +221,7 @@ const mocks = vi.hoisted(() => {
     respondExternalPlanApproval: vi.fn(async () => true),
     respondExternalPermission: vi.fn(async () => true),
     restoreExternalSessionState: vi.fn(async (): Promise<{ success: boolean; error?: string }> => ({ success: true })),
-    enqueueExternalTurnBoundaryOperation: vi.fn<(...args: unknown[]) => { queued: boolean; dispatch: Promise<{ queued: boolean; error?: string }> }>(() => ({ queued: true, dispatch: Promise.resolve({ queued: true }) })),
+    enqueueExternalIndependentTurn: vi.fn<(...args: unknown[]) => { queued: boolean; dispatch: Promise<{ queued: boolean; error?: string }> }>(() => ({ queued: true, dispatch: Promise.resolve({ queued: true }) })),
     enqueueExternalSendForInbox: vi.fn<(...args: unknown[]) => { queued: boolean; dispatch: Promise<{ queued: boolean; error?: string }> }>(() => ({ queued: true, dispatch: Promise.resolve({ queued: true }) })),
     sendExternalMessage: vi.fn<(...args: unknown[]) => Promise<{
       queued: boolean;
@@ -467,7 +467,7 @@ vi.mock('../runtimes/external-session', () => ({
   respondExternalPermission: mocks.respondExternalPermission,
   restoreExternalSessionState: mocks.restoreExternalSessionState,
   sendExternalMessage: mocks.sendExternalMessage,
-  enqueueExternalTurnBoundaryOperation: mocks.enqueueExternalTurnBoundaryOperation,
+  enqueueExternalIndependentTurn: mocks.enqueueExternalIndependentTurn,
   enqueueExternalSendForInbox: mocks.enqueueExternalSendForInbox,
   getExternalExecutionTurnId: () => mocks.state.externalCurrentQueueId,
   setExternalModel: mocks.setExternalModel,
@@ -548,6 +548,7 @@ function runInjectedTurn(request: TestInjectedTurnRequest) {
 describe('session-engine selector and adapters', () => {
   beforeEach(async () => {
     mocks.enqueueExternalSendForIm.mockImplementation((text, images, context) => ({ queued: true, dispatch: mocks.sendExternalMessage(text, images, undefined, undefined, context) }));
+    mocks.enqueueExternalIndependentTurn.mockImplementation((text, images, context) => ({ queued: true, dispatch: mocks.sendExternalMessage(text, images, undefined, undefined, context) }));
     vi.clearAllMocks();
     mocks.state.useExternal = false;
     mocks.state.externalActive = false;
@@ -646,6 +647,7 @@ describe('session-engine selector and adapters', () => {
       { kind: 'desktop', surface: 'floating_ball' },
       {
         fromDesktopChatSend: true,
+        queueResponseModeOverride: 'realtime',
         sessionBirthOrigin: { kind: 'desktop', surface: 'launcher_input' },
         queueId: undefined,
         turnOwner: undefined,
@@ -2446,6 +2448,13 @@ describe('session-engine selector and adapters', () => {
       { model: 'model-two', reasoningEffort: 'high' }, { source: 'message-snapshot' });
   });
 
+  it.each(['turn', 'realtime'])('applies the manual query preference to builtin IM: %s', async mode => {
+    mocks.state.useExternal = false;
+    mocks.loadConfig.mockReturnValueOnce({ chatQueueResponseMode: mode });
+    await getSessionEngine().enqueueImMessage({ message: 'IM', requestId: 'manual-im', sessionId: 'sid', workspacePath: '/workspace', scenario: { type: 'im', platform: 'feishu', sourceType: 'private' } });
+    expect(mocks.enqueueUserMessage.mock.calls.at(-1)?.[11]).toMatchObject({ queueResponseModeOverride: mode });
+  });
+
   it('passes metadataBirthPending into external IM admission', async () => {
     mocks.state.useExternal = true;
 
@@ -2801,6 +2810,7 @@ describe('session-engine selector and adapters', () => {
       workspacePath: '/workspace',
       scenario: { type: 'agent-channel', platform: 'feishu', sourceType: 'private' },
       queueId: 'goal-dispatch-ambiguous',
+      turnBoundaryOnly: true,
       turnOwner: { kind: 'goal', id: 'goal-1' },
     });
 

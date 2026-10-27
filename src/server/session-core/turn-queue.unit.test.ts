@@ -6,12 +6,24 @@ import {
   findQueueLocation,
   moveQueueIndexToFront,
   resolveChatQueueResponseMode,
+  resolveManualInputResponseMode,
   shouldApplyChatQueueResponseMode,
   shouldClearAdmissionTicketOnAbort,
   shouldStartTurnBoundaryItem,
 } from './turn-queue';
 
 describe('turn-queue policy', () => {
+  it.each([
+    ['realtime', undefined, 'realtime'],
+    ['turn', undefined, 'turn'],
+    [undefined, undefined, 'realtime'],
+    ['invalid', false, 'realtime'],
+    ['realtime', true, 'turn'],
+    ['turn', true, 'turn'],
+  ] as const)('resolves manual preference %s with boundary %s as %s', (setting, boundary, expected) => {
+    expect(resolveManualInputResponseMode(setting, boundary)).toBe(expected);
+  });
+
   it('applies desktop-only queue response mode and preserves realtime admission', () => {
     expect(shouldApplyChatQueueResponseMode(true)).toBe(true);
     expect(shouldApplyChatQueueResponseMode(false)).toBe(false);
