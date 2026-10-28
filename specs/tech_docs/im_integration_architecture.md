@@ -87,7 +87,11 @@ Team AI 复用既有 Project、Agent、Channel 和 Session，不另建执行器�
 
 ### 聊天身份与历史
 
-管理位置以 `(agentId, channelId, sessionKey)` 定位。`sessionKey` 只在连接内标识群聊或私聊，不能单独用来合并不同 Bot 的聊天。`im/team_ai.rs` 从配置枚举连接，再合并运行中的 Router/Health 或持久化 health，停用的连接也可浏览。
+已建立会话的管理操作以 `(agentId, channelId, sessionKey)` 定位。`sessionKey` 只在连接内标识群聊或私聊，不能单独用来合并不同 Bot 的聊天。`im/team_ai.rs` 从配置枚举连接，再合并运行中的 Router/Health 或持久化 health，停用的连接也可浏览。
+
+Team AI 的名单包含 Channel 中已绑定的用户、已发现的群和已有会话历史；配置身份不必已有 Session。读 DTO 的 `id` 仅用于 Channel 内界面选择，`sessionKey` 可以为空；没有真实路由时只展示身份、授权与空态，不启动 Session，也不提供依赖路由的配置/会话操作。任务通知选择器只接受非空 `sessionKey`。历史中的 `userId/userUsername` 来自真实私聊入站，保存在既有 health 的 peer history 中，用于将配置用户和聊天路由精确关联；群成员不写成私聊身份。旧数据字段默认空，只按已知 adapter 地址契约归并；原生飞书 open_id 与 p2p chat_id 不相等，缺少对应证据的旧身份不按名称推测，后续消息补齐。不同历史路由保留各自 Session 操作范围，不将 Session ID 混入另一条路由。
+
+面板活动期间监听 Agent/Session 和 IM 配置、绑定、群权限事件，激活与窗口恢复时立即补读，并以 8 秒轮询兜底。每个 Agent 工作区只有一次在途名单读取，连续事件合并为尾随补读，不让慢快照因新通知而持续作废；切换身份或卸载后丢弃旧结果。名单可先于 Session 元数据和执行状态发布，失败保留现有内容并提示。群详情复用 `cmd_approve_group/cmd_reject_group`；Team AI 请求携带 `onlyPending`，在配置锁内核对最新待审核、非开放、非屏蔽状态后写入，防止过期页面撤销别人已处理的授权。拒绝仅移除当前申请与临时群历史，不永久屏蔽，也不删除 Session 历史。前端在 Channel 写入确认后立即投影处理结果；只有写入确认推进本地读取版本，阻止写入前已开始的读取还原旧按钮，普通事件仍只触发合并补读。后续读取失败保留已确认结果并显示刷新错误。
 
 Router 的 `peer_history` 记录已建立关联的 Session ID，与当前绑定一同保存为 health 快照中的 `peerSessionHistory`。这是可重建的历史索引，不存储聊天配置，也不向 Session origin 重复写入绑定。轮换或移除前保留原关联，未提交的候选绑定不进入历史；旧数据没有历史字段时只恢复已知的当前绑定。Session 删除后保留失效引用，不重建会话。
 

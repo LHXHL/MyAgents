@@ -85,6 +85,7 @@ pub enum AccessIntent {
     RemoveUser { user_id: String },
     ApproveGroup { group_id: String },
     RemoveGroup { group_id: String },
+    ReviewGroup { group_id: String, approve: bool },
 }
 
 fn valid_id(id: &str) -> Result<(), String> {
@@ -123,6 +124,17 @@ pub(super) fn apply_intent(channel: &mut Value, intent: &AccessIntent) -> Result
     let _: AccessSnapshot = serde_json::from_value(channel.clone())
         .map_err(|e| format!("Invalid channel access config: {e}"))?;
     match intent {
+        AccessIntent::ReviewGroup { group_id, approve } => {
+            let snapshot: AccessSnapshot = serde_json::from_value(channel.clone()).map_err(|e| e.to_string())?;
+            if snapshot.access.access_mode == Some(AccessMode::Open)
+                || snapshot.access.blocked_group_ids.contains(group_id)
+                || !snapshot.group_permissions.iter().any(|group| group.group_id == *group_id && group.status == GroupPermissionStatus::Pending) {
+                return Err("Group approval changed; refresh before continuing".into());
+            }
+            let edit = if *approve { AccessIntent::ApproveGroup { group_id: group_id.clone() } }
+                else { AccessIntent::RemoveGroup { group_id: group_id.clone() } };
+            apply_intent(channel, &edit)?;
+        }
         AccessIntent::SetMode { mode } => channel["accessMode"] = json!(mode),
         AccessIntent::SetUserBlocked { user_id, blocked } => {
             if *blocked
@@ -349,6 +361,26 @@ pub async fn cmd_channel_access(
 mod tests {
     use super::*;
     use crate::im::types::{BufferedMessage, ImSourceMetadata};
+
+    #[test]
+    fn group_review_requires_current_pending_authorization_and_reject_does_not_block() {
+        let original = json!({"type":"feishu", "groupPermissions":[{"groupId":"g", "groupName":"Group", "platform":"feishu", "status":"pending", "discoveredAt":"t"}]});
+        let mut rejected = original.clone();
+        apply_intent(&mut rejected, &AccessIntent::ReviewGroup { group_id: "g".into(), approve: false }).unwrap();
+        assert_eq!(rejected["groupPermissions"], json!([]));
+        assert!(rejected.get("blockedGroupIds").is_none());
+        for state in [json!({"accessMode":"open"}), json!({"blockedGroupIds":["g"]}), json!({"groupPermissions":[]})] {
+            let mut channel = original.clone();
+            channel.as_object_mut().unwrap().extend(state.as_object().unwrap().clone());
+            let before = channel.clone();
+            assert!(apply_intent(&mut channel, &AccessIntent::ReviewGroup { group_id: "g".into(), approve: true }).is_err());
+            assert_eq!(channel, before);
+        }
+        let mut approved = original;
+        apply_intent(&mut approved, &AccessIntent::ReviewGroup { group_id: "g".into(), approve: true }).unwrap();
+        assert!(apply_intent(&mut approved, &AccessIntent::ReviewGroup { group_id: "g".into(), approve: false }).is_err());
+        assert_eq!(approved["groupPermissions"][0]["status"], "approved");
+    }
 
     fn message(platform: ImPlatform, group: bool, text: &str) -> ImMessage {
         ImMessage {

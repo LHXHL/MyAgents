@@ -790,6 +790,11 @@ pub struct PeerSessionHistory {
     pub source_type: ImSourceType,
     pub source_id: String,
     pub source_display_name: Option<String>,
+    /// Observed private-chat sender, not necessarily the delivery chat ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_username: Option<String>,
     pub workspace_path: String,
     pub session_ids: Vec<String>,
 }

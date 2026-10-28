@@ -66,6 +66,7 @@ beforeEach(() => {
             sourceType: "group",
             sourceId: "g",
           },
+          { sessionKey: null, name: "Not yet routable", sourceType: "private", sourceId: "u" },
         ],
       },
     ],
@@ -84,6 +85,9 @@ describe("shared Task notification editor", () => {
       />,
     );
     await screen.findByText("Project group · notifications.group");
+    fireEvent.click(screen.getByText("Project group · notifications.group"));
+    expect(screen.queryByText(/Not yet routable/)).not.toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "Escape" });
     fireEvent.click(
       screen.getByRole("switch", { name: "notifications.desktopAria" }),
     );

@@ -107,7 +107,7 @@ export function buildPeerRows(channels: TeamChannel[], sessions: SessionMetadata
         lastActiveMs: peerLastActiveMs(peer, sessions),
       };
     }))
-    .sort((a, b) => b.lastActiveMs - a.lastActiveMs);
+    .sort((a, b) => Number(b.peer.access === 'pending') - Number(a.peer.access === 'pending') || b.lastActiveMs - a.lastActiveMs);
 }
 
 /** A peer's earlier Sessions (newest first) and how many are no longer readable. */
@@ -127,11 +127,11 @@ export const unobserved = (targets: ReturnType<typeof observationTargets>): Team
  *  Session first, then history (only history can show "finishing"). */
 export function observationTargets(channels: TeamChannel[], sessions: SessionMetadata[]) {
   const known = new Set(sessions.map(session => session.id));
-  const target = (channel: TeamChannel, peer: TeamPeer, sessionId: string) => ({ channelId: channel.channelId, sessionKey: peer.sessionKey, sessionId });
+  const target = (channel: TeamChannel, peer: TeamPeer, sessionId: string) => ({ channelId: channel.channelId, sessionKey: peer.sessionKey!, sessionId });
   const current = channels.flatMap(channel => channel.peers
-    .filter(peer => peer.sessionId && known.has(peer.sessionId))
+    .filter(peer => peer.sessionKey && peer.sessionId && known.has(peer.sessionId))
     .map(peer => target(channel, peer, peer.sessionId!)));
-  const history = channels.flatMap(channel => channel.peers.flatMap(peer =>
+  const history = channels.flatMap(channel => channel.peers.filter(peer => peer.sessionKey).flatMap(peer =>
     [...new Set(peer.sessionIds)].filter(id => id !== peer.sessionId && known.has(id)).map(id => target(channel, peer, id))));
   return [...current, ...history].slice(0, 64);
 }

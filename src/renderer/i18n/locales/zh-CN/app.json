@@ -1405,6 +1405,20 @@
     "removeConnectionMessage": "移除「{{name}}」会撤销本机在该网络的身份。重新加入需要新 key。本地 Agent 与会话保留。"
   },
   "teamAi": {
+    "access": {
+      "pending": "待授权",
+      "approved": "已允许",
+      "bound": "已绑定",
+      "blocked": "已屏蔽",
+      "allow": "允许",
+      "reject": "拒绝",
+      "processing": "处理中…",
+      "rejected": "已拒绝本次申请",
+      "pendingHint": "允许后，群成员可按渠道规则与机器人互动。",
+      "noConversation": "尚未开始对话",
+      "waitingApproval": "授权后，下次符合触发规则的消息会开始会话。",
+      "waitingMessage": "收到首条有效消息后，会话会显示在这里。"
+    },
     "join": "加入已有 Agent 工作区",
     "selectWorkspaceTitle": "选择 Agent 工作区",
     "selectWorkspaceDescription": "选择要加入 Team AI 的 Agent 工作区。只添加用途分类，不修改文件、配置或历史。",
@@ -1439,7 +1453,7 @@
     "peerMenu": "会话操作",
     "copyId": "复制会话 ID",
     "copied": "已复制",
-    "channelOff": "「{{name}}」{{status}}。可以查看，修改需先启用。",
+    "channelOff": "「{{name}}」{{status}}。可以查看，会话操作需先启用。",
     "enable": "启用",
     "disabled": "已停用",
     "connecting": "连接中",

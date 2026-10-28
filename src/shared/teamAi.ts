@@ -3,7 +3,9 @@ import type { RuntimeSource, RuntimeType } from './types/runtime';
 import type { RuntimeBackedProviderIdentity } from './providerExecution';
 import type { OfficialToolId } from './official-tools';
 export interface TeamPeer {
-  sessionKey: string;
+  /** UI identity within this Channel; distinct from an execution address. */
+  id: string;
+  sessionKey: string | null;
   sourceType: 'private' | 'group';
   sourceId: string;
   name: string | null;
@@ -11,6 +13,7 @@ export interface TeamPeer {
   sessionIds: string[];
   /** The peer owns a profile: new Sessions use it instead of the Agent defaults. */
   hasProfile: boolean;
+  access: 'pending' | 'approved' | 'bound' | 'blocked' | 'open' | null;
 }
 export interface TeamChannel {
   channelId: string;

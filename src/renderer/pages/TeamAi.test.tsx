@@ -5,7 +5,7 @@ import type { Project } from '@/config/types';
 import type { SessionMetadata } from '@/api/sessionClient';
 import type { TeamChannel, TeamPeer, TeamPeerConfig } from '@/../shared/teamAi';
 import { i18n } from '@/i18n';
-const mocks = vi.hoisted(() => ({ projects: [] as Project[], patch: vi.fn(), channels: vi.fn(), sessions: vi.fn(), action: vi.fn(), states: vi.fn(), enable: vi.fn(), peerConfig: vi.fn(), openPath: vi.fn(), translate: vi.fn<(key: string, options?: Record<string, unknown>) => string | undefined>() }));
+const mocks = vi.hoisted(() => ({ listeners: new Map<string, (event: { payload: { botId?: string } }) => void>(), projects: [] as Project[], patch: vi.fn(), channels: vi.fn(), sessions: vi.fn(), action: vi.fn(), review: vi.fn(), states: vi.fn(), enable: vi.fn(), peerConfig: vi.fn(), openPath: vi.fn(), translate: vi.fn<(key: string, options?: Record<string, unknown>) => string | undefined>() }));
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (key: string, options?: Record<string, unknown>) => mocks.translate(key, options) ?? key }) }));
 vi.mock('@/config/useConfigData', () => ({ useConfigData: () => ({ projects: mocks.projects, config: {} }) }));
 vi.mock('@/config/useConfigActions', () => ({ useConfigActions: () => ({ patchProject: mocks.patch, refreshConfig: async () => undefined }) }));
@@ -13,11 +13,11 @@ vi.mock('@/config/services/agentConfigService', () => ({ startAndEnableAgentChan
 vi.mock('@/components/AgentSettings/sections/AgentChannelsSection', () => ({
   ChannelOverlay: ({ entry, onClose }: { entry: unknown; onClose: () => void }) => <div data-testid="channel-page" data-entry={JSON.stringify(entry)}><button onClick={onClose}>close channel page</button></div>,
 }));
-vi.mock('@/utils/tauriListen', () => ({ listenWithCleanup: vi.fn(async () => ({})) }));
+vi.mock('@/utils/tauriListen', () => ({ listenWithCleanup: vi.fn(async (event, callback, signal) => { mocks.listeners.set(event, callback); signal?.addEventListener('abort', () => { if (mocks.listeners.get(event) === callback) mocks.listeners.delete(event); }); }) }));
 vi.mock('@/hooks/useWorkspaceFileService', () => ({ useWorkspaceFileService: () => ({ openPathExternal: mocks.openPath }) }));
 vi.mock('@/components/WorkspaceConfigPanel', () => ({ default: () => <div data-testid="workspace-config-panel" /> }));
 vi.mock('@/api/sessionClient', () => ({ getSessions: mocks.sessions }));
-vi.mock('@/features/team-ai/client', () => ({ teamChannels: mocks.channels, teamAction: mocks.action, teamStates: mocks.states, teamPeerConfig: mocks.peerConfig }));
+vi.mock('@/features/team-ai/client', () => ({ teamChannels: mocks.channels, teamAction: mocks.action, reviewTeamGroup: mocks.review, teamStates: mocks.states, teamPeerConfig: mocks.peerConfig }));
 import TeamAi from './TeamAi';
 
 const project: Project = { id: 'workspace', agentId: 'agent', name: 'Support department', path: '/workspace', purpose: 'team-ai', providerId: null, permissionMode: null };
@@ -25,8 +25,8 @@ const now = Date.now();
 const iso = (minutesAgo: number) => new Date(now - minutesAgo * 60_000).toISOString();
 const metadata: SessionMetadata = { id: 'session-a', agentDir: '/workspace', title: 'Budget analysis', createdAt: iso(90), lastActiveAt: iso(5), runtime: 'builtin', model: 'model-a', configSnapshotAt: 'observed', mcpEnabledServers: ['mcp-a'] };
 const earlier: SessionMetadata = { ...metadata, id: 'session-b', title: 'Earlier analysis', lastActiveAt: iso(3000) };
-const peer: TeamPeer = { sessionKey: 'agent:agent:feishu:group:room', sourceId: 'room', sourceType: 'group', name: 'Planning room', sessionId: 'session-a', sessionIds: ['session-a', 'session-b', 'session-gone'], hasProfile: false };
-const privatePeer: TeamPeer = { sessionKey: 'agent:agent:feishu:private:u1', sourceId: 'u1', sourceType: 'private', name: 'Li', sessionId: null, sessionIds: [], hasProfile: false };
+const peer: TeamPeer = { id: 'group:room', access: 'approved', sessionKey: 'agent:agent:feishu:group:room', sourceId: 'room', sourceType: 'group', name: 'Planning room', sessionId: 'session-a', sessionIds: ['session-a', 'session-b', 'session-gone'], hasProfile: false };
+const privatePeer: TeamPeer = { id: 'private:u1', access: 'bound', sessionKey: 'agent:agent:feishu:private:u1', sourceId: 'u1', sourceType: 'private', name: 'Li', sessionId: null, sessionIds: [], hasProfile: false };
 const channel: TeamChannel = { channelId: 'bot-a', platform: 'feishu', name: 'Department Bot', online: true, enabled: true, status: 'online', peers: [privatePeer, peer] };
 const selectionA = { kind: 'product-provider', providerId: 'provider-a', model: 'model-a' } as const;
 const selectionC = { kind: 'product-provider', providerId: 'provider-a', model: 'model-c' } as const;
@@ -53,6 +53,7 @@ const openConfig = async () => {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  mocks.listeners.clear();
   mocks.projects = [project];
   mocks.states.mockResolvedValue({ states: [] });
   mocks.channels.mockResolvedValue({ channels: [channel] });
@@ -412,5 +413,80 @@ describe('Team AI workspaces', () => {
     render(<TeamAi {...props()} />);
     expect(await screen.findByText('teamAi.noChannelTitle')).toBeInTheDocument();
     expect(screen.getAllByRole('button', { name: /teamAi.connectBot/ }).length).toBeGreaterThan(0);
+  });
+});
+
+
+describe('Team AI live discovery', () => {
+  it('refreshes discovered peers immediately on channel config changes', async () => {
+    render(<TeamAi {...props()} />);
+    await screen.findByRole('option', { name: /Planning room/ });
+    mocks.channels.mockResolvedValue({ channels: [{ ...channel, peers: [...channel.peers, { ...privatePeer, id: 'private:u2', name: 'Newly bound', sourceId: 'u2', sessionKey: null }] }] });
+    mocks.listeners.get('im:bot-config-changed')?.({ payload: { botId: 'bot-a' } });
+    expect(await screen.findByRole('option', { name: /Newly bound/ })).toBeInTheDocument();
+  });
+
+  it.each(['approve', 'reject'] as const)('handles %s for a group with no Session at the selected detail header', async decision => {
+    const waiting = { ...peer, access: 'pending' as const, sessionKey: null, sessionId: null, sessionIds: [] };
+    mocks.channels.mockResolvedValue({ channels: [{ ...channel, peers: [waiting, privatePeer] }] });
+    mocks.review.mockImplementation(async () => {
+      mocks.channels.mockResolvedValue({ channels: [{ ...channel, peers: decision === 'approve' ? [{ ...waiting, access: 'approved' }, privatePeer] : [privatePeer] }] });
+    });
+    render(<TeamAi {...props()} />);
+    await selectPeer();
+    expect(screen.getByText('teamAi.access.noConversation')).toBeInTheDocument();
+    expect(mocks.peerConfig).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: decision === 'approve' ? 'teamAi.access.allow' : 'teamAi.access.reject' }));
+    await waitFor(() => expect(mocks.review).toHaveBeenCalledWith('bot-a', 'room', decision));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'teamAi.access.allow' })).not.toBeInTheDocument());
+    if (decision === 'approve') expect(screen.getByText('teamAi.access.approved')).toBeInTheDocument();
+    else {
+      expect(screen.queryByRole('option', { name: /Planning room/ })).not.toBeInTheDocument();
+      expect(screen.getByRole('status')).toHaveTextContent('teamAi.access.rejected');
+    }
+    expect(mocks.action).not.toHaveBeenCalled();
+  });
+
+  it('keeps the buttons and an inline error after a failed review', async () => {
+    mocks.channels.mockResolvedValue({ channels: [{ ...channel, peers: [{ ...peer, access: 'pending' }] }] });
+    mocks.review.mockRejectedValue(new Error('Could not save approval'));
+    render(<TeamAi {...props()} />); await selectPeer();
+    fireEvent.click(screen.getByRole('button', { name: 'teamAi.access.allow' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not save approval');
+    expect(screen.getByRole('button', { name: 'teamAi.access.allow' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'teamAi.access.reject' })).toBeEnabled();
+  });
+
+  it.each(['approve', 'reject'] as const)('retains the confirmed %s result when the follow-up membership read fails', async decision => {
+    mocks.channels.mockResolvedValue({ channels: [{ ...channel, peers: [{ ...peer, access: 'pending', sessionKey: null, sessionId: null, sessionIds: [] }] }] });
+    mocks.review.mockImplementation(async () => { mocks.channels.mockRejectedValue(new Error('Membership refresh failed')); });
+    render(<TeamAi {...props()} />); await selectPeer();
+    fireEvent.click(screen.getByRole('button', { name: decision === 'approve' ? 'teamAi.access.allow' : 'teamAi.access.reject' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Membership refresh failed');
+    expect(screen.queryByRole('button', { name: 'teamAi.access.allow' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'teamAi.access.reject' })).not.toBeInTheDocument();
+    if (decision === 'approve') expect(screen.getByText('teamAi.access.approved')).toBeInTheDocument();
+    else expect(screen.queryByRole('option', { name: /Planning room/ })).not.toBeInTheDocument();
+  });
+
+  it('disables duplicate review and leaves a newly selected peer alone on completion', async () => {
+    let complete!: () => void;
+    mocks.review.mockImplementation(() => new Promise<void>(resolve => { complete = resolve; }));
+    mocks.channels.mockResolvedValue({ channels: [{ ...channel, peers: [{ ...peer, access: 'pending' }, privatePeer] }] });
+    render(<TeamAi {...props()} />); await selectPeer();
+    fireEvent.click(screen.getByRole('button', { name: 'teamAi.access.reject' }));
+    expect(screen.getByRole('button', { name: 'teamAi.access.allow' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'teamAi.access.allow' }));
+    expect(mocks.review).toHaveBeenCalledTimes(1);
+    await selectPeer('Li');
+    complete();
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Li' })).toBeInTheDocument());
+    expect(screen.queryByText('teamAi.access.rejected')).not.toBeInTheDocument();
+  });
+
+  it.each(['open', 'blocked', 'approved'] as const)('does not offer pending approval for %s groups', async access => {
+    mocks.channels.mockResolvedValue({ channels: [{ ...channel, peers: [{ ...peer, access }] }] });
+    render(<TeamAi {...props()} />); await selectPeer();
+    expect(screen.queryByRole('button', { name: 'teamAi.access.allow' })).not.toBeInTheDocument();
   });
 });

@@ -5,7 +5,7 @@ import { observationTargets, peerLabel, sessionActivity } from './model';
 
 const session = (id: string) => ({ id }) as SessionMetadata;
 const peer = (key: string, current: string, history: string[]): TeamPeer =>
-  ({ sessionKey: key, sourceId: key, sourceType: 'group', name: key, sessionId: current, sessionIds: [current, ...history], hasProfile: false });
+  ({ id: key, access: null, sessionKey: key, sourceId: key, sourceType: 'group', name: key, sessionId: current, sessionIds: [current, ...history], hasProfile: false });
 
 describe('Team AI observation projection', () => {
   it('observes every current Session before any history within the bounded batch', () => {

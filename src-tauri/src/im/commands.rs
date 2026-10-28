@@ -744,14 +744,15 @@ pub async fn cmd_approve_group<R: Runtime>(
     agentState: tauri::State<'_, ManagedAgents>,
     botId: String,
     groupId: String,
+    onlyPending: Option<bool>,
 ) -> Result<(), String> {
     use adapter::ImAdapter;
 
     super::access::mutate(
         &botId,
-        super::access::AccessIntent::ApproveGroup {
-            group_id: groupId.clone(),
-        },
+        if onlyPending == Some(true) {
+            super::access::AccessIntent::ReviewGroup { group_id: groupId.clone(), approve: true }
+        } else { super::access::AccessIntent::ApproveGroup { group_id: groupId.clone() } },
     )
     .await?;
     if let Some((group_perms, _group_history, adapter, _platform)) =
@@ -792,12 +793,13 @@ pub async fn cmd_reject_group<R: Runtime>(
     agentState: tauri::State<'_, ManagedAgents>,
     botId: String,
     groupId: String,
+    onlyPending: Option<bool>,
 ) -> Result<(), String> {
     super::access::mutate(
         &botId,
-        super::access::AccessIntent::RemoveGroup {
-            group_id: groupId.clone(),
-        },
+        if onlyPending == Some(true) {
+            super::access::AccessIntent::ReviewGroup { group_id: groupId.clone(), approve: false }
+        } else { super::access::AccessIntent::RemoveGroup { group_id: groupId.clone() } },
     )
     .await?;
     if let Some((group_perms, group_history, _adapter, platform)) =
@@ -2255,6 +2257,7 @@ mod group_access_tests {
                 app.state(),
                 "channel".into(),
                 "group".into(),
+                None,
             )
             .await
             .unwrap();
@@ -2276,6 +2279,7 @@ mod group_access_tests {
                 app.state(),
                 "channel".into(),
                 "group".into(),
+                Some(true),
             )
             .await
             .unwrap();
@@ -2285,7 +2289,8 @@ mod group_access_tests {
                 app.state(),
                 app.state(),
                 "channel".into(),
-                "missing".into()
+                "missing".into(),
+                None
             )
             .await
             .is_err());
