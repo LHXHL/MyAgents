@@ -87,7 +87,11 @@ Team AI 复用既有 Project、Agent、Channel 和 Session，不另建执行器�
 
 ### 聊天身份与历史
 
-管理位置以 `(agentId, channelId, sessionKey)` 定位。`sessionKey` 只在连接内标识群聊或私聊，不能单独用来合并不同 Bot 的聊天。`im/team_ai.rs` 从配置枚举连接，再合并运行中的 Router/Health 或持久化 health，停用的连接也可浏览。
+已建立会话的管理操作以 `(agentId, channelId, sessionKey)` 定位。`sessionKey` 只在连接内标识群聊或私聊，不能单独用来合并不同 Bot 的聊天。`im/team_ai.rs` 从配置枚举连接，再合并运行中的 Router/Health 或持久化 health，停用的连接也可浏览。
+
+Team AI 的名单包含 Channel 中已绑定的用户、已发现的群和已有会话历史；配置身份不必已有 Session。读 DTO 的 `id` 仅用于 Channel 内界面选择，`sessionKey` 可以为空；没有真实路由时只展示身份、授权与空态，不启动 Session，也不提供依赖路由的配置/会话操作。任务通知选择器只接受非空 `sessionKey`。历史中的 `userId/userUsername` 来自真实私聊入站，保存在既有 health 的 peer history 中，用于将配置用户和聊天路由精确关联；群成员不写成私聊身份。旧数据字段默认空，只按已知 adapter 地址契约归并；原生飞书 open_id 与 p2p chat_id 不相等，缺少对应证据的旧身份不按名称推测，后续消息补齐。不同历史路由保留各自 Session 操作范围，不将 Session ID 混入另一条路由。
+
+面板活动期间监听 Agent/Session 和 IM 配置、绑定、群权限事件，激活与窗口恢复时立即补读，并以 8 秒轮询兜底。每个 Agent 工作区只有一次在途名单读取，连续事件合并为尾随补读，不让慢快照因新通知而持续作废；切换身份或卸载后丢弃旧结果。名单可先于 Session 元数据和执行状态发布，失败保留现有内容并提示。群详情复用 `cmd_approve_group/cmd_reject_group`；Team AI 请求携带 `onlyPending`，在配置锁内核对最新待审核、非开放、非屏蔽状态后写入，防止过期页面撤销别人已处理的授权。拒绝仅移除当前申请与临时群历史，不永久屏蔽，也不删除 Session 历史。前端在 Channel 写入确认后立即投影处理结果；只有写入确认推进本地读取版本，阻止写入前已开始的读取还原旧按钮，普通事件仍只触发合并补读。后续读取失败保留已确认结果并显示刷新错误。
 
 Router 的 `peer_history` 记录已建立关联的 Session ID，与当前绑定一同保存为 health 快照中的 `peerSessionHistory`。这是可重建的历史索引，不存储聊天配置，也不向 Session origin 重复写入绑定。轮换或移除前保留原关联，未提交的候选绑定不进入历史；旧数据没有历史字段时只恢复已知的当前绑定。Session 删除后保留失效引用，不重建会话。
 
@@ -222,7 +226,8 @@ ReplySlot只服务产生它的Channel user request。一个request结束后，De
 | Desktop | Session binding | Session binding |
 | IM user request | none | ReplyRouter |
 | Session Inbox / 普通后台消息 | none | Session binding |
-| Heartbeat / Task relay / Agent Channel Goal | none | caller-owned |
+| Heartbeat / Agent Channel Goal | none | caller-owned |
+| Task result Inbox | none | Session binding |
 | Memory或明确静默turn | none | none |
 
 builtin/external各自在真实turn owner中capture完整text block，成功terminal后交给`im-mirror.ts`transport。V1保留原有保存完成后的投递顺序；V2在SessionStore内存接纳、排队保存后即可投递，产品写盘失败不改变AI成功结果或阻止投递。失败、停止、被重试撤回、空文本、thinking/tool/subagent和`NO_REPLY`不投递。`SessionOrigin`与`InteractionScenario`只描述归因/prompt，不能推导delivery owner。
@@ -429,4 +434,4 @@ Channel 路由使用 Adapter 已验证的协议身份；OpenClaw 从注册后的
 
 Task 自动回报使用 `ConversationRef { channelId, sessionKey }`。`im::task_notification` 从既有配置、health、ChannelOwner 和 Router 解析目标，不新增聊天存储。固定 Channel 的 `recent-private` 只在该连接内选择私聊；Agent 范围允许跨连接，沿用最近私聊的选址规则。两者均不经过 Heartbeat 待发队列或唤醒流程。首次解析后由 TaskStore 固定聊天地址与连接归属；目标离线时等待，归属变化时失败，不改投其他联系人。
 
-转述前在 ChannelOwner 的 peer fence 内初始化当前 Session，复用 Inbox delivery lease。排队后的 `beforeDispatch` 再检查绑定，换绑使旧队列项失效，由 Task 通知作业重新解析同一个聊天。转述结果交给 TaskStore 保存；IM `channel_send` 按平台能力分段发送并返回接受片数和消息 ID。普通 ReplyRouter、显式 handoff、Heartbeat 与 Goal 的生命周期不变。状态与重试规则由 [Task 通知策略与投递记录](task_center.md#task-通知策略与投递记录) 统一说明。
+交接前在 ChannelOwner 的 peer fence 内初始化当前 Session，复用 Inbox delivery lease。排队后的 `beforeDispatch` 再检查绑定，换绑使旧队列项失效，由 Task 通知作业重新解析同一个聊天。TaskStore 在准确 Session 接纳后记录 handed-off，不调用 IM `channel_send`；目标 Session 使用自己的普通回复/显式工具发送路径。auto/tool_only 只控制外发方式，均允许交接输入。普通 ReplyRouter、显式 handoff、Heartbeat 与 Goal 的生命周期不变。状态与重试规则由 [Task 通知策略与投递记录](task_center.md#task-通知策略与投递记录) 统一说明。

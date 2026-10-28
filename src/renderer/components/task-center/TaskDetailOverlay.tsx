@@ -114,6 +114,8 @@ export function TaskDetailOverlay({
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [showResetCheckpointConfirm, setShowResetCheckpointConfirm] =
     useState(false);
+  const [showRunNowConfirm, setShowRunNowConfirm] = useState(false);
+  const runNowSubmitting = useRef(false);
   const [triggerAction, setTriggerAction] = useState<
     "test" | "check" | "run" | "reset" | null
   >(null);
@@ -301,6 +303,32 @@ export function TaskDetailOverlay({
     },
     [task.id, onChanged],
   );
+
+  const canRunNow = task.executor === "agent" && !busy && !triggerAction && !task.executionState
+    && !task.triggerState?.pendingActivation
+    && ["running", "stopped"].includes(task.status)
+    && task.dispatchOrigin !== "attached-session";
+  const dispatchRunNow = async () => {
+    if (!canRunNow || runNowSubmitting.current) return;
+    runNowSubmitting.current = true;
+    setBusy(true);
+    setErr(null);
+    try {
+      await taskRunNow(task.id);
+      if (!isMountedRef.current) return;
+      setShowRunNowConfirm(false);
+      const fresh = await fetchLatestTask();
+      if (fresh) onChanged?.(fresh);
+    } catch (error) {
+      if (isMountedRef.current) {
+        setShowRunNowConfirm(false);
+        setErr(extractErrorMessage(error));
+      }
+    } finally {
+      runNowSubmitting.current = false;
+      if (isMountedRef.current) setBusy(false);
+    }
+  };
 
   const dispatchRun = useCallback(async () => {
     setBusy(true);
@@ -510,6 +538,17 @@ export function TaskDetailOverlay({
           onCancel={() => setShowSyncConfirm(false)}
         />
       )}
+      {showRunNowConfirm && (
+        <ConfirmDialog
+          title={t("detail.runNowConfirmTitle")}
+          message={t("detail.runNowConfirmMessage", { name: task.name })}
+          confirmText={t("detail.executeNow")}
+          cancelText={t("common.cancel")}
+          loading={busy}
+          onConfirm={() => void dispatchRunNow()}
+          onCancel={() => setShowRunNowConfirm(false)}
+        />
+      )}
       {showDeleteConfirm && (
         <ConfirmDialog
           title={t("detail.deleteTitle")}
@@ -613,6 +652,8 @@ export function TaskDetailOverlay({
               locked={locked}
               syncing={syncing}
               canSyncToAgent={canSyncToAgent}
+              canRunNow={canRunNow}
+              onRunNow={() => setShowRunNowConfirm(true)}
               onEdit={() => enterEdit(null)}
               onMarkDone={() => runStatus("done")}
               onArchive={doArchive}
@@ -761,6 +802,8 @@ function OverflowMenu({
   locked,
   syncing,
   canSyncToAgent,
+  canRunNow,
+  onRunNow,
   onEdit,
   onMarkDone,
   onArchive,
@@ -772,6 +815,8 @@ function OverflowMenu({
   locked: boolean;
   syncing: boolean;
   canSyncToAgent: boolean;
+  canRunNow: boolean;
+  onRunNow: () => void;
   onEdit: () => void;
   onMarkDone: () => void;
   onArchive: () => void;
@@ -783,6 +828,12 @@ function OverflowMenu({
   const canArchive = status === "done";
 
   const secondary: DropdownMenuItem[] = [
+    {
+      icon: <PlayIcon className="h-3.5 w-3.5" />,
+      label: t("detail.executeNow"),
+      onClick: onRunNow,
+      disabled: !canRunNow,
+    },
     {
       icon: <EditIcon className="h-3.5 w-3.5" />,
       label: t("detail.edit"),

@@ -1,15 +1,14 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { listenWithCleanup } from '@/utils/tauriListen';
 import { useConfigData } from '@/config/useConfigData';
 import { useConfigActions } from '@/config/useConfigActions';
-import { getSessions, type SessionMetadata } from '@/api/sessionClient';
 import { isProjectVisibleToUser, isProjectArchived, type Project } from '@/config/types';
 import { startAndEnableAgentChannel } from '@/config/services/agentConfigService';
-import type { TeamAction, TeamActionResult, TeamChannel, TeamSessionState } from '@/../shared/teamAi';
-import { teamAction, teamChannels, teamStates } from '@/features/team-ai/client';
+import type { TeamAction, TeamActionResult } from '@/../shared/teamAi';
+import { teamAction, reviewTeamGroup } from '@/features/team-ai/client';
 import type { TeamAiBinding } from '@/features/team-ai/tabModule';
-import { buildPeerRows, observationTargets, peerRowKey, unobserved, type PeerRow } from '@/features/team-ai/model';
+import { buildPeerRows, peerRowKey, type PeerRow } from '@/features/team-ai/model';
+import { useTeamAiData } from '@/features/team-ai/useTeamAiData';
 import { PeerList } from '@/features/team-ai/PeerList';
 import {
   PeerDetail,
@@ -84,11 +83,7 @@ export default function TeamAi({
   const agent = agentId ? getAgentById(config, agentId) : undefined;
   const path = project?.path;
 
-  const [channels, setChannels] = useState<TeamChannel[]>([]);
-  const [sessions, setSessions] = useState<SessionMetadata[]>([]);
-  const [states, setStates] = useState<TeamSessionState[]>([]);
-  const [loaded, setLoaded] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const { channels, sessions, states, loaded, error, setError, refresh, reflectGroupReview } = useTeamAiData(agentId, path, isActive);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [showDetail, setShowDetail] = useState(false);
   const [pending, setPending] = useState<TeamPending | null>(null);
@@ -100,60 +95,20 @@ export default function TeamAi({
   const [overlay, setOverlay] = useState<{ kind: 'settings' } | { kind: 'channel'; entry: ChannelOverlayEntry } | null>(null);
   const setChannelPage = (entry: ChannelOverlayEntry) => setOverlay({ kind: 'channel', entry });
   const { openPathExternal } = useWorkspaceFileService(null);
-  const generation = useRef(0);
+  const actionGeneration = useRef(0);
+  const actionBusy = useRef(false);
+  useEffect(() => {
+    actionGeneration.current += 1;
+    actionBusy.current = false;
+    setPending(null); setNote(null);
+    return () => { actionGeneration.current += 1; };
+  }, [agentId]);
   const noteTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-
-  const refresh = useCallback(async () => {
-    if (!agentId || !path) {
-      setChannels([]);
-      setSessions([]);
-      return;
-    }
-    const epoch = ++generation.current;
-    try {
-      const [result, metadata] = await Promise.all([teamChannels(agentId), getSessions(path)]);
-      if (generation.current !== epoch) return;
-      setChannels(result.channels);
-      setSessions(metadata);
-      setError(null);
-      const targets = observationTargets(result.channels, metadata);
-      try {
-        const observed = await teamStates(agentId, targets);
-        if (generation.current === epoch) setStates(observed.states);
-      } catch {
-        if (generation.current === epoch) setStates(unobserved(targets));
-      }
-    } catch (failure) {
-      if (generation.current === epoch) setError(errorText(failure));
-    } finally {
-      if (generation.current === epoch) setLoaded(true);
-    }
-  }, [agentId, path]);
-
-  useEffect(() => {
-    setLoaded(false);
-    void refresh();
-    return () => { generation.current += 1; };
-  }, [refresh]);
-
-  useEffect(() => {
-    if (!isActive || !agentId) return;
-    const controller = new AbortController();
-    for (const event of ['agent:status-changed', 'session:metadata-changed']) {
-      void listenWithCleanup(event, () => { void refresh(); }, controller.signal)
-        .catch(failure => console.warn('[team-ai] listener unavailable', failure));
-    }
-    const interval = setInterval(() => { void refresh(); }, 8000);
-    return () => {
-      controller.abort();
-      clearInterval(interval);
-    };
-  }, [agentId, isActive, refresh]);
 
   useEffect(() => () => clearTimeout(noteTimer.current), []);
 
   const rows = useMemo(() => buildPeerRows(channels, sessions, states), [channels, sessions, states]);
-  const selected = rows.find(row => peerRowKey(row.channel.channelId, row.peer.sessionKey) === selectedKey);
+  const selected = rows.find(row => peerRowKey(row.channel.channelId, row.peer.id) === selectedKey);
 
   const showNote = useCallback((key: string, next: TeamNote) => {
     clearTimeout(noteTimer.current);
@@ -162,30 +117,52 @@ export default function TeamAi({
   }, []);
 
   const run = useCallback(async (row: PeerRow, action: TeamAction, done: string) => {
-    if (!agentId || pending) return null;
-    const key = peerRowKey(row.channel.channelId, row.peer.sessionKey);
+    if (!agentId || actionBusy.current) return null;
+    actionBusy.current = true;
+    const epoch = actionGeneration.current;
+    const key = peerRowKey(row.channel.channelId, row.peer.id);
     const scope = action.kind === 'updateConfig' || action.kind === 'clearProfile' ? 'config' : 'sessions';
     setPending({ key, kind: action.kind, sessionId: action.kind === 'setPrimary' ? action.sessionId : undefined });
     setNote(null);
     try {
       const result = await teamAction(agentId, row.channel.channelId, row.peer, action);
+      if (epoch !== actionGeneration.current) return null;
       showNote(key, { ...noteFor(result, done, row.peer.hasProfile, t), scope });
       return result;
     } catch (failure) {
-      showNote(key, { tone: 'err', text: errorText(failure), scope });
+      if (epoch === actionGeneration.current) showNote(key, { tone: 'err', text: errorText(failure), scope });
       return null;
     } finally {
-      setPending(null);
-      await refresh();
+      if (epoch === actionGeneration.current) {
+        actionBusy.current = false; setPending(null);
+        await refresh();
+      }
     }
-  }, [agentId, pending, refresh, showNote, t]);
+  }, [agentId, refresh, showNote, t]);
+
+  const review = async (row: PeerRow, decision: 'approve' | 'reject') => {
+    if (actionBusy.current || row.peer.access !== 'pending' || row.peer.sourceType !== 'group') return;
+    actionBusy.current = true;
+    const epoch = actionGeneration.current;
+    const key = peerRowKey(row.channel.channelId, row.peer.id);
+    setPending({ key, kind: decision === 'approve' ? 'approveGroup' : 'rejectGroup' });
+    setNote(null);
+    try {
+      await reviewTeamGroup(row.channel.channelId, row.peer.sourceId, decision);
+      if (epoch !== actionGeneration.current) return;
+      reflectGroupReview(row.channel.channelId, row.peer.sourceId, decision);
+      await refresh();
+      if (epoch === actionGeneration.current && decision === 'reject') showNote(key, { tone: 'ok', scope: 'access', text: t('teamAi.access.rejected') });
+    } catch (failure) {
+      if (epoch === actionGeneration.current) showNote(key, { tone: 'err', scope: 'access', text: errorText(failure) });
+    } finally {
+      if (epoch === actionGeneration.current) { actionBusy.current = false; setPending(null); }
+    }
+  };
 
   const selectProject = (id: string) => {
     setSelectedKey(null);
     setShowDetail(false);
-    setChannels([]);
-    setSessions([]);
-    setStates([]);
     onSelectProject(id);
   };
 
@@ -298,7 +275,7 @@ export default function TeamAi({
                 onAddChannel={() => setChannelPage({ view: 'add' })}
                 selectedKey={selectedKey}
                 onSelect={row => {
-                  setSelectedKey(peerRowKey(row.channel.channelId, row.peer.sessionKey));
+                  setSelectedKey(peerRowKey(row.channel.channelId, row.peer.id));
                   setShowDetail(true);
                 }}
                 onRetry={() => { void refresh(); }}
@@ -316,6 +293,7 @@ export default function TeamAi({
                 pending={pending?.key === selectedKey ? pending : null}
                 note={note?.key === selectedKey ? note.note : null}
                 run={(action, done) => run(selected, action, done)}
+                review={decision => { void review(selected, decision); }}
                 confirm={setConfirmation}
                 onOpen={session => onOpenSession(session, project)}
                 onEnable={() => {
@@ -328,7 +306,9 @@ export default function TeamAi({
             ) : (
               <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-[var(--ink-muted)]">
                 <MessageIcon className="h-7 w-7 text-[var(--ink-subtle)]" />
+                {note?.key === selectedKey && note.note.scope === 'access' && <p role="status">{note.note.text}</p>}
                 {t('teamAi.selectPeer')}
+                <div className="@[720px]/team-ai:hidden"><button className={ghostButton} onClick={() => setShowDetail(false)}>{t('teamAi.back')}</button></div>
               </div>
             )}
           </main>

@@ -104,7 +104,7 @@ export function NotificationConfigEditor({
       label: t("notifications.unavailable", { id: targetValue }),
     });
   const selectedKey = im.type === "conversation" ? im.sessionKey : "";
-  const peerOptions: SelectOption[] = peers.map((peer) => ({
+  const peerOptions: SelectOption[] = peers.filter((peer): peer is TeamPeer & { sessionKey: string } => peer.sessionKey !== null).map((peer) => ({
     value: peer.sessionKey,
     label: `${peer.name || peer.sourceId} · ${peer.sourceType === "group" ? t("notifications.group") : t("notifications.private")}`,
   }));

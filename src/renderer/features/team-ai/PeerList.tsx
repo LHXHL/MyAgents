@@ -72,7 +72,7 @@ export function PeerList({ rows, channels, selectedKey, onSelect, onRetry, onOpe
     const row = rows[Math.max(0, Math.min(rows.length - 1, index))];
     if (!row) return;
     onSelect(row);
-    document.querySelector<HTMLElement>(`[data-peer-row="${CSS.escape(peerRowKey(row.channel.channelId, row.peer.sessionKey))}"]`)?.focus();
+    document.querySelector<HTMLElement>(`[data-peer-row="${CSS.escape(peerRowKey(row.channel.channelId, row.peer.id))}"]`)?.focus();
   };
   const heading = 'flex h-8 items-center gap-2 px-3 text-xs font-medium text-[var(--ink-muted)]';
   return (
@@ -114,7 +114,7 @@ export function PeerList({ rows, channels, selectedKey, onSelect, onRetry, onOpe
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3" role="listbox" aria-label={t('teamAi.peerList')}>
         {rows.map((row, index) => {
-          const key = peerRowKey(row.channel.channelId, row.peer.sessionKey);
+          const key = peerRowKey(row.channel.channelId, row.peer.id);
           const selected = key === selectedKey;
           return (
             <div
@@ -147,8 +147,11 @@ export function PeerList({ rows, channels, selectedKey, onSelect, onRetry, onOpe
                 </span>
               </span>
               <span className="flex shrink-0 items-center gap-1.5 text-xs text-[var(--ink-muted)]">
+                {row.peer.access === 'pending' ? <span className="rounded-full bg-[var(--warning-bg)] px-1.5 py-0.5 text-xs text-[var(--warning)]">{t('teamAi.access.pending')}</span>
+                  : row.peer.access === 'blocked' ? <span>{t('teamAi.access.blocked')}</span>
+                  : !row.peer.sessionKey && row.peer.access === 'bound' ? <span>{t('teamAi.access.bound')}</span> : null}
                 <ActivityMark activity={row.activity} />
-                {row.lastActiveMs ? formatPastRelativeTime(row.lastActiveMs) : null}
+                {row.peer.access !== 'pending' && row.lastActiveMs ? formatPastRelativeTime(row.lastActiveMs) : null}
               </span>
             </div>
           );

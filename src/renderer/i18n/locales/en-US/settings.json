@@ -1195,7 +1195,7 @@
       "delivery_auto": "Automatic",
       "delivery_tool_only": "Tool only",
       "deliveryDescription_auto": "Replies are sent automatically. Tools can also send messages.",
-      "deliveryDescription_tool_only": "Only tools send messages. Approval and management prompts still appear.",
+      "deliveryDescription_tool_only": "Only tools send messages. Approval and management prompts still appear. Task and Session inputs are still accepted. If a third-party compatibility patch fails, the channel stays available but the plugin may send automatic messages; see logs.",
       "pluginLabel": "Plugin: {{name}}",
       "noExtraConfig": "This plugin needs no extra configuration",
       "inputPlaceholder": "Enter {{key}}",

@@ -39,8 +39,8 @@ const menuOption =
 const tag = 'inline-flex h-[18px] shrink-0 items-center rounded-full px-1.5 text-xs';
 
 /** Feedback for the last action; `scope` puts it next to the control that caused it. */
-export type TeamNote = { tone: 'ok' | 'err' | 'info'; text: string; scope: 'config' | 'sessions' };
-export type TeamPending = { key: string; kind: TeamAction['kind']; sessionId?: string };
+export type TeamNote = { tone: 'ok' | 'err' | 'info'; text: string; scope: 'config' | 'sessions' | 'access' };
+export type TeamPending = { key: string; kind: TeamAction['kind'] | 'approveGroup' | 'rejectGroup'; sessionId?: string };
 /** Execute a Team AI action; the page owns feedback. `done` is the success text. */
 export type RunTeamAction = (action: TeamAction, done: string) => Promise<TeamActionResult | null>;
 export type ConfirmRequest = { title: string; message: string; confirmText: string; onConfirm: () => void };
@@ -49,7 +49,7 @@ const RUNTIMES: RuntimeType[] = ['builtin', 'dsh', 'codex', 'claude-code'];
 const toolTotal = (config: TeamPeerProfile) =>
   (config.mcpEnabledServers?.length ?? 0) + (config.enabledPluginIds?.length ?? 0) + (config.enabledOfficialToolIds?.length ?? 0);
 
-export function PeerDetail({ agentId, row, sessions, states, pending, note, run, confirm, onOpen, onEnable, onBack }: {
+export function PeerDetail({ agentId, row, sessions, states, pending, note, run, review, confirm, onOpen, onEnable, onBack }: {
   agentId: string;
   row: PeerRow;
   sessions: SessionMetadata[];
@@ -57,6 +57,7 @@ export function PeerDetail({ agentId, row, sessions, states, pending, note, run,
   pending: TeamPending | null;
   note: TeamNote | null;
   run: RunTeamAction;
+  review: (decision: 'approve' | 'reject') => void;
   confirm: (request: ConfirmRequest) => void;
   onOpen: (session: SessionMetadata) => void;
   onEnable: () => void;
@@ -75,18 +76,27 @@ export function PeerDetail({ agentId, row, sessions, states, pending, note, run,
           {t('teamAi.back')}
         </button>
       </div>
-      <header className="flex items-center gap-3">
+      <header className="flex flex-wrap items-center gap-3">
         <PeerAvatar peer={peer} size={40} />
         <div className="min-w-0 flex-1">
           <h2 className="truncate text-lg font-semibold" title={peer.sourceId}>{peerLabel(peer)}</h2>
-          <p className="mt-0.5 flex min-w-0 items-center gap-1.5 text-xs text-[var(--ink-muted)]">
+          <p className="mt-0.5 flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-[var(--ink-muted)]">
             <ChannelPlatformIcon type={channel.platform} className="h-3.5 w-3.5" />
             <span className="truncate">{channel.name || channel.platform}</span>
             <span aria-hidden="true">·</span>
             <span className="shrink-0">{t(`teamAi.${peer.sourceType}`)}</span>
+            {peer.access && peer.access !== 'open' && <span className={`${tag} ${peer.access === 'pending' ? 'bg-[var(--warning-bg)] text-[var(--warning)]' : 'bg-[var(--paper-inset)] text-[var(--ink-muted)]'}`}>{t(`teamAi.access.${peer.access}`)}</span>}
           </p>
         </div>
+        {peer.sourceType === 'group' && peer.access === 'pending' && (
+          <div className="ml-auto flex w-full shrink-0 justify-end gap-2 @[480px]/team-ai:w-auto" aria-busy={pending?.kind === 'approveGroup' || pending?.kind === 'rejectGroup'}>
+            <button className={secondaryButton} disabled={!!pending} onClick={() => review('reject')}>{t(pending?.kind === 'rejectGroup' ? 'teamAi.access.processing' : 'teamAi.access.reject')}</button>
+            <button className={primaryButton} disabled={!!pending} onClick={() => review('approve')}>{t(pending?.kind === 'approveGroup' ? 'teamAi.access.processing' : 'teamAi.access.allow')}</button>
+          </div>
+        )}
       </header>
+      {note?.scope === 'access' && <p role={note.tone === 'err' ? 'alert' : 'status'} className={`mt-3 text-sm ${note.tone === 'err' ? 'text-[var(--error)]' : 'text-[var(--ink-muted)]'}`}>{note.text}</p>}
+      {peer.access === 'pending' && <p className="mt-3 text-xs text-[var(--ink-muted)]">{t('teamAi.access.pendingHint')}</p>}
       {off && (
         <div className="mt-4 flex items-center gap-2.5 rounded-[var(--radius-md)] bg-[var(--paper-inset)] px-3.5 py-2.5 text-sm text-[var(--ink-muted)]">
           <InfoIcon className="h-4 w-4 shrink-0" />
@@ -113,9 +123,13 @@ export function PeerDetail({ agentId, row, sessions, states, pending, note, run,
         ))}
       </dl>
 
-      <ConfigSection agentId={agentId} row={row} editable={!off && !pending} note={note?.scope === 'config' ? note : null} run={run} confirm={confirm} />
-
-      <SessionList row={row} sessions={sessions} states={states} disabled={!!off || !!pending} pending={pending} note={note?.scope === 'sessions' ? note : null} run={run} onOpen={onOpen} />
+      {peer.sessionKey ? <>
+        <ConfigSection agentId={agentId} row={row} editable={!off && !pending} note={note?.scope === 'config' ? note : null} run={run} confirm={confirm} />
+        <SessionList row={row} sessions={sessions} states={states} disabled={!!off || !!pending} pending={pending} note={note?.scope === 'sessions' ? note : null} run={run} onOpen={onOpen} />
+      </> : <div className="mt-8 text-sm text-[var(--ink-muted)]">
+        <p>{t('teamAi.access.noConversation')}</p>
+        <p className="mt-2 text-xs">{t(peer.access === 'pending' ? 'teamAi.access.waitingApproval' : 'teamAi.access.waitingMessage')}</p>
+      </div>}
     </div>
   );
 }

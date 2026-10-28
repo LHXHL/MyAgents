@@ -5,6 +5,7 @@ import type { Task } from '@/../shared/types/task';
 import { TaskDetailOverlay, TriggerRuntimeSection } from './TaskDetailOverlay';
 
 const detailApiMocks = vi.hoisted(() => ({
+  taskRunNow: vi.fn(),
   taskDelete: vi.fn(),
   taskCheckNow: vi.fn(),
   taskGet: vi.fn(),
@@ -21,7 +22,7 @@ vi.mock('@/api/taskCenter', () => ({
   taskRerun: vi.fn(),
   taskResetCheckpoint: detailApiMocks.taskResetCheckpoint,
   taskRun: vi.fn(),
-  taskRunNow: vi.fn(),
+  taskRunNow: detailApiMocks.taskRunNow,
   taskTriggerTestTask: vi.fn(),
   taskUpdateStatus: vi.fn(),
 }));
@@ -137,6 +138,27 @@ beforeEach(() => {
 });
 
 describe('TriggerRuntimeSection', () => {
+  it('confirms a run-now from the menu without changing the schedule or rerunning the lifecycle', async () => {
+    const task = { ...commandTask(), triggerState: undefined };
+    detailApiMocks.taskGet.mockResolvedValue(task);
+    detailApiMocks.taskRunNow.mockResolvedValue(undefined);
+    render(<TaskDetailOverlay task={task} onClose={vi.fn()} />);
+    fireEvent.click(screen.getByTitle('更多操作'));
+    fireEvent.click(screen.getByRole('button', { name: '立刻执行' }));
+    expect(screen.getByText('立刻执行一次？')).toBeInTheDocument();
+    expect(detailApiMocks.taskRunNow).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: '立刻执行' }));
+    await waitFor(() => expect(detailApiMocks.taskRunNow).toHaveBeenCalledExactlyOnceWith(task.id));
+  });
+  it.each(['running', 'checking', 'stopping', 'stop_failed'] as const)('disables menu run-now during %s', executionState => {
+    const task = { ...commandTask(), triggerState: undefined, executionState };
+    detailApiMocks.taskGet.mockResolvedValue(task);
+    render(<TaskDetailOverlay task={task} onClose={vi.fn()} />);
+    fireEvent.click(screen.getByTitle('更多操作'));
+    expect(screen.getByRole('button', { name: '立刻执行' })).toBeDisabled();
+    expect(detailApiMocks.taskRunNow).not.toHaveBeenCalled();
+  });
+
   it('renders Task detail as one accessible Drawer and passes the exact comment target', async () => {
     const task = {
       ...commandTask(),

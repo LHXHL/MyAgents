@@ -16,6 +16,8 @@ use std::{sync::Arc, time::Duration};
 use tauri::{AppHandle, Emitter};
 use tokio::sync::Mutex;
 
+mod peers;
+
 fn agent_config(id: &str) -> Result<AgentConfigRust, String> {
     read_agent_configs_from_disk()
         .into_iter()
@@ -279,7 +281,10 @@ pub async fn cmd_team_ai_channels(
             "enabled": channel.enabled, "online": false, "status": "stopped", "peers": [] });
         match state {
             // A read failure is not an empty Channel; the page offers a retry.
-            Err(error) => row["loadError"] = json!(error),
+            Err(error) => {
+                row["loadError"] = json!(error);
+                row["peers"] = json!(peers::project(channel, Vec::new(), Vec::new(), team_ai));
+            },
             Ok(state) => {
                 let running = live.is_some();
                 row["online"] =
@@ -290,50 +295,13 @@ pub async fn cmd_team_ai_channels(
                 } else {
                     (state.active_sessions, state.peer_session_history)
                 };
-                let mut router = SessionRouter::new_for_agent(
-                    cfg.resolved_workspace_path.clone().into(),
-                    agentId.clone(),
-                );
-                router.restore_peer_history(history);
-                // Projection only: do not restore/rotate/ensure any execution identity while browsing.
-                let mut peers = router.peer_history();
-                for peer in &current {
-                    let entry = peers.iter_mut().find(|h| h.session_key == peer.session_key);
-                    if let Some(entry) = entry {
-                        if peer.metadata_indexed && !entry.session_ids.contains(&peer.session_id) {
-                            entry.session_ids.push(peer.session_id.clone());
-                        }
-                    } else {
-                        peers.push(super::types::PeerSessionHistory {
-                            session_key: peer.session_key.clone(),
-                            source_type: peer.source_type.clone(),
-                            source_id: peer.source_id.clone().unwrap_or_else(|| {
-                                super::router::parse_session_key(&peer.session_key).1
-                            }),
-                            source_display_name: peer.source_display_name.clone(),
-                            workspace_path: peer.workspace_path.clone(),
-                            session_ids: if peer.metadata_indexed {
-                                vec![peer.session_id.clone()]
-                            } else {
-                                Vec::new()
-                            },
-                        });
-                    }
-                }
                 row["status"] = if running {
                     json!(state.status)
                 } else {
                     json!("stopped")
                 };
                 row["error"] = json!(state.error_message);
-                row["peers"] = json!(peers.into_iter().map(|peer| {
-                    let active = current.iter().find(|p| p.session_key == peer.session_key);
-                    json!({"sessionKey":peer.session_key,"sourceType":peer.source_type,"sourceId":peer.source_id,
-                        "hasProfile":team_ai && channel.peer_profiles.contains_key(&peer.session_key),
-                        "name":active.and_then(|p| p.source_display_name.clone()).or(peer.source_display_name)
-                            .or_else(|| configured_peer_name(channel, &peer.source_type, &peer.source_id)),
-                        "sessionId":active.map(|p| p.session_id.clone()),"sessionIds":peer.session_ids})
-                }).collect::<Vec<_>>());
+                row["peers"] = json!(peers::project(channel, current, history, team_ai));
             }
         }
         channels.push(row);

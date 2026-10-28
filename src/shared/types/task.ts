@@ -216,7 +216,7 @@ export interface TaskNotificationDelivery {
   id: string;
   events: string[];
   policy: NotificationConfig;
-  state: 'waiting' | 'preparing' | 'prepared' | 'sending' | 'sent' | 'suppressed' | 'failed' | 'unknown' | 'partial' | 'cancelled';
+  state: 'waiting' | 'preparing' | 'prepared' | 'sending' | 'sent' | 'handed-off' | 'suppressed' | 'failed' | 'unknown' | 'partial' | 'cancelled';
   createdAt: number;
   updatedAt: number;
   title: string;

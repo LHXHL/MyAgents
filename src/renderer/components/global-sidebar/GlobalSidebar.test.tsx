@@ -163,7 +163,7 @@ vi.mock('@/components/launcher', async (importOriginal) => ({
 }));
 
 import { i18n } from '@/i18n';
-import type { Tab } from '@/types/tab';
+import type { ChatTab, Tab } from '@/types/tab';
 import { GLOBAL_SIDEBAR_PREFERENCE_KEY } from '@/utils/globalSidebarPreference';
 import GlobalSidebar, { isPointerWithinBounds, sortWorkspaceSessions } from './GlobalSidebar';
 
@@ -1793,6 +1793,103 @@ describe('GlobalSidebar rail flyout', () => {
     });
   });
 
+  it.each(['expanded', 'rail'] as const)('keeps collapsed workspace activity live without history in %s mode', (preferredMode) => {
+    mocks.forcedRail = false;
+    mocks.projects.push(
+      { id: 'project-a', name: 'Project A', path: 'C:\\Work\\Agent' },
+      { id: 'project-b', name: 'Project B', path: '/work/b' },
+      { id: 'project-empty', name: 'Empty project', path: '/work/empty' },
+    );
+    window.localStorage.setItem(GLOBAL_SIDEBAR_PREFERENCE_KEY, JSON.stringify({
+      version: 1, preferredMode, expandedWorkspaceKeys: [], hasSeededDefaultExpansion: true,
+    }));
+    const running: ChatTab = {
+      id: 'running-tab', view: 'chat', title: 'New session', agentDir: 'c:/work/agent/',
+      sessionId: null, sidecarConfigDisposition: 'push', isGenerating: true,
+    };
+    const unread: ChatTab = {
+      ...running, id: 'unread-tab', sessionId: 'unread-session', isGenerating: false, hasUnread: true,
+    };
+    const idle: ChatTab = {
+      ...running, id: 'idle-tab', sessionId: 'idle-session', isGenerating: false,
+    };
+    const otherUnread: ChatTab = { ...unread, id: 'other-tab', sessionId: 'other-session', agentDir: '/work/b' };
+    const foreign: ChatTab = { ...running, id: 'foreign-tab', agentDir: '/work/elsewhere' };
+    const initialTabs = [launcherTab, running, unread, idle, otherUnread, foreign];
+    const view = renderSidebar({ tabs: initialTabs });
+    if (preferredMode === 'rail') fireEvent.click(screen.getByRole('button', { name: 'Agent 工作区' }));
+
+    const workspaceRow = (name: string) => screen.getByText(name).closest<HTMLElement>('[data-global-sidebar-workspace-row]')!;
+    const indicator = (name: string) => workspaceRow(name).querySelector('[data-tab-activity-indicator]');
+    const statusSlot = workspaceRow('Project A').querySelector('[data-global-sidebar-workspace-activity]');
+    expect(workspaceRow('Project A')).toHaveAttribute('aria-expanded', 'false');
+    expect(document.querySelector('[data-global-sidebar-session-row]')).toBeNull();
+    expect(indicator('Project A')).toHaveAttribute('data-tab-activity-indicator', 'generating');
+    expect(within(workspaceRow('Project A')).getByText(String(i18n.t('app:tabs.generating')))).toHaveClass('sr-only');
+    expect(indicator('Project B')).toHaveAttribute('data-tab-activity-indicator', 'unread');
+    expect(indicator('Empty project')).toBeNull();
+
+    // Completion of the last running Session leaves the other unread result visible.
+    const completed = { ...running, sessionId: 'new-session', isGenerating: false };
+    view.rerender(sidebar({ tabs: [launcherTab, completed, unread, idle, otherUnread, foreign] }));
+    expect(indicator('Project A')).toHaveAttribute('data-tab-activity-indicator', 'unread');
+    expect(indicator('Project A')).toHaveClass('bg-[var(--accent-warm)]');
+    expect(workspaceRow('Project A').querySelector('[data-global-sidebar-workspace-activity]')).toBe(statusSlot);
+
+    view.rerender(sidebar({ tabs: [launcherTab, completed, { ...unread, hasUnread: false }, idle, otherUnread, foreign] }));
+    expect(indicator('Project A')).toBeNull();
+    expect(indicator('Project B')).toHaveAttribute('data-tab-activity-indicator', 'unread');
+
+    // Removing Tabs must not retain the old aggregate or borrow another workspace's activity.
+    view.rerender(sidebar({ tabs: [launcherTab, foreign] }));
+    expect(indicator('Project A')).toBeNull();
+    expect(indicator('Project B')).toBeNull();
+    expect(indicator('Empty project')).toBeNull();
+  });
+
+  it('includes activity beyond the session page and behind favorites or automation filters', () => {
+    mocks.forcedRail = false;
+    mocks.projects.push({ id: 'project-a', name: 'Project A', path: '/work/a' });
+    window.localStorage.setItem(GLOBAL_SIDEBAR_PREFERENCE_KEY, JSON.stringify({
+      version: 1, preferredMode: 'expanded', expandedWorkspaceKeys: ['/work/a'],
+      hasSeededDefaultExpansion: true, showAutomationSessions: true, sessionView: 'all',
+    }));
+    for (let index = 0; index < 6; index++) {
+      mocks.taskData.sessions.push({
+        id: `session-${index}`, title: `Session ${index}`, agentDir: '/work/a',
+        createdAt: '2026-10-29T00:00:00.000Z', lastActiveAt: `2026-10-${20 - index}T00:00:00.000Z`,
+        origin: { kind: 'automation', surface: 'task_run' },
+      });
+    }
+    const running: ChatTab = {
+      id: 'running-tab', view: 'chat', title: 'Session 5', agentDir: '/work/a',
+      sessionId: 'session-5', sidecarConfigDisposition: 'adopt', isGenerating: true,
+    };
+    renderSidebar({ tabs: [launcherTab, running] });
+    const workspaceRow = screen.getByText('Project A').closest<HTMLElement>('[data-global-sidebar-workspace-row]')!;
+    const expectRunning = () => expect(workspaceRow.querySelector('[data-tab-activity-indicator]'))
+      .toHaveAttribute('data-tab-activity-indicator', 'generating');
+    expect(document.querySelectorAll('[data-global-sidebar-session-row]')).toHaveLength(5);
+    expect(screen.queryByText('Session 5')).not.toBeInTheDocument();
+    expectRunning();
+
+    fireEvent.click(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.workspaceViewOptions')) }));
+    fireEvent.click(screen.getByText(String(i18n.t('app:globalSidebar.favoriteSessions'))));
+    expect(document.querySelector('[data-global-sidebar-session-row]')).toBeNull();
+    expectRunning();
+
+    fireEvent.click(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.workspaceViewOptions')) }));
+    fireEvent.click(screen.getByText(String(i18n.t('app:globalSidebar.allSessions'))));
+    fireEvent.click(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.workspaceViewOptions')) }));
+    fireEvent.click(screen.getByText(String(i18n.t('app:globalSidebar.hideAutomationHistory'))));
+    expect(document.querySelector('[data-global-sidebar-session-row]')).toBeNull();
+    expectRunning();
+
+    fireEvent.click(within(workspaceRow).getByRole('button', { name: /Project A/ }));
+    expect(workspaceRow).toHaveAttribute('aria-expanded', 'false');
+    expectRunning();
+  });
+
   it('keeps one workspace failure local while another workspace remains usable', () => {
     mocks.projects.push(
       { id: 'project-a', name: 'Project A', path: '/work/a' },
@@ -1863,7 +1960,7 @@ describe('Agent network and Space navigation', () => {
     const view = renderSidebar({ onOpenAgentNetwork, activeTab: networkTab });
     const buttons = screen.getAllByRole('button').filter(button => button.hasAttribute('data-global-sidebar-nav-button'));
     const labels = buttons.map(button => button.getAttribute('aria-label'));
-    expect(labels).toEqual(['新对话', '自动化任务', '技能与工具', 'AgentNet 局域网络', '更多', '小助理', '设置']);
+    expect(labels).toEqual(['新对话', '自动化任务', '技能与工具', 'AgentNet 多设备组网', '更多', '小助理', '设置']);
     const network = screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.agentNetwork')) });
     const more = screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.more')) });
     expect(network).toHaveAttribute('aria-current', 'page');

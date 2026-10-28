@@ -50,7 +50,7 @@
     "newChatHere": "Start a new chat here",
     "emptyWorkspaceSessions": "No sessions yet",
     "loadMore": "Show more",
-    "agentNetwork": "AgentNet Local Network",
+    "agentNetwork": "AgentNet Multi-Device Network",
     "more": "More"
   },
   "titlebar": {
@@ -1406,6 +1406,20 @@
     "removeConnectionMessage": "Removing “{{name}}” revokes this device from the network. Rejoining requires a new key. Local Agents and sessions remain."
   },
   "teamAi": {
+    "access": {
+      "pending": "Awaiting approval",
+      "approved": "Allowed",
+      "bound": "Connected",
+      "blocked": "Blocked",
+      "allow": "Allow",
+      "reject": "Reject",
+      "processing": "Processing…",
+      "rejected": "Request rejected",
+      "pendingHint": "Once allowed, group members can use the bot according to the channel rules.",
+      "noConversation": "No conversation yet",
+      "waitingApproval": "After approval, the next eligible message will start a conversation.",
+      "waitingMessage": "The conversation will appear after the first eligible message."
+    },
     "join": "Add an existing Agent workspace",
     "selectWorkspaceTitle": "Choose an Agent workspace",
     "selectWorkspaceDescription": "Choose an Agent workspace to add to Team AI. Only its usage is tagged; files, settings and history stay unchanged.",
@@ -1440,7 +1454,7 @@
     "peerMenu": "Conversation actions",
     "copyId": "Copy session ID",
     "copied": "Copied",
-    "channelOff": "“{{name}}” is {{status}}. You can browse; enable it to make changes.",
+    "channelOff": "{{name}} is {{status}}. You can browse; conversation changes require an online channel.",
     "enable": "Enable",
     "disabled": "disabled",
     "connecting": "connecting",

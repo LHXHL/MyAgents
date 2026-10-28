@@ -9297,6 +9297,32 @@ describe('external SessionEngine with fake runtime', () => {
     expect(broadcastEvents.filter(item => item.event === 'queue:started')).toEqual([]);
   });
 
+  it.each(['auto', 'tool_only'] as const)('accepts Task results into the destination Session using %s without a caller-owned send', async mode => {
+    vi.doMock('../tools/channel-messaging', async original => ({
+      ...await original<typeof import('../tools/channel-messaging')>(),
+      readChannelPromptOptions: async () => ({ channelBound: true }),
+      readChannelScope: async () => ({ channels: [{ channelId: 'bot', platform: 'wecom', name: 'Test Bot', mode, groupActivation: 'mention', targetTypes: [{ type: 'user', idTypes: ['userid'] }], mediaTypes: [] }], defaultTarget: { channelId: 'bot', type: 'user', id: 'user', idType: 'userid' }, sourceType: 'private', bindingName: 'Recipient' }),
+    }));
+    const harness = await createHarness([{ kind: 'success', text: 'warm' }, { kind: 'success', text: 'Task response' }]);
+    const sessionId = `task-handoff-${mode.replaceAll("_", "-")}`, workspacePath = join(harness.home, 'workspace');
+    mkdirSync(workspacePath, { recursive: true });
+    await runInjectedTurn(harness, { prompt: 'warm', sessionId, workspacePath, scenario: { type: 'desktop' }, timeoutMs: 2000, pollMs: 10 });
+    await harness.engine.waitIdle(2000, 10);
+    harness.mirrorCalls.length = 0;
+    const { renderSessionEventPrompt } = await import('../inbox/session-event');
+    const text = renderSessionEventPrompt({ version: 1, type: 'task.result', eventId: 'attempt', attemptId: 'attempt', deliveryId: 'delivery', taskId: 'task', targetSessionId: sessionId, sourceSessionId: 'execution', createdAt: new Date().toISOString(), title: 'Task result', payload: 'Report facts', conversation: { channelId: 'bot', sessionKey: 'private' }, statusOnly: false, sameSession: false });
+    const admission = await harness.engine.enqueueInboxMessage({ text, sessionId, workspacePath, queueId: 'attempt', analyticsOrigin: { kind: 'automation', surface: 'task_notification' }, beforeDispatch: async () => ({ accepted: true }) });
+    await expect(admission.dispatchAcceptance).resolves.toMatchObject({ accepted: true });
+    await harness.engine.waitIdle(2000, 10);
+    const input = harness.runtime.sentMessages.find(value => value.includes('task.result'))!;
+    expect(input).toContain('Report facts');
+    expect(input.match(/<system-reminder>/g)).toHaveLength(1);
+    expect(input).toContain(mode === 'auto' ? '当前处于自动回复模式' : '当前处于工具发送模式');
+    expect(input).not.toContain('do not call IM sending tools');
+    if (mode === 'tool_only') expect(harness.mirrorCalls).toEqual([]);
+    else expect(harness.mirrorCalls.some(call => call.role === 'assistant' && call.text === 'Task response')).toBe(true);
+  });
+
   it.each(['dsh', 'codex', 'claude-code'] as const)('delivers Channel handoff context and owned images through %s with target mode', async runtimeType => {
     vi.doMock('../tools/channel-messaging', async original => ({
       ...await original<typeof import('../tools/channel-messaging')>(),

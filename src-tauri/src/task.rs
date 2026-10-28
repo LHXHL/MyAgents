@@ -8869,6 +8869,7 @@ mod tests {
         let store = TaskStore::new(dir.path().join("data"));
         let oversized = "x".repeat(notification::MAX_TEXT_BYTES + 1);
         for (outcome, text, expected) in [
+            ("handed-off", "", DeliveryState::HandedOff),
             ("complete", "prepared", DeliveryState::Prepared),
             ("complete", "  ", DeliveryState::Failed),
             ("complete", oversized.as_str(), DeliveryState::Failed),
@@ -8905,6 +8906,25 @@ mod tests {
             }
             assert!(store.settle_notification_preparation(&task.id, &delivery.id, "current-attempt", "target-session", PreparationReceipt { outcome: Some("complete"), text: Some("late result"), error: None }).await.is_err());
         }
+        store.mutate_notification(&task.id, &delivery.id, None, |d| {
+            d.state = DeliveryState::Suppressed;
+            d.attempt_id = None;
+            d.error = Some("Channel uses tool_only".into());
+            Ok(())
+        }).await.unwrap();
+        let retried = store.operate_notification(&task.id, &delivery.id, "retry").await.unwrap();
+        assert_eq!(retried.state, DeliveryState::Waiting);
+        assert!(retried.error.is_none());
+        store.mutate_notification(&task.id, &delivery.id, None, |d| {
+            d.state = DeliveryState::Prepared;
+            d.prepared_text = Some("legacy text".into());
+            Ok(())
+        }).await.unwrap();
+        let restarted = TaskStore::new(dir.path().join("data"));
+        let recovered = restarted.get(&task.id).await.unwrap();
+        assert_eq!(recovered.notification_deliveries[0].state, DeliveryState::Waiting);
+        assert!(recovered.notification_deliveries[0].prepared_text.is_none());
+        assert_eq!(recovered.execution_count, 0);
         assert_eq!(store.get(&task.id).await.unwrap().execution_count, 0);
     }
 

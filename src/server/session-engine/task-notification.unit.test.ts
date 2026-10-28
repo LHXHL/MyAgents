@@ -1,9 +1,12 @@
+import { readFileSync } from "node:fs";
+import { channelFactsSchema, decorateChannelQuery } from "../../shared/channelContext";
+import { renderSessionEventPrompt } from "../inbox/session-event";
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import {
   admitTaskNotification,
   taskNotificationContext,
 } from "./task-notification";
-import type { SessionEngine, InjectedTurnRequest } from "./types";
+import type { SessionEngine, InboxMessageRequest } from "./types";
 import type { TaskResultEvent } from "../inbox/session-event";
 const { management } = vi.hoisted(() => ({ management: vi.fn() }));
 vi.mock("../utils/management-api-client", () => ({
@@ -26,14 +29,10 @@ const event: TaskResultEvent = {
   statusOnly: false,
   sameSession: false,
 };
-function engine(
-  run: (
-    request: InjectedTurnRequest,
-  ) => ReturnType<SessionEngine["runInjectedTurn"]>,
-) {
+function engine(run: SessionEngine["enqueueInboxMessage"]) {
   return {
     getCurrentSessionContext: () => ({ sessionId: "A2" }),
-    runInjectedTurn: vi.fn(run),
+    enqueueInboxMessage: vi.fn(run),
     recordNotificationEvent: vi.fn(async () => {}),
   } as unknown as SessionEngine;
 }
@@ -42,160 +41,73 @@ beforeEach(() => {
   management.mockReset().mockResolvedValue({ ok: true, accepted: true });
 });
 afterEach(() => vi.unstubAllEnvs());
-describe("Task result admission and terminal ownership", () => {
-  it("ACKs a busy target queue before terminal, then commits only the exact turn text", async () => {
-    let request!: InjectedTurnRequest;
-    let complete!: (value: { success: boolean }) => void;
-    const target = engine(async (input) => {
-      request = input;
-      input.onEnqueued?.("attempt");
-      return new Promise((resolve) => {
-        complete = resolve;
-      });
-    });
-    expect(
-      await admitTaskNotification(target, event, "host reminder", "/workspace"),
-    ).toEqual({ queued: true });
-    expect(
-      management.mock.calls.filter(([path]) => path.endsWith("/terminal")),
-    ).toHaveLength(0);
-    expect(request.turnOwner).toBeUndefined();
-    expect(request.assistantChannelDelivery).toBe("caller-owned");
-    await request.onTerminal?.({
-      status: "complete",
-      text: "Explained result",
-      assistantMessagePresent: true,
-    });
-    complete({ success: true });
-    await Promise.resolve();
-    expect(management).toHaveBeenCalledWith(
-      "/api/task/notification/terminal",
-      "POST",
-      expect.objectContaining({
-        taskId: "task",
-        deliveryId: "delivery",
-        attemptId: "attempt",
-        outcome: "complete",
-        text: "Explained result",
-      }),
-    );
+describe("Task result Session handoff", () => {
+  it.each(["auto", "tool_only"] as const)("lets the destination Session follow its %s mode", mode => {
+    const facts = channelFactsSchema.parse(JSON.parse(readFileSync(new URL("../../shared/__fixtures__/channel-context/p1.json", import.meta.url), "utf8")));
+    facts.delivery.mode = mode;
+    facts.delivery.ordinaryOutput = mode === "auto" ? "forwarded" : "not_forwarded";
+    const prompt = decorateChannelQuery(renderSessionEventPrompt(event), { facts }, true);
+    expect(prompt).toContain(mode === "auto" ? "当前处于自动回复模式" : "当前处于工具发送模式");
+    expect(prompt).not.toContain("do not call IM sending tools");
+    expect(prompt).toContain("decide whether and how");
   });
-  it("uses existing output for B=A and records pure status without a model turn", async () => {
-    const target = engine(async () => {
-      throw new Error("must not run");
-    });
-    await admitTaskNotification(
-      target,
-      { ...event, sameSession: true },
-      "reminder",
-      "/workspace",
-    );
-    expect(target.runInjectedTurn).not.toHaveBeenCalled();
-    expect(target.recordNotificationEvent).not.toHaveBeenCalled();
-    await admitTaskNotification(
-      target,
-      { ...event, statusOnly: true },
-      "status reference",
-      "/workspace",
-    );
-    expect(target.recordNotificationEvent).toHaveBeenCalledWith(
-      "task-notification-delivery",
-      "status reference",
-    );
-    expect(target.runInjectedTurn).not.toHaveBeenCalled();
-  });
-  it("rechecks binding at promotion and returns a reroute receipt without rerunning the task", async () => {
-    let request!: InjectedTurnRequest;
-    const target = engine(async (input) => {
+
+  it("ACKs queue ownership immediately and settles on dispatch acceptance, without waiting for a reply", async () => {
+    let request!: InboxMessageRequest;
+    let accept!: (value: { accepted: boolean }) => void;
+    const target = engine(async input => {
       request = input;
-      input.onEnqueued?.("attempt");
-      return new Promise(() => {});
+      return { queued: true, dispatchAcceptance: new Promise(resolve => { accept = resolve; }) };
     });
+    expect(await admitTaskNotification(target, event, "reminder", "/workspace")).toMatchObject({ queued: true });
+    expect(management.mock.calls.filter(([path]) => path.endsWith("/terminal"))).toHaveLength(0);
+    expect(request.queueId).toBe(event.attemptId);
+    expect(request).not.toHaveProperty("inboxMeta");
+    accept({ accepted: true });
+    await vi.waitFor(() => expect(management).toHaveBeenCalledWith(
+      "/api/task/notification/terminal", "POST",
+      expect.objectContaining({ outcome: "handed-off", taskId: "task", deliveryId: "delivery", attemptId: "attempt" }),
+    ));
+  });
+  it("does not start a second turn when the result is already in the destination Session", async () => {
+    const target = engine(async () => { throw new Error("must not run"); });
+    await admitTaskNotification(target, { ...event, sameSession: true }, "reminder", "/workspace");
+    expect(target.enqueueInboxMessage).not.toHaveBeenCalled();
+    expect(management).toHaveBeenLastCalledWith("/api/task/notification/terminal", "POST", expect.objectContaining({ outcome: "handed-off" }));
+  });
+  it("delivers status-only events to the ordinary Session input too", async () => {
+    const target = engine(async () => ({ queued: true, dispatchAcceptance: Promise.resolve({ accepted: true }) }));
+    await admitTaskNotification(target, { ...event, statusOnly: true }, "status reference", "/workspace");
+    expect(target.enqueueInboxMessage).toHaveBeenCalledWith(expect.objectContaining({ text: "status reference" }));
+  });
+  it("rechecks the binding at dispatch and retains a reroutable outcome", async () => {
+    let request!: InboxMessageRequest;
+    let accept!: (value: { accepted: boolean; error?: string }) => void;
+    const target = engine(async input => { request = input; return { queued: true, dispatchAcceptance: new Promise(resolve => { accept = resolve; }) }; });
     await admitTaskNotification(target, event, "reminder", "/workspace");
-    management.mockResolvedValueOnce({
-      ok: true,
-      accepted: false,
-      code: "binding_changed",
-      error: "rotated",
-    });
+    management.mockResolvedValueOnce({ ok: true, accepted: false, code: "binding_changed", error: "rotated" });
     expect((await request.beforeDispatch!()).accepted).toBe(false);
-    await request.onTerminal?.({
-      status: "error",
-      text: "",
-      error: "rotated",
-      assistantMessagePresent: false,
-    });
-    expect(management).toHaveBeenLastCalledWith(
-      "/api/task/notification/terminal",
-      "POST",
-      expect.objectContaining({ outcome: "binding_changed" }),
-    );
+    accept({ accepted: false, error: "rotated" });
+    await vi.waitFor(() => expect(management).toHaveBeenLastCalledWith("/api/task/notification/terminal", "POST", expect.objectContaining({ outcome: "binding_changed" })));
   });
-  it("suppresses tool_only and does not fall back to raw text when preparation fails", async () => {
-    const target = engine(async (input) => {
-      await input.onTerminal?.({
-        status: "error",
-        text: "INTERNAL TOOL LOG",
-        error: "provider unavailable",
-        assistantMessagePresent: false,
-      });
-      return { success: false, error: "provider unavailable" };
-    });
-    await admitTaskNotification(target, event, "reminder", "/workspace");
-    expect(management).toHaveBeenLastCalledWith(
-      "/api/task/notification/terminal",
-      "POST",
-      expect.objectContaining({ outcome: "failed" }),
-    );
-    management.mockResolvedValueOnce({
-      ok: true,
-      accepted: false,
-      code: "suppressed",
-      error: "tool_only",
-    });
-    const suppressed = engine(async () => {
-      throw new Error("must not run");
-    });
-    await admitTaskNotification(suppressed, event, "reminder", "/workspace");
-    expect(suppressed.runInjectedTurn).not.toHaveBeenCalled();
-    expect(management).toHaveBeenLastCalledWith(
-      "/api/task/notification/terminal",
-      "POST",
-      expect.objectContaining({ outcome: "suppressed" }),
-    );
+  it("records admission failure rather than suppressing it or sending raw task output", async () => {
+    const target = engine(async () => ({ queued: false, error: "provider unavailable" }));
+    expect(await admitTaskNotification(target, event, "reminder", "/workspace")).toMatchObject({ error: "provider unavailable" });
+    expect(management).toHaveBeenLastCalledWith("/api/task/notification/terminal", "POST", expect.objectContaining({ outcome: "failed", error: "provider unavailable" }));
+    expect(management.mock.calls.at(-1)?.[2]).not.toHaveProperty("text");
   });
-  it("keeps a temporarily offline promotion retryable at the same conversation", async () => {
-    management.mockResolvedValueOnce({
-      ok: true,
-      accepted: false,
-      code: "offline",
-      error: "Channel is restarting",
-    });
-    const target = engine(async () => {
-      throw new Error("must not run while offline");
-    });
+  it("keeps an offline target retryable without enqueueing", async () => {
+    management.mockResolvedValueOnce({ ok: true, accepted: false, code: "offline", error: "Channel is restarting" });
+    const target = engine(async () => { throw new Error("must not run"); });
     await admitTaskNotification(target, event, "reminder", "/workspace");
-    expect(target.runInjectedTurn).not.toHaveBeenCalled();
-    expect(management).toHaveBeenLastCalledWith(
-      "/api/task/notification/terminal",
-      "POST",
-      expect.objectContaining({
-        outcome: "offline",
-        deliveryId: event.deliveryId,
-      }),
-    );
-    management.mockResolvedValue({ ok: true, accepted: true });
-    await admitTaskNotification(
-      target,
-      { ...event, sameSession: true },
-      "reminder",
-      "/workspace",
-    );
-    expect(management).toHaveBeenLastCalledWith(
-      "/api/task/notification/terminal",
-      "POST",
-      expect.objectContaining({ outcome: "complete", text: event.payload }),
-    );
+    expect(target.enqueueInboxMessage).not.toHaveBeenCalled();
+    expect(management).toHaveBeenLastCalledWith("/api/task/notification/terminal", "POST", expect.objectContaining({ outcome: "offline" }));
+  });
+  it("does not retry when dispatch acceptance is unknown", async () => {
+    const target = engine(async () => ({ queued: true, dispatchAcceptance: Promise.reject(new Error("connection lost")) }));
+    await admitTaskNotification(target, event, "reminder", "/workspace");
+    await vi.waitFor(() => expect(management).toHaveBeenLastCalledWith("/api/task/notification/terminal", "POST", expect.objectContaining({ outcome: "unknown" })));
+    expect(target.enqueueInboxMessage).toHaveBeenCalledTimes(1);
   });
 });
 

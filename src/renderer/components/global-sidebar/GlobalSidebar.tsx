@@ -1753,6 +1753,23 @@ function WorkspaceTree({
     return map;
   }, [tabs]);
 
+  // Chat Tabs already own these attention signals. Do not derive from the
+  // history list: collapsed workspaces may never have loaded it, and filters
+  // or pagination must not hide activity (including a new pending Session).
+  const activityByWorkspace = useMemo(() => {
+    const map = new Map<string, { isGenerating: boolean; hasUnread: boolean }>();
+    for (const tab of tabs) {
+      if (tab.view !== 'chat' || (!tab.isGenerating && !tab.hasUnread)) continue;
+      const key = normalizeWorkspacePathIdentity(tab.agentDir);
+      const activity = map.get(key);
+      map.set(key, {
+        isGenerating: Boolean(activity?.isGenerating || tab.isGenerating),
+        hasUnread: Boolean(activity?.hasUnread || tab.hasUnread),
+      });
+    }
+    return map;
+  }, [tabs]);
+
   const activeWorkspaceKey = activeWorkspacePath
     ? normalizeWorkspacePathIdentity(activeWorkspacePath)
     : null;
@@ -1904,6 +1921,8 @@ function WorkspaceTree({
                     project={project}
                     expanded={expandedSet.has(key)}
                     active={isActiveWorkspaceContext && !activeSessionId}
+                    isGenerating={activityByWorkspace.get(key)?.isGenerating ?? false}
+                    hasUnread={activityByWorkspace.get(key)?.hasUnread ?? false}
                     recentlyCreated={recentlyCreatedWorkspaceKey === key}
                     actionTipPosition={index === 0 ? 'bottom' : 'top'}
                     onToggle={() => onToggleWorkspace(project)}
@@ -2029,6 +2048,8 @@ interface WorkspaceRowProps {
   project: Project;
   expanded: boolean;
   active: boolean;
+  isGenerating: boolean;
+  hasUnread: boolean;
   recentlyCreated: boolean;
   actionTipPosition: 'top' | 'bottom';
   onToggle: () => void;
@@ -2045,6 +2066,8 @@ function WorkspaceRow({
   project,
   expanded,
   active,
+  isGenerating,
+  hasUnread,
   recentlyCreated,
   actionTipPosition,
   onToggle,
@@ -2101,6 +2124,12 @@ function WorkspaceRow({
           data-global-sidebar-workspace-title
         >
           {displayName}
+        </span>
+        <span
+          className="flex h-full w-8 shrink-0 items-center justify-center"
+          data-global-sidebar-workspace-activity
+        >
+          <TabActivityIndicator isGenerating={isGenerating} hasUnread={hasUnread} />
         </span>
       </button>
       {/* Overlay the hover actions instead of reserving row width. The opaque

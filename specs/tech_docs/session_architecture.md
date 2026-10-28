@@ -356,4 +356,4 @@ Inbox 的可选 `send.request.channelHandoff` 是宿主数据，目标 admission
 
 `task.result` 是本地 Inbox 类型化事件，携带 Task、delivery、attempt、执行 Session 和固定的 `ConversationRef`，不使用 `replyBack` 或网络返回路径。投递记录由 [TaskStore](task_center.md#task-通知策略与投递记录) 管理，Inbox 接纳只表示已排队。
 
-`admitTaskNotification` 复用 `runInjectedTurn` 和对应队列项的真实终态准备通知文本；模型、MCP 与权限仍来自目标 Session，输出交给通知调用方处理，不走普通 IM 自动回复。`automation/task_notification` 来源不触发第二次桌面完成通知。纯状态事件只使用既有 transcript 持久化和回放能力记录 Task 引用，不调用模型。队列繁忙时不改动正在执行轮次的场景，直到 `beforeDispatch` 实际开始处理该项时才应用场景并再次验证通知资格。
+`admitTaskNotification` 复用普通 `enqueueInboxMessage` 和准确的 `dispatchAcceptance`，在目标 Session 接纳后记录 `handed-off`；Task 不等待模型终态，也不拥有 IM 外发。模型、MCP 与权限仍来自目标 Session，回复沿普通 Session binding / tool_only 发送方式处理。`automation/task_notification` 来源不触发第二次桌面完成通知。若执行 Session 即目标则不启动自我转述，纯状态在同 Session 只追加记录；其他事件均按 Inbox 输入处理。执行前复查绑定，未确认的接纳沿既有 unknown 恢复规则处理。

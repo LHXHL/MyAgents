@@ -400,9 +400,13 @@
       "failed": "Failed",
       "unknown": "Unconfirmed",
       "partial": "Partially sent",
-      "cancelled": "Cancelled"
+      "cancelled": "Cancelled",
+      "handed-off": "Handed off to Session"
     },
-    "completeTarget": "Choose a notification Channel and conversation"
+    "completeTarget": "Choose a notification Channel and conversation",
+    "desktopOn": "Desktop notifications: on",
+    "desktopOff": "Desktop notifications: off",
+    "handoffDescription": "Results are handed to the destination Session, which decides whether and how to notify the user. Handoff does not confirm IM delivery."
   },
   "cron": {
     "untitledTask": "Untitled task",
@@ -750,7 +754,10 @@
     "desktopOn": "On",
     "desktopOff": "Off",
     "noBot": "Do not send to Bot",
-    "unknownChannel": "Unknown channel ({{id}})"
+    "unknownChannel": "Unknown channel ({{id}})",
+    "executeNow": "Run now",
+    "runNowConfirmTitle": "Run once now?",
+    "runNowConfirmMessage": "Run “{{name}}” once using its current configuration and notifications. Its schedule will not change."
   },
   "edit": {
     "lockedError": "The task started running, so editing was canceled (PRD §9.4).",

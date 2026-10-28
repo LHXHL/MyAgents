@@ -241,7 +241,7 @@ function renderOpenTag(event: RenderableSessionEvent): string {
 function summaryForEvent(event: RenderableSessionEvent): string {
   switch (event.type) {
     case 'task.result':
-      return 'MyAgents returned a Task result to this conversation. Explain the result to the user. The host will deliver your final response: do not call IM sending tools, rerun the Task, or reply to its execution Session. Preserve the Task/result reference for follow-up.';
+      return 'MyAgents returned a Task result to this conversation. Use this information to decide whether and how to inform the user, following this turn’s Channel delivery instruction. The Task only hands information to this Session; it does not send your response. Do not rerun the Task or reply to its execution Session. Preserve the Task/result reference for follow-up.';
     case 'network.return_unavailable':
       return 'MyAgents could not deliver the remote result after connection recovery ended. This notification does not determine whether the remote task succeeded or failed.';
     case 'send.request':

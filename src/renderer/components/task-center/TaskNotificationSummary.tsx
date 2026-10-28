@@ -56,8 +56,8 @@ export function TaskNotificationSummary({
       <p className="text-xs text-[var(--ink-secondary)]">
         {t(
           task.notification?.desktop === false
-            ? "detail.desktopOff"
-            : "detail.desktopOn",
+            ? "notifications.desktopOff"
+            : "notifications.desktopOn",
         )}{" "}
         ·{" "}
         {task.notification?.im?.type === "conversation"
@@ -65,6 +65,7 @@ export function TaskNotificationSummary({
             targetLabel(task.notification.im))
           : targetLabel(task.notification?.im)}
       </p>
+      <p className="text-xs text-[var(--ink-muted)]">{t("notifications.handoffDescription")}</p>
       {task.notification?.error && (
         <p role="alert" className="text-xs text-[var(--error)]">
           {task.notification.error}
@@ -98,7 +99,7 @@ export function TaskNotificationSummary({
                 )}
                 <div className="flex gap-3">
                   {(delivery.state === "failed" ||
-                    delivery.state === "waiting") && (
+                    delivery.state === "waiting" || delivery.state === "suppressed") && (
                     <button
                       type="button"
                       disabled={busy}

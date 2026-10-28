@@ -341,6 +341,26 @@ impl SessionRouter {
                 .map(|s| s.trim())
                 .filter(|s| !s.is_empty())
                 .map(|s| s.to_string());
+            // Preserve the observed sender↔chat relationship in existing health
+            // history. Native Feishu's open_id is not its p2p chat_id.
+            let entry = self.peer_history.entry(session_key.to_string()).or_insert_with(|| {
+                super::types::PeerSessionHistory {
+                    session_key: session_key.to_string(),
+                    source_type: ps.source_type.clone(),
+                    source_id: ps.source_id.clone(),
+                    source_display_name: ps.source_display_name.clone(),
+                    user_id: None,
+                    user_username: None,
+                    workspace_path: ps.workspace_path.display().to_string(),
+                    session_ids: Vec::new(),
+                }
+            });
+            if msg.source_type == ImSourceType::Private {
+                entry.user_id = Some(msg.sender_id.clone());
+                entry.user_username = if msg.platform == ImPlatform::Telegram {
+                    msg.source_metadata.sender_username.clone()
+                } else { None };
+            }
         }
     }
 
@@ -861,6 +881,8 @@ impl SessionRouter {
                     source_type: peer.source_type.clone(),
                     source_id: peer.source_id.clone(),
                     source_display_name: peer.source_display_name.clone(),
+                    user_id: None,
+                    user_username: None,
                     workspace_path: peer.workspace_path.display().to_string(),
                     session_ids: Vec::new(),
                 }
@@ -1620,6 +1642,32 @@ mod tests {
                 .as_deref(),
             Some("Renamed")
         );
+        assert!(router.peer_history()[0].user_id.is_none(), "a group sender is not a private peer");
+    }
+
+    #[test]
+    fn private_sender_identity_survives_history_persistence_without_rewriting_delivery() {
+        use crate::im::types::{ImMessage, ImPlatform, ImSourceType};
+        let mut router = SessionRouter::new(PathBuf::from("/synthetic"));
+        let key = "agent:a:feishu:private:oc_p2p";
+        router.upsert_peer_session(peer(key, "session"));
+        let msg = ImMessage {
+            access_admission: None, source_metadata: Default::default(),
+            chat_id: "oc_p2p".into(), message_id: "m".into(), text: "hello".into(),
+            sender_id: "ou_sender".into(), sender_name: Some("Sender".into()), account_id: None,
+            source_type: ImSourceType::Private, platform: ImPlatform::Feishu,
+            timestamp: chrono::Utc::now(), attachments: vec![], media_group_id: None,
+            is_mention: false, reply_to_bot: false, hint_group_name: None,
+            reply_to_body: None, group_system_prompt: None, request_id: String::new(), delivery_protocol: None,
+        };
+        router.update_peer_metadata_from_message(key, &msg);
+        let bytes = serde_json::to_vec(&router.peer_history()).unwrap();
+        let mut restored = SessionRouter::new(PathBuf::from("/synthetic"));
+        restored.restore_peer_history(serde_json::from_slice(&bytes).unwrap());
+        let history = restored.peer_history();
+        assert_eq!(history[0].user_id.as_deref(), Some("ou_sender"));
+        assert_eq!(history[0].source_id, "oc_p2p");
+        assert_eq!(history[0].session_key, key);
     }
 
     #[tokio::test]
