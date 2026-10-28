@@ -1960,7 +1960,7 @@ describe('Agent network and Space navigation', () => {
     const view = renderSidebar({ onOpenAgentNetwork, activeTab: networkTab });
     const buttons = screen.getAllByRole('button').filter(button => button.hasAttribute('data-global-sidebar-nav-button'));
     const labels = buttons.map(button => button.getAttribute('aria-label'));
-    expect(labels).toEqual(['新对话', '自动化任务', '技能与工具', 'AgentNet 局域网络', '更多', '小助理', '设置']);
+    expect(labels).toEqual(['新对话', '自动化任务', '技能与工具', 'AgentNet 多设备组网', '更多', '小助理', '设置']);
     const network = screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.agentNetwork')) });
     const more = screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.more')) });
     expect(network).toHaveAttribute('aria-current', 'page');
