@@ -2000,7 +2000,7 @@ function decoratePreparedExternalChannelInput(text: string, context: ExternalSen
   const source = channelInputSource(context.analyticsSource ?? context.scenario.type, context.requestId, context.analyticsOrigin, context.turnOwner);
   const inbound = getExternalChannelInbound(context.requestId);
   return decorateChannelQuery(text, channelContextForInput(context.channelSnapshot, context.channelDelivery, source, inbound),
-    !!(context.desktopQuery?.primaryContext || context.desktopQuery?.agentMentions?.length) || !!context.channelPrimaryReminder || context.analyticsOrigin?.kind === 'session-inbox');
+    !!(context.desktopQuery?.primaryContext || context.desktopQuery?.agentMentions?.length) || !!context.channelPrimaryReminder || context.analyticsOrigin?.kind === 'session-inbox' || context.analyticsOrigin?.surface === 'task_notification');
 }
 
 function commitExternalChannelInput(context: ExternalSendContext): void {

@@ -400,9 +400,13 @@
       "failed": "失败",
       "unknown": "结果未确认",
       "partial": "部分发送",
-      "cancelled": "已取消"
+      "cancelled": "已取消",
+      "handed-off": "已交接至会话"
     },
-    "completeTarget": "请选择完整的通知 Channel 和聊天"
+    "completeTarget": "请选择完整的通知 Channel 和聊天",
+    "desktopOn": "桌面通知：开启",
+    "desktopOff": "桌面通知：关闭",
+    "handoffDescription": "任务结果交给目标会话，由该会话决定是否及如何通知用户；已交接不代表 IM 已发送。"
   },
   "cron": {
     "untitledTask": "未命名任务",
@@ -750,7 +754,10 @@
     "desktopOn": "开启",
     "desktopOff": "关闭",
     "noBot": "不发送到 Bot",
-    "unknownChannel": "未知频道 ({{id}})"
+    "unknownChannel": "未知频道 ({{id}})",
+    "executeNow": "立刻执行",
+    "runNowConfirmTitle": "立刻执行一次？",
+    "runNowConfirmMessage": "将立即执行「{{name}}」一次，沿用当前任务配置和通知设置，不改变原有定时计划。"
   },
   "edit": {
     "lockedError": "任务已开始执行，编辑已取消（PRD §9.4）。",

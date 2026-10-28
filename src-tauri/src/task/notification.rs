@@ -357,6 +357,7 @@ pub enum DeliveryState {
     Prepared,
     Sending,
     Sent,
+    HandedOff,
     Suppressed,
     Failed,
     Unknown,
@@ -555,6 +556,13 @@ pub fn recover(task: &mut Task) -> bool {
             d.error = Some("Application restarted during preparation or delivery; verify before explicitly resending".into());
             d.updated_at = now_ms();
             changed = true;
+        } else if d.state == DeliveryState::Prepared {
+            // Old clients prepared platform text but had not started sending.
+            // The new owner hands the original event to the Session instead.
+            d.state = DeliveryState::Waiting;
+            d.prepared_text = None;
+            d.attempt_id = None;
+            changed = true;
         } else if d.attempt_id.take().is_some() {
             changed = true;
         }
@@ -597,6 +605,11 @@ impl TaskStore {
             }
             d.error = receipt.error.map(str::to_string);
             match receipt.outcome {
+                Some("handed-off") => {
+                    d.state = DeliveryState::HandedOff;
+                    d.attempt_id = None;
+                    d.error = None;
+                }
                 Some("suppressed") => d.state = DeliveryState::Suppressed,
                 Some("binding_changed" | "offline") => {
                     d.state = DeliveryState::Waiting;
@@ -671,9 +684,9 @@ impl TaskStore {
         self.mutate_notification(task_id, delivery_id, None, |d| {
             if matches!(action, "retry" | "resend") && d.result.is_empty() && d.error.as_deref().is_some_and(|error| error.starts_with("Notification capacity exceeded")) { return Err("This result exceeded the notification limit; inspect the execution Session. The business task will not be rerun.".into()); }
             match action {
-                "cancel" if d.state != DeliveryState::Sending && d.state != DeliveryState::Sent => { d.state = DeliveryState::Cancelled; d.attempt_id = None; }
-                "retry" if matches!(d.state, DeliveryState::Failed | DeliveryState::Waiting) && d.attempt_id.is_none() => { d.state = if d.prepared_text.is_some() { DeliveryState::Prepared } else { DeliveryState::Waiting }; d.error = None; d.retry_at = None; }
-                "resend" if matches!(d.state, DeliveryState::Unknown | DeliveryState::Partial) => { d.state = if d.prepared_text.is_some() { DeliveryState::Prepared } else { DeliveryState::Waiting }; d.attempt_id = None; d.error = None; d.retry_at = None; }
+                "cancel" if !matches!(d.state, DeliveryState::Sending | DeliveryState::Sent | DeliveryState::HandedOff) => { d.state = DeliveryState::Cancelled; d.attempt_id = None; }
+                "retry" if matches!(d.state, DeliveryState::Failed | DeliveryState::Waiting | DeliveryState::Suppressed) && (d.attempt_id.is_none() || d.state == DeliveryState::Suppressed) => { d.state = DeliveryState::Waiting; d.attempt_id = None; d.prepared_text = None; d.error = None; d.retry_at = None; }
+                "resend" if matches!(d.state, DeliveryState::Unknown | DeliveryState::Partial) => { d.state = DeliveryState::Waiting; d.prepared_text = None; d.attempt_id = None; d.error = None; d.retry_at = None; }
                 _ => return Err("This notification cannot perform that action; unknown/partial delivery requires explicit resend (may duplicate)".into()),
             }
             Ok(())

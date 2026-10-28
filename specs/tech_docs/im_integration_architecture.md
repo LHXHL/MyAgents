@@ -222,7 +222,8 @@ ReplySlot只服务产生它的Channel user request。一个request结束后，De
 | Desktop | Session binding | Session binding |
 | IM user request | none | ReplyRouter |
 | Session Inbox / 普通后台消息 | none | Session binding |
-| Heartbeat / Task relay / Agent Channel Goal | none | caller-owned |
+| Heartbeat / Agent Channel Goal | none | caller-owned |
+| Task result Inbox | none | Session binding |
 | Memory或明确静默turn | none | none |
 
 builtin/external各自在真实turn owner中capture完整text block，成功terminal后交给`im-mirror.ts`transport。V1保留原有保存完成后的投递顺序；V2在SessionStore内存接纳、排队保存后即可投递，产品写盘失败不改变AI成功结果或阻止投递。失败、停止、被重试撤回、空文本、thinking/tool/subagent和`NO_REPLY`不投递。`SessionOrigin`与`InteractionScenario`只描述归因/prompt，不能推导delivery owner。
@@ -429,4 +430,4 @@ Channel 路由使用 Adapter 已验证的协议身份；OpenClaw 从注册后的
 
 Task 自动回报使用 `ConversationRef { channelId, sessionKey }`。`im::task_notification` 从既有配置、health、ChannelOwner 和 Router 解析目标，不新增聊天存储。固定 Channel 的 `recent-private` 只在该连接内选择私聊；Agent 范围允许跨连接，沿用最近私聊的选址规则。两者均不经过 Heartbeat 待发队列或唤醒流程。首次解析后由 TaskStore 固定聊天地址与连接归属；目标离线时等待，归属变化时失败，不改投其他联系人。
 
-转述前在 ChannelOwner 的 peer fence 内初始化当前 Session，复用 Inbox delivery lease。排队后的 `beforeDispatch` 再检查绑定，换绑使旧队列项失效，由 Task 通知作业重新解析同一个聊天。转述结果交给 TaskStore 保存；IM `channel_send` 按平台能力分段发送并返回接受片数和消息 ID。普通 ReplyRouter、显式 handoff、Heartbeat 与 Goal 的生命周期不变。状态与重试规则由 [Task 通知策略与投递记录](task_center.md#task-通知策略与投递记录) 统一说明。
+交接前在 ChannelOwner 的 peer fence 内初始化当前 Session，复用 Inbox delivery lease。排队后的 `beforeDispatch` 再检查绑定，换绑使旧队列项失效，由 Task 通知作业重新解析同一个聊天。TaskStore 在准确 Session 接纳后记录 handed-off，不调用 IM `channel_send`；目标 Session 使用自己的普通回复/显式工具发送路径。auto/tool_only 只控制外发方式，均允许交接输入。普通 ReplyRouter、显式 handoff、Heartbeat 与 Goal 的生命周期不变。状态与重试规则由 [Task 通知策略与投递记录](task_center.md#task-通知策略与投递记录) 统一说明。

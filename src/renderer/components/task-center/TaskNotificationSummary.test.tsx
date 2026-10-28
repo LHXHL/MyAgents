@@ -61,10 +61,10 @@ describe("Task notification recovery controls", () => {
     await waitFor(() => expect(changed).toHaveBeenCalled());
     expect(operate).toHaveBeenCalledWith("task-qa", "delivery-qa", "resend");
   });
-  it("retries and cancels the delivery without invoking business execution", async () => {
+  it.each(["waiting", "suppressed"] as const)("retries and cancels the delivery without invoking business execution (%s)", async (state) => {
     const changed = vi.fn();
     render(
-      <TaskNotificationSummary task={fixture("waiting")} onChanged={changed} />,
+      <TaskNotificationSummary task={fixture(state)} onChanged={changed} />,
     );
     fireEvent.click(screen.getByText(/notifications.latestDelivery/));
     fireEvent.click(
@@ -72,6 +72,7 @@ describe("Task notification recovery controls", () => {
     );
     await waitFor(() => expect(changed).toHaveBeenCalledTimes(1));
     expect(operate).toHaveBeenLastCalledWith("task-qa", "delivery-qa", "retry");
+    if (state === "suppressed") return;
     fireEvent.click(
       screen.getByRole("button", { name: "notifications.cancel" }),
     );

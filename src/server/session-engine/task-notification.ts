@@ -2,8 +2,8 @@ import type { SessionEngine, InboxAdmissionResult } from "./types";
 import type { TaskResultEvent } from "../inbox/session-event";
 import { managementApi } from "../utils/management-api-client";
 
-/** Admission is short-lived. The original controlled turn owns completion;
- * TaskStore receives its exact terminal, never the latest assistant/idle state. */
+/** Task owns delivery into the target Session, not the model's response or IM
+ * transport. Observe native dispatch acceptance without holding the Inbox lease. */
 export async function admitTaskNotification(
   engine: SessionEngine,
   event: TaskResultEvent,
@@ -11,126 +11,63 @@ export async function admitTaskNotification(
   workspacePath: string,
 ): Promise<InboxAdmissionResult> {
   const sidecarId = process.env.MYAGENTS_SIDECAR_ID;
-  if (
-    !sidecarId ||
-    engine.getCurrentSessionContext().sessionId !== event.targetSessionId
-  )
+  if (!sidecarId || engine.getCurrentSessionContext().sessionId !== event.targetSessionId)
     return { queued: false, error: "Notification target Session mismatch" };
-  const identity = {
-    sidecarId,
-    taskId: event.taskId,
-    deliveryId: event.deliveryId,
-    attemptId: event.attemptId,
-  };
+  const identity = { sidecarId, taskId: event.taskId, deliveryId: event.deliveryId, attemptId: event.attemptId };
   let rejection: string | undefined;
   const guard = async () => {
-    const response = await managementApi(
-      "/api/task/notification/authorize",
-      "POST",
-      identity,
-    );
-    if (response.accepted === true && response.ok === true)
-      return { accepted: true as const };
+    const response = await managementApi("/api/task/notification/authorize", "POST", identity);
+    if (response.accepted === true && response.ok === true) return { accepted: true as const };
     rejection = typeof response.code === "string" ? response.code : "failed";
-    return {
-      accepted: false as const,
-      code: rejection,
-      error: String(response.error ?? "Notification no longer authorized"),
-    };
+    return { accepted: false as const, code: rejection, error: String(response.error ?? "Notification no longer authorized") };
   };
-  const terminal = async (outcome: string, text?: string, error?: string) => {
-    const response = await managementApi(
-      "/api/task/notification/terminal",
-      "POST",
-      { ...identity, outcome, text, error },
-    );
-    if (response.ok !== true)
-      console.warn(
-        "[task-notification] terminal receipt not committed:",
-        response.error,
-      );
+  const settle = async (outcome: string, error?: string) => {
+    const response = await managementApi("/api/task/notification/terminal", "POST", { ...identity, outcome, error });
+    if (response.ok !== true) throw new Error(String(response.error ?? "Notification receipt not committed"));
   };
   const accepted = await guard();
   if (!accepted.accepted) {
-    await terminal(rejection ?? "failed", undefined, accepted.error);
+    await settle(rejection ?? "failed", accepted.error);
     return { queued: false, error: accepted.error };
   }
-  if (event.statusOnly || event.sameSession) {
-    try {
-      // Same-Session execution already has its transcript. Only status events
-      // add a host record; neither path runs a self-directed model turn.
-      if (event.statusOnly)
-        await engine.recordNotificationEvent(
-          `task-notification-${event.deliveryId}`,
-          prompt,
-        );
-      const text = event.statusOnly
-        ? `${event.title}\n${event.payload}`
-        : event.payload;
-      await terminal(
-        text.trim() ? "complete" : "failed",
-        text,
-        text.trim() ? undefined : "Task returned no usable text",
-      );
-      return { queued: false };
-    } catch (error) {
-      await terminal("failed", undefined, String(error));
-      return { queued: false, error: String(error) };
-    }
+  // No self-directed second turn: the originating Session already has the result.
+  if (event.sameSession) {
+    if (event.statusOnly) await engine.recordNotificationEvent(`task-notification-${event.deliveryId}`, prompt);
+    await settle("handed-off");
+    return { queued: false };
   }
-  let admitted!: (result: InboxAdmissionResult) => void;
-  const admission = new Promise<InboxAdmissionResult>((resolve) => {
-    admitted = resolve;
-  });
-  let terminalObserved = false;
-  const completion = engine
-    .runInjectedTurn({
-      prompt,
+  let result: InboxAdmissionResult;
+  try {
+    result = await engine.enqueueInboxMessage({
+      text: prompt,
       sessionId: event.targetSessionId,
       workspacePath,
-      scenario: { type: "desktop" },
       queueId: event.attemptId,
-      assistantChannelDelivery: "caller-owned",
-      timeoutMs: 300_000,
       analyticsOrigin: { kind: "automation", surface: "task_notification" },
       beforeDispatch: guard,
-      onEnqueued: () => {
-        admitted({ queued: true });
-      },
-      onTerminal: async (result) => {
-        terminalObserved = true;
-        const outcome =
-          rejection ??
-          (result.channelDeliveryMode === "tool_only"
-            ? "suppressed"
-            : result.status === "complete" && result.text.trim()
-              ? "complete"
-              : "failed");
-        await terminal(outcome, result.text, result.error);
-      },
-    })
-    .then(async (result) => {
-      if (!terminalObserved)
-        await terminal(
-          rejection ?? (result.terminationUnconfirmed ? "unknown" : "failed"),
-          undefined,
-          result.error ??
-            "Notification preparation did not produce a terminal result",
-        );
-      return {
-        queued: false,
-        ...(result.success
-          ? {}
-          : { error: result.error ?? "Notification preparation failed" }),
-      };
-    })
-    .catch(async (error) => {
-      if (!terminalObserved)
-        await terminal("unknown", undefined, String(error));
-      return { queued: false, error: String(error) };
     });
-  // Promise keeps its terminal observer after the HTTP admission returns.
-  return Promise.race([admission, completion]);
+  } catch (error) {
+    await settle("unknown", String(error));
+    return { queued: false, error: String(error) };
+  }
+  if (result.error) {
+    await settle(rejection ?? "failed", result.error);
+    return result;
+  }
+  const acceptance: NonNullable<InboxAdmissionResult["dispatchAcceptance"]> =
+    result.dispatchAcceptance ?? Promise.resolve({ accepted: true });
+  // The ordinary Inbox/Runtime owns the input and any resulting reply. A later
+  // provider error cannot retract an already accepted Task result.
+  void acceptance.then(async (dispatch) => {
+    await settle(dispatch.accepted ? "handed-off" : rejection ?? "failed", dispatch.error);
+  }, async (error: unknown) => {
+    await settle("unknown", String(error));
+  }).catch(() => {
+    // TaskStore's existing timeout/restart recovery marks unconfirmed receipts
+    // unknown. Never retry an input whose admission may already have succeeded.
+    console.warn("[task-notification] Session handoff receipt not committed");
+  });
+  return result;
 }
 
 /** Only admission-owned context may select a default recipient. Never retain

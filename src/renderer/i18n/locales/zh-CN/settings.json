@@ -1195,7 +1195,7 @@
       "delivery_auto": "自动回推",
       "delivery_tool_only": "仅工具发送",
       "deliveryDescription_auto": "回答自动发送到渠道，也可使用工具发送。",
-      "deliveryDescription_tool_only": "仅通过工具发送消息；审批和管理交互照常显示。",
+      "deliveryDescription_tool_only": "仅通过工具发送消息；审批和管理交互照常显示。 不影响接收任务或其他会话的信息。第三方插件兼容补丁失效时渠道仍可用，但可能出现插件自动消息；详情见日志。",
       "pluginLabel": "插件: {{name}}",
       "noExtraConfig": "此插件无需额外配置",
       "inputPlaceholder": "输入 {{key}}",

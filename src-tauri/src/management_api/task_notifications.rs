@@ -101,7 +101,6 @@ pub(super) async fn authorize(headers: HeaderMap, Json(request): Json<Receipt>) 
         let address = d.target.ok_or("Notification target missing")?;
         let channel = im::task_notification::channel(&address.channel_id)?;
         if channel.agent_id != d.agent_id { return Err("Notification Channel ownership changed".into()); }
-        if channel.mode == im::types::ChannelDeliveryMode::ToolOnly { return Ok(json!({"ok":true,"accepted":false,"code":"suppressed","error":"Channel uses tool_only"})); }
         let owner = match im::channel_handoff::channel_owner(get_agents(), get_im_bots(), &address.channel_id).await {
             Ok(owner) => owner,
             Err(error) => return Ok(json!({"ok":true,"accepted":false,"code":"offline","error":error})),
